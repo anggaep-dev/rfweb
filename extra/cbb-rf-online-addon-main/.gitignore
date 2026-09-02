@@ -1,0 +1,9 @@
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+cbb_rf_online_addon/manifest_updater.py
+cbb_rf_online_addon/run_manifest_update.bat
+move_files.bat
+copy-addon.sh
