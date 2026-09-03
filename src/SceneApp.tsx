@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import RfViewer from './RfViewer';
-import { preloadAllRaces } from './rf/character';
+import { preloadAllRaces, preloadWeaponMeshes } from './rf/character';
 import type { RaceGender } from './rf/character';
+import { loadSlotItems, ModelType } from './rf/items';
 import CharacterSelectScreen from './scenes/CharacterSelectScreen';
 import LoginScreen from './scenes/LoginScreen';
 import { SceneManager } from './scenes/SceneManager';
@@ -33,18 +34,46 @@ export default function SceneApp() {
     const sceneManager = new SceneManager(container);
     setSceneManagerState(sceneManager);
 
-    // Blocks entry past the login screen until every race's assets are
-    // cached, so character-select and the viewer never hit the network -
-    // switching races or picking a character afterward is instant.
-    preloadAllRaces((loaded, total) => {
-      if (!disposed) setPreloadProgress({ loaded, total });
-    })
+    // Blocks entry past the login screen until every race's assets AND
+    // every currently-existing weapon's mesh are cached, so nothing past
+    // this screen - character-select, equipping any item, switching races -
+    // ever hits the network again. The two run concurrently and report into
+    // one combined counter; weapon preloading's own total isn't known until
+    // its item list + stem resolution finishes (a moment after race
+    // preloading's, which is a compile-time constant - see preloadAllRaces),
+    // so the combined total briefly under-reports right at the start.
+    let raceProgress = { loaded: 0, total: 0 };
+    let weaponProgress = { loaded: 0, total: 0 };
+    const reportCombinedProgress = () => {
+      if (!disposed) {
+        setPreloadProgress({
+          loaded: raceProgress.loaded + weaponProgress.loaded,
+          total: raceProgress.total + weaponProgress.total,
+        });
+      }
+    };
+
+    Promise.all([
+      preloadAllRaces((loaded, total) => {
+        raceProgress = { loaded, total };
+        reportCombinedProgress();
+      }),
+      loadSlotItems(ModelType.Weapon).then((items) =>
+        preloadWeaponMeshes(
+          items.map((item) => item.model),
+          (loaded, total) => {
+            weaponProgress = { loaded, total };
+            reportCombinedProgress();
+          },
+        ),
+      ),
+    ])
       .then(() => {
         if (!disposed) setScreen('login');
       })
       .catch((err: unknown) => {
         if (disposed) return;
-        console.error('Failed to preload race assets:', err);
+        console.error('Failed to preload assets:', err);
         setPreloadError(err instanceof Error ? err.message : String(err));
       });
 
@@ -65,7 +94,7 @@ export default function SceneApp() {
 
       {screen === 'preloading' && !preloadError && (
         <div className="scene-app-overlay">
-          Preloading all races… {preloadProgress.loaded}/{preloadProgress.total}
+          Preloading assets… {preloadProgress.loaded}/{preloadProgress.total}
         </div>
       )}
       {preloadError && (

@@ -1,5 +1,5 @@
-import { AdditiveBlending, DoubleSide, Matrix4, MeshBasicMaterial } from 'three';
-import type { Material, Mesh, Object3D, SkinnedMesh, Texture } from 'three';
+import { AdditiveBlending, ClampToEdgeWrapping, DoubleSide, Matrix4, MeshBasicMaterial, MeshMatcapMaterial } from 'three';
+import type { Material, Mesh, MeshStandardMaterial, Object3D, SkinnedMesh, Texture } from 'three';
 import { decodeRftTexture } from './texture';
 
 // SkinnedMesh.bind() only ever reads from the bindMatrix it's given, so
@@ -255,11 +255,11 @@ function loadEffFile(clientPath: string): Promise<EffSection[]> {
   return cached;
 }
 
-const glowTextureCache = new Map<string, Promise<Texture | null>>();
+const chefTextureCache = new Map<string, Promise<Texture | null>>();
 
-/** Chef/Tex textures are plain, unencrypted DDS (verified - no .RFT-style XOR header here), so this reuses decodeRftTexture purely for its "already-DDS passthrough + S3TC-fallback" behavior, not its decryption. */
-function loadGlowTexture(textureName: string): Promise<Texture | null> {
-  let cached = glowTextureCache.get(textureName);
+/** Chef/Tex textures are plain, unencrypted DDS (verified - no .RFT-style XOR header here), so this reuses decodeRftTexture purely for its "already-DDS passthrough + S3TC-fallback" behavior, not its decryption. Shared by both effect kinds below (glow overlays and surface shine), keyed by filename regardless of which one's using it. */
+function loadChefTexture(textureName: string): Promise<Texture | null> {
+  let cached = chefTextureCache.get(textureName);
   if (!cached) {
     const url = `${CHEF_BASE}/Tex/${textureName}`;
     cached = fetch(url)
@@ -269,10 +269,10 @@ function loadGlowTexture(textureName: string): Promise<Texture | null> {
       })
       .then((buffer) => decodeRftTexture(buffer))
       .catch((err: unknown) => {
-        console.warn(`Failed to load glow texture "${textureName}":`, err);
+        console.warn(`Failed to load Chef/Tex texture "${textureName}":`, err);
         return null;
       });
-    glowTextureCache.set(textureName, cached);
+    chefTextureCache.set(textureName, cached);
   }
   return cached;
 }
@@ -300,7 +300,7 @@ export async function buildGlowOverlay(modelId: string, sourceObjects: Object3D[
   const glowSection = sections.find((s) => s.glowTexture);
   if (!glowSection?.glowTexture) return { objects: [], scrollingMaterials: [] };
 
-  const texture = await loadGlowTexture(glowSection.glowTexture);
+  const texture = await loadChefTexture(glowSection.glowTexture);
   if (!texture) return { objects: [], scrollingMaterials: [] };
 
   const objects: Object3D[] = [];
@@ -352,4 +352,66 @@ export function disposeGlowOverlay(overlay: GlowOverlay): void {
     const mesh = obj as Mesh;
     (mesh.material as Material | undefined)?.dispose();
   }
+}
+
+/**
+ * Applies a `.eff`'s "surface" effect (see EffSection's doc comment) - a
+ * classic sphere-mapped shine texture (what three.js calls a "matcap": a 2D
+ * texture sampled by view-space normal, baking in a fixed lit/reflective
+ * look with no real lighting or geometry needed) that RF's original engine
+ * projected onto an item's own surface for a cheap fake-metal/chrome look.
+ * Confirmed against a real item (the Intense Beam Mace's registered
+ * ".\Chef\Eff\Bb\MACE\MA_LV20.EFF" has a surfaceTexture, "ENV_Y_M.DDS", and
+ * no glowTexture at all) - this is a genuinely separate mechanism from
+ * buildGlowOverlay above, not a variant of it, and most weapons that read
+ * as "glowing" in the original client turn out to use this one, not glow.
+ *
+ * Unlike buildGlowOverlay, this doesn't add any new geometry - it swaps
+ * each source mesh's own material in place for a MeshMatcapMaterial that
+ * keeps the mesh's existing base texture as `map` (so its actual surface
+ * art still shows through) and adds the effect texture as `matcap`. That
+ * means no separate caller-side disposal/bookkeeping is needed the way
+ * GlowOverlay needs: the swapped material is owned by (and torn down with)
+ * the mesh itself, exactly like its original material was - a caller only
+ * needs to await this once, fire-and-forget, same as buildGlowOverlay.
+ * Returns whether anything was actually applied (false for the common "no
+ * registered effect" / "no surface section" / "texture failed to load"
+ * cases), so a caller can tell "definitely did nothing" from "might still
+ * be loading" if it cares to.
+ */
+export async function applySurfaceShine(modelId: string, sourceObjects: Object3D[]): Promise<boolean> {
+  const effPath = await resolveGlowEffectPath(modelId);
+  if (!effPath) return false;
+
+  const sections = await loadEffFile(effPath);
+  const shineSection = sections.find((s) => s.surfaceTexture);
+  if (!shineSection?.surfaceTexture) return false;
+
+  const matcap = await loadChefTexture(shineSection.surfaceTexture);
+  if (!matcap) return false;
+  // A matcap texture is sampled by view-space normal, always within [0,1] -
+  // there's no legitimate case for it to tile, unlike this project's other
+  // (UV-mapped) textures which default to RepeatWrapping (see texture.ts's
+  // applyCommonTextureSettings).
+  matcap.wrapS = ClampToEdgeWrapping;
+  matcap.wrapT = ClampToEdgeWrapping;
+
+  let applied = false;
+  for (const source of sourceObjects) {
+    source.traverse((obj) => {
+      const mesh = obj as Mesh;
+      if (!(mesh as { isMesh?: boolean }).isMesh) return;
+
+      const prevMaterial = mesh.material as MeshStandardMaterial;
+      mesh.material = new MeshMatcapMaterial({
+        map: prevMaterial.map,
+        matcap,
+        color: prevMaterial.color,
+        side: prevMaterial.side,
+      });
+      prevMaterial.dispose(); // safe regardless of the shared `map` - Material.dispose() never touches its textures
+      applied = true;
+    });
+  }
+  return applied;
 }

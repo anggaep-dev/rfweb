@@ -3,8 +3,6 @@ import type { AnimationAction, Bone, Group, Scene } from 'three';
 import { ANI_FPS } from '../rf/animation';
 import { RaceGender, buildMeshPartObjects, getRaceAssets, getWeaponClip, loadWeaponMeshObjects, weaponClipKey } from '../rf/character';
 import type { RfCharacter } from '../rf/character';
-import { buildGlowOverlay, disposeGlowOverlay } from '../rf/glowEffect';
-import type { GlowOverlay } from '../rf/glowEffect';
 import { ALL_MODEL_TYPES, MODEL_TYPE_TO_PART_TOKEN, ModelType } from '../rf/items';
 import type { ItemDefinition } from '../rf/items';
 import { resolveItemMeshStem, resolveWeaponMesh } from '../rf/resource';
@@ -66,8 +64,16 @@ function disposeObject3D(root: Object3D): void {
       : renderable.material
         ? [renderable.material]
         : [];
-    for (const material of materials as { map?: { dispose(): void }; dispose(): void }[]) {
-      material.map?.dispose();
+    for (const material of materials as { map?: { dispose(): void; userData?: Record<string, unknown> }; dispose(): void }[]) {
+      // A pooled weapon texture (see character.ts's loadParsedWeaponMesh) is
+      // shared across every equip of that weapon, not owned by this one -
+      // disposing it here would break every other currently-equipped
+      // instance of the same weapon (present or future - bots don't equip
+      // weapons yet, but nothing stops that later). Its geometry needs no
+      // equivalent guard: each equip gets its own fresh BufferGeometry
+      // instance regardless (see loadWeaponMeshObjects), safe to dispose
+      // individually even though the underlying vertex arrays are shared.
+      if (!material.map?.userData?.pooled) material.map?.dispose();
       material.dispose();
     }
   });
@@ -225,6 +231,21 @@ export class CharacterController {
     if (modelType === ModelType.Weapon) this.applyWeaponVisibility();
   }
 
+  /**
+   * Best-effort, fire-and-forget: applies a Chef/ surface-shine effect (see
+   * applySurfaceShine's doc comment) for a just-equipped item, if it has
+   * one registered. Unlike applyGlowOverlay, no staleness check or
+   * disposal bookkeeping is needed here - applySurfaceShine mutates
+   * sourceObjects' own mesh materials in place rather than adding separate
+   * objects, so a stale/superseded write just lands on a mesh that's
+   * already been detached and is about to be garbage collected, which is
+   * harmless.
+   */
+  private async applySurfaceShineFor(item: ItemDefinition | null, sourceObjects: Object3D[]): Promise<void> {
+    if (!item) return; // defaults/unequips have no catalog entry to look up an effect for
+    await applySurfaceShine(item.model, sourceObjects);
+  }
+
   /** Advances every currently-active scrolling glow texture (movementMode 2 - see glowEffect.ts) by one frame. */
   private updateGlowAnimation(delta: number): void {
     for (const overlay of Object.values(this.equippedGlowOverlays)) {
@@ -367,6 +388,7 @@ export class CharacterController {
     }
     this.equippedObjects[modelType] = newObjects;
     void this.applyGlowOverlay(modelType, item, character, newObjects);
+    void this.applySurfaceShineFor(item, newObjects);
 
     return item ? 'equipped' : 'default';
   }
@@ -428,6 +450,7 @@ export class CharacterController {
     this.equippedObjects[ModelType.Weapon] = newObjects;
     this.currentWeaponToken = weaponMesh.weaponToken;
     void this.applyGlowOverlay(ModelType.Weapon, item, character, newObjects);
+    void this.applySurfaceShineFor(item, newObjects);
 
     // Only actually visible in War mode - see setBattleMode. The combat
     // clips for this weapon were already prewarmed just above, regardless

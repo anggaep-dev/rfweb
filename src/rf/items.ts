@@ -89,6 +89,19 @@ interface RawItemEntry {
   // rather than a zero-padded string like every other slot's item file -
   // coerced to string below either way.
   Civil?: string | number;
+  /**
+   * Whether this row is a real, currently-obtainable item vs. a
+   * removed/unused placeholder entry (a large fraction of weaponItem.json's
+   * ~10,400 rows are IsExist=0 - e.g. old event weapons). Only meaningfully
+   * filtered for the Weapon slot (see fetchSlotItems) - checked against
+   * every other slot's item file too, and every entry in at least one of
+   * them (faceItem.json) turned out to be IsExist=0, which would empty that
+   * slot's list entirely if filtered the same way, so this is very likely
+   * weapon-specific data hygiene rather than a rule that generalizes.
+   * Stored as a bare number here (matching Civil's own weaponItem.json-only
+   * quirk above); other slots' files store it as a string ("0"/"1") instead.
+   */
+  IsExist?: string | number;
 }
 
 /**
@@ -117,6 +130,9 @@ async function fetchSlotItems(modelType: ModelType): Promise<ItemDefinition[]> {
   const items: ItemDefinition[] = [];
   for (const [id, entry] of Object.entries(raw)) {
     if (!entry.Model || entry.Civil === undefined) continue;
+    // Weapon-only - see RawItemEntry.IsExist's doc comment on why this
+    // isn't applied to every slot.
+    if (modelType === ModelType.Weapon && String(entry.IsExist) === '0') continue;
     items.push({ id, name: entry.Name ?? id, model: entry.Model, civil: String(entry.Civil) });
   }
   return items;

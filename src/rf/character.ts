@@ -16,6 +16,8 @@ import { buildAnimationClip, parseAnimation } from './animation';
 import type { BindPose } from './animation';
 import { parseMesh } from './mesh';
 import type { RfMeshObject } from './mesh';
+import { resolveWeaponMesh } from './resource';
+import type { WeaponMeshInfo } from './resource';
 import { findRfsEntry, parseRfs, readRfsEntry } from './rfs';
 import type { RfsArchive, RfsEntry } from './rfs';
 import { buildThreeSkeleton, parseSkeleton } from './skeleton';
@@ -382,13 +384,15 @@ const WEAPON_TEX_ARCHIVE_NAMES = [
 ];
 
 // Lazily fetched and cached per archive name (not just per race like
-// raceAssetCache) - a weapon equip only needs the one or two archives that
-// actually hold that item, not this whole ~150MB set, so nothing here is
-// preloaded up front. Promises are cached up front (same reasoning as
-// raceAssetCache above), so two concurrent lookups that need the same
-// archive share one fetch instead of racing separate ones; a failed load
-// resolves to null (not a rejection) so it's cached as "confirmed absent"
-// rather than retried forever.
+// raceAssetCache) - equipping one weapon only needs the one or two archives
+// that actually hold that item, not this whole ~150MB set. preloadWeaponMeshes
+// below does eventually touch every archive at least one currently-existing
+// item resolves into, but each individual lookup still only awaits as many
+// as it takes to find its own hit - see findInWeaponArchives. Promises are
+// cached up front (same reasoning as raceAssetCache above), so two
+// concurrent lookups that need the same archive share one fetch instead of
+// racing separate ones; a failed load resolves to null (not a rejection) so
+// it's cached as "confirmed absent" rather than retried forever.
 const weaponMeshArchiveCache = new Map<string, Promise<RfsArchive | null>>();
 const weaponTexArchiveCache = new Map<string, Promise<RfsArchive | null>>();
 
@@ -412,7 +416,7 @@ function loadWeaponArchive(
 async function findInWeaponArchives(
   archiveNames: string[],
   base: string,
-  cache: Map<string, RfsArchive | null>,
+  cache: Map<string, Promise<RfsArchive | null>>,
   entryName: string,
 ): Promise<{ archive: RfsArchive; entry: RfsEntry } | null> {
   for (const name of archiveNames) {
@@ -452,6 +456,70 @@ function loadWeaponReferenceSkeleton(): Promise<BuiltSkeleton> {
   return weaponReferenceSkeletonPromise;
 }
 
+interface ParsedWeaponMesh {
+  objects: RfMeshObject[];
+  /**
+   * Tagged with userData.pooled = true below - shared across every equip of
+   * this stem (by any character, present or future), not owned by any one
+   * of them, so CharacterController's generic disposeObject3D() must skip
+   * disposing it on an individual unequip. Its geometry doesn't need the
+   * same treatment: buildObjectsFromParsedMesh still allocates a fresh
+   * BufferGeometry (wrapping the same underlying vertex arrays, which is
+   * safe to share - only the GPU-side buffer built from them at upload time
+   * is per-BufferGeometry-instance) on every call, so each equip's geometry
+   * is already its own, safely disposable object.
+   */
+  texture: Texture | null;
+}
+
+// Keyed by mesh stem, not by wielder/race - see loadWeaponMeshObjects' own
+// doc comment on why weapon geometry/texture don't vary by whoever equips
+// them. Caches the *parsed* data (raw vertex arrays + decoded texture), not
+// built three.js objects - buildObjectsFromParsedMesh still runs fresh per
+// equip (cheap: a BufferGeometry alloc + bone attach, no network/parsing),
+// so re-equipping the same weapon later (on any character) never re-fetches
+// or re-parses. In-flight promises are cached too, not just settled
+// results, same reasoning as raceAssetCache below. See preloadWeaponMeshes
+// for warming this up front instead of relying purely on first-equip.
+const weaponMeshPoolCache = new Map<string, Promise<ParsedWeaponMesh | null>>();
+
+function loadParsedWeaponMesh(stem: string): Promise<ParsedWeaponMesh | null> {
+  let cached = weaponMeshPoolCache.get(stem);
+  if (!cached) {
+    cached = (async (): Promise<ParsedWeaponMesh | null> => {
+      const meshHit = await findInWeaponArchives(WEAPON_MESH_ARCHIVE_NAMES, WEAPON_MESH_BASE, weaponMeshArchiveCache, `${stem}.msh`);
+      if (!meshHit) {
+        console.warn(`No "${stem}.msh" entry in any weapon Mesh archive`);
+        return null;
+      }
+      const meshBuffer = readRfsEntry(meshHit.archive, meshHit.entry);
+
+      let texture: Texture | null = null;
+      const texHit = await findInWeaponArchives(WEAPON_TEX_ARCHIVE_NAMES, WEAPON_TEX_BASE, weaponTexArchiveCache, `${stem}.RFT`);
+      if (texHit) {
+        try {
+          texture = decodeRftTexture(readRfsEntry(texHit.archive, texHit.entry));
+          texture.userData.pooled = true;
+        } catch (err) {
+          console.warn(`Texture decode failed for ${stem}:`, err);
+        }
+      }
+
+      let objects: RfMeshObject[];
+      try {
+        objects = parseMesh(meshBuffer);
+      } catch (err) {
+        console.warn(`Failed to parse "${stem}.msh":`, err);
+        return null;
+      }
+
+      return { objects, texture };
+    })();
+    weaponMeshPoolCache.set(stem, cached);
+  }
+  return cached;
+}
+
 /**
  * Builds the ready-to-attach three.js object(s) for an equipped weapon.
  * `built` is the wielding character's own skeleton, used to find the
@@ -461,35 +529,60 @@ function loadWeaponReferenceSkeleton(): Promise<BuiltSkeleton> {
  * weapon items reference a model variant not present in this asset drop,
  * so an empty result (mesh not found in any weapon archive) is common -
  * callers should treat that as "no visual mesh available," not an error.
+ * The actual fetch+parse is pooled by stem (see loadParsedWeaponMesh) and
+ * normally already warm by the time this runs - see preloadWeaponMeshes.
  */
 export async function loadWeaponMeshObjects(stem: string, built: BuiltSkeleton): Promise<Object3D[]> {
-  const meshHit = await findInWeaponArchives(WEAPON_MESH_ARCHIVE_NAMES, WEAPON_MESH_BASE, weaponMeshArchiveCache, `${stem}.msh`);
-  if (!meshHit) {
-    console.warn(`No "${stem}.msh" entry in any weapon Mesh archive`);
-    return [];
-  }
-  const meshBuffer = readRfsEntry(meshHit.archive, meshHit.entry);
-
-  let texture: Texture | null = null;
-  const texHit = await findInWeaponArchives(WEAPON_TEX_ARCHIVE_NAMES, WEAPON_TEX_BASE, weaponTexArchiveCache, `${stem}.RFT`);
-  if (texHit) {
-    try {
-      texture = decodeRftTexture(readRfsEntry(texHit.archive, texHit.entry));
-    } catch (err) {
-      console.warn(`Texture decode failed for ${stem}:`, err);
-    }
-  }
-
-  let objects;
-  try {
-    objects = parseMesh(meshBuffer);
-  } catch (err) {
-    console.warn(`Failed to parse "${stem}.msh":`, err);
-    return [];
-  }
+  const parsed = await loadParsedWeaponMesh(stem);
+  if (!parsed) return [];
 
   const referenceSkeleton = await loadWeaponReferenceSkeleton();
-  return buildObjectsFromParsedMesh(objects, texture, built, stem, referenceSkeleton);
+  return buildObjectsFromParsedMesh(parsed.objects, parsed.texture, built, stem, referenceSkeleton);
+}
+
+const WEAPON_PRELOAD_CONCURRENCY = 8;
+
+/**
+ * Warms the weapon mesh pool (see loadParsedWeaponMesh) for every given
+ * item Model id, so a later equip of any of them is instant - no network
+ * fetch or binary parse left to do. Call with every *currently existing*
+ * weapon item's Model id (see items.ts's IsExist filtering) - most won't
+ * resolve to an actual mesh in this asset drop (see resolveWeaponMesh) and
+ * are skipped for free; the rest de-duplicate down to a much smaller set of
+ * distinct mesh stems (many item variants - different upgrade levels, mostly -
+ * share one underlying mesh) before anything is fetched.
+ *
+ * Mirrors Unity's own recommended pattern for pooled prefabs: warm the pool
+ * once up front (typically at a loading screen) rather than instantiating
+ * cold on first use, so runtime hitches never happen - see preloadAllRaces
+ * for this project's equivalent for player body assets, which this is
+ * meant to run alongside.
+ *
+ * Runs with bounded concurrency (WEAPON_PRELOAD_CONCURRENCY at a time)
+ * rather than firing every stem's load at once - there can be a couple
+ * thousand distinct stems, and letting them all queue through fetch()
+ * simultaneously doesn't finish any faster (the browser serializes/queues
+ * connections per origin regardless) while making the progress readout
+ * jump in one huge burst near the end instead of advancing steadily.
+ */
+export async function preloadWeaponMeshes(modelIds: string[], onProgress?: (loaded: number, total: number) => void): Promise<void> {
+  const resolved = await Promise.all(modelIds.map((modelId) => resolveWeaponMesh(modelId)));
+  const stems = [...new Set(resolved.filter((r): r is WeaponMeshInfo => r !== null).map((r) => r.stem))];
+
+  const total = stems.length;
+  let loaded = 0;
+  onProgress?.(loaded, total);
+
+  let nextIndex = 0;
+  async function worker(): Promise<void> {
+    while (nextIndex < stems.length) {
+      const stem = stems[nextIndex++];
+      await loadParsedWeaponMesh(stem);
+      loaded += 1;
+      onProgress?.(loaded, total);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(WEAPON_PRELOAD_CONCURRENCY, stems.length) }, worker));
 }
 
 // Keyed by race so a preload (or a repeat visit to an already-loaded race)
