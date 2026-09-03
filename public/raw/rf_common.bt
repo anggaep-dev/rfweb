@@ -1,0 +1,709 @@
+/**
+ * Intrepid-Web.NET
+ * 
+ * Source code may not be modified without the direct consent and permission
+ * of Intrepid-Web.NET.
+ * 
+ * @copyright   Copyright (c) Intrepid-Web.NET. (www.intrepid-web.net)
+ */
+
+/***********************
+ * GENERAL DEFINITIONS *
+ ***********************/
+#define included_common 1
+#define code_max_length	64
+#define txt_max_length	1280
+
+typedef char _str_code[code_max_length];
+typedef char _txt_code[txt_max_length];
+
+local int max_skill_level = 7;
+
+/*********
+ * ENUMS *
+ *********/
+enum bool { NA_TrueFalse = -1, False = 0, True = 1 };
+enum BOOL { NA_TA = -1, F = 0, T = 1 };
+enum SkillGrade { Basic_Skill = 0, Expert_Skill = 1, Elite_Skill = 2, Master_Skill = 3};
+enum INT_RACE 
+{ 
+INT_All = 16843009, 
+INT_Accretian = 0, 
+INT_Bellato = 257, 
+INT_Cora = 16842752 
+};
+
+enum specialEffectTypes { 
+    No_EffectNegative = -1,
+    No_Effect = 0, 
+    SP = 1,
+    FP_Consumption_Inc = 2, 
+    Pain_Accuracy = 3, 
+    Smart_Evasion = 4,
+    AdvStrenght_HP_FP = 5, 
+    Strong_Attack = 6, 
+    Solid_Defense = 7, 
+    Skill_LVL = 8, 
+    Stealth = 9, 
+    Detect = 10, 
+    Remove_Skill_Protect = 11, 
+    Wind_Speed = 12, 
+    FP_Recovery = 14, 
+    Force_Attack = 15, 
+    FP = 16, 
+    Vampire_Steal_HP = 17, 
+    Sharp_Critical = 19, 
+    Grand_Range = 20, 
+    Siege_Kit_Def = 21, 
+    Debuff_Assist_Incr = 22, 
+    HP_Recovery = 23, 
+    Launcher_Speed = 25, 
+    Force_Range = 26, 
+    Decr_Critical_Hit = 27, 
+    Shield_Succes_Rate = 28, 
+    Endurance_Resistances = 29, 
+    Strenght_HP = 30, 
+    Force_Debuff_Decr = 31, 
+    Ignore_Def_Rate = 32, 
+    Skill_Delay = 34, 
+    Force_Attack_Delay = 35 
+};
+
+enum PotionEffectTypes 
+{ 
+HP_pot = 1, FP_pot = 2, SP_pot = 3};
+
+enum Upgrade_Slots 
+{ 
+No_Upgrades = 0, One_Slot = 1, Two_Slots = 1, 
+Three_Slots = 3, Four_Slots = 4, Five_Slots = 5, 
+Six_Slots = 6, Seven_Slots = 7 
+};
+
+enum Skill_Tier 
+{ 
+Basic = 0, Expert = 1, Elite = 2, 
+Master = 3, Archon = 4, CW = 5 
+};
+
+enum Skill_Masteries 
+{ 
+M_Expert=0, M_Elite=1, M_Master=2 
+};
+
+enum Combat_Skill_Type 
+{ 
+Close_Range=0, Long_Range=1, Launcher=2, 
+Force=3, Type_Archon=4, Type_CW=5 
+};
+
+enum Currency_Type 
+{ 
+Money=0, Gold=1, Pvp_Points=2 
+};
+
+enum Wep_Grade 
+{ 
+Normal_Grade=0, Intense_Grade=1, Type_B_Grade=2, 
+Type_C_Grade=3, Relic_Grade=4, Uniform_Grade=5, 
+Special_Grade=6, Majesty_Grade=7, Leon_Grade=8, 
+Archon_Grade=9, Monster_Grade=45 
+};
+
+enum Fix_Part 
+{ 
+Part_Helmet=0, Part_Face=1, Part_Upper=2, 
+Part_Lower=3, Part_Gloves=4, Part_Shoes=5, 
+Part_Cloak=6, Part_One_Handed=8, Part_Shield=9, 
+Part_Amulet=10, Part_Siege_Kit=11, Part_Ring=12, 
+Part_Two_Handed=100, Part_Potion_Bullet=200, Part_RadPot=205, 
+Part_Box_Potion=250, Part_Bag=300  
+};
+
+enum Race 
+{ 
+Any_Race = -1, Bellato = 0, Cora = 1, 
+Accretian = 2 
+};
+
+enum ClassCode
+{ 
+Warrior_Class = 0, Ranger_Class = 1, 
+Force_Class = 2, Specialist_Class = 3 
+};
+
+enum Potion_Type 
+{ 
+Health_Potion=0, Force_Potion=1, Stamina_Potion=2, 
+Cure_Potion=3, Adrenaline_Potion=4, Buff_Potion=5, 
+Composed_Charger_Potion=6, Composed_Charger_Type2_Potion=7, Chaos_Potion=8, 
+Cure_Chaos_Potion=9, Defence_Charger_Potion=11, Winter_Event_Potion=12, 
+Class_Changer_Potion=13, Nuclear_Potion=14  
+};
+
+enum Store_Code 
+{
+Store_Upper = 1, Store_Lower = 2,  Store_Gaunlet = 3,
+Store_Shoes = 4, Store_Helmet = 5, Store_Weapon = 6,
+Store_Shield = 7, Store_Cloak = 8, Store_Ring = 9,
+Store_Amulet = 10, Store_Bullet = 11, Store_MakeTool = 12,
+Store_Potion = 13, Store_Bag = 14, Store_Battery = 15,
+Store_Ore = 16, Store_Resource = 17, Store_Force = 18,
+Store_Mau_Key = 19, Store_Booty = 20, Store_Map = 21,
+Store_Town = 22, Store_Dungeon = 23, Store_Animus = 24,
+Store_Guard_Tower = 25, Store_Trap = 26, Store_Siege_Kit = 27,
+Store_Ticket = 28, Store_Etc = 29, Store_Recovery = 30,
+Store_Box = 31, Store_Firework = 32, Store_UMT = 33,
+Store_Radar = 34, Store_Pager = 35, Store_Coupon = 36
+};
+
+enum MonsterRace 
+{ 
+    Beast=0, 
+    Plant=1,
+    Reptil=2,
+    Bug_1=3,
+    Bug_2=4,
+    Cyber=5,
+    DiNo=6,
+    Monster=7,
+    Human=8,
+    Elf=9,
+    Giant=10 
+};
+
+enum MonsterType
+{ 
+    Normal_Monster=0, 
+    Ace_Monster=1, 
+    Pit_Boss_Monster=2, 
+    Champion_Monster=3, 
+    Elite_Monster4, 
+    Hero_Monster=5, 
+    Solo_Monster=6 
+};
+
+enum PortalTypes
+{
+    Portal_Exit=0,
+    Portal_Entrance=1
+};
+
+enum AnimusType { Unsealed=0, Sealed=1 };
+
+enum Unit_Fixpart { 
+    Unit_Head=0, 
+    Unit_Upper=1, 
+    Unit_Lower=2, 
+    Unit_Arms=3, 
+    Unit_Shoulder=4, 
+    Unit_Back=5 
+};
+
+enum Unit_Wep_Type { 
+    Unit_None=0, 
+    Unit_Blades=1, 
+    Unit_Machine_Gun=2, 
+    Unit_Laser=3, 
+    Unit_Launcher=4, 
+    Unit_Missile=5 
+};
+
+enum TalicEffect {
+    Talic_Attack_Increase = 1,
+    Talic_HP_Absorbtion_Increase = 2,
+    Talic_FP_Absorbtion_Increase = 3,
+    Talic_Critical_Hit_Increase = 4,
+    Talic_Long_Range_Increase = 5,
+    Talic_Defence_Incraese = 6,
+    Talic_Debuf_Duration_Decrease = 7,
+    Talic_Fire_Resistance_Increase = 8,
+    Talic_Water_Resistance_Increase = 9,
+    Talic_Earth_Resistance_Incraese = 10,
+    Talic_Wind_Resistance_Increase = 11,
+    Talic_Accuracy_Increase = 12,
+    Talic_Dodge_Increase = 13,
+    Talic_Remove_Talic = 14
+};
+
+enum QuestType {
+    Quest_Single_Type = 0,
+    Quest_Party_Type = 1
+};
+
+enum Attackable {
+    Attack_Type_None = 0,
+    Attack_Type_Standard = 1,
+    Attack_Type_Stun = 2
+};
+
+
+/***********
+ * STRUCTS *
+ ***********/
+struct HEADER 
+{
+    int 	blocks;
+	int	    columns;
+	int	    size;
+
+    if(exists(vG4) && size >= vG4) {
+        Printf("----------------------------------\n");
+        Printf("Loaded G4 specific vriables\n");
+        Printf("----------------------------------\n");
+        local int isG4 = 1;
+    }
+
+    if(exists(v215) && size >= v215) {
+        Printf("----------------------------------\n");
+        Printf("Loaded 215 specific vriables\n");
+        Printf("----------------------------------\n");
+        local int is215 = 1;
+    }
+
+    if(exists(v216) && size >= v216) {
+        Printf("----------------------------------\n");
+        Printf("Loaded 2.1.6 specific vriables\n");
+        Printf("----------------------------------\n");
+        local int is216 = 1;
+    }
+
+    if(exists(v223) && size >= v223) {
+        Printf("----------------------------------\n");
+        Printf("Loaded 2.2.3 specific variables\n");
+        Printf("----------------------------------\n");
+        local int is223 = 1;
+    }
+
+    if(exists(v223f) && size >= v223f) {
+        Printf("----------------------------------\n");
+        Printf("Loaded 2.2.3 final specific variables\n");
+        Printf("----------------------------------\n");
+        local int is223f = 1;
+    }
+
+};
+
+struct _base
+{
+	uint        index;
+	_str_code   code;
+};
+
+typedef struct
+{
+    _str_code   code;
+} multi_str;
+
+typedef struct
+{
+    _str_code   ItemName;
+	int			Amount;
+} RewardItem;
+
+typedef struct {
+        bool            UnitUsable<comment="MAU usable/disable">;
+        bool            AnimusUsable<comment="Animus usable/disable">;
+        bool            LauncherUsable<comment="Launcher usable/disable">;
+        bool            WMKTool<comment="Weapon maker tool usable/disable">;
+		bool			DMKtool;
+        bool            BMKTool<comment="Bullet maker tool usable/disable">;
+        int			    TrapMaxNumber<comment="Set the amount of max trap usable by a class">;
+} UsableClass;
+
+typedef struct {
+        int             BnsForHP<comment="set Bonus For HP">;
+        int             BnsForFP<comment="set Bonus For FP">;
+        int             BnsForSP<comment="set Bonus For SP">;
+} BonusStat;
+
+typedef struct {
+        Currency_Type   currencyType<comment="Set type of currency that is used to purchase this item">;
+        int             sellPrice<comment="Set the amount of (GOLD/MONEY) the user recieves when SELLING this item">;
+		if(exists(header.is216)) {
+        int             pvpPoint<comment="Set the amount of PVP POINTS required to BUY this item">;
+	}
+		if(exists(header.is223f)) {
+        int             goldPoint<comment="Set the amount of GOLD POINTS (gold weapons etc) required to BUY this item">;
+        int             killPoint;
+        int             processPoint;
+    }
+        int             storagePoint<comment="Set the amount it costs to Store this item">;
+} MoneyInfo;
+
+typedef struct {
+        Currency_Type   currencyType<comment="Set type of currency that is used to purchase this item">;
+        int             sellPrice<comment="Set the amount of (GOLD/MONEY) the user recieves when SELLING this item">;
+    if(exists(header.is216)) {
+        int             pvpPoint<comment="Set the amount of PVP POINTS required to BUY this item">; 
+        } 
+    if(exists(header.is223f)) {
+        int             goldPoint<comment="Set the amount of GOLD POINTS (gold weapons etc) required to BUY this item">;
+        }
+    if(exists(header.is223f)) {
+        int             processPoint;
+        int             killPoint; 
+        }
+        int             storagePrice<comment="Set the amount it costs to Store this item">;
+} MoneyInfo_2;
+
+typedef struct {
+        Currency_Type   currencyType<comment="Set type of currency that is used to purchase this item">;
+        int             ancPrice;
+        int             exPrice;
+        int             mecaPrice;
+    if(exists(header.is215)) {
+        int             Point;
+        }
+    if(exists(header.is223f)) {
+        int             goldPoint<comment="Set the amount of GOLD POINTS (gold weapons etc) required to BUY this item">;
+        int             killPoint;
+        int             processPoint;
+    }
+        int             storagePoint<comment="Set the amount it costs to Store this item">;
+} MoneyInfo_3;
+
+
+typedef struct {
+        Currency_Type   currencyType<comment="Set type of currency that is used to purchase this item">;
+        int             purchasePrice<comment="Set the amount of (GOLD/MONEY) the user pays to RECIEVE the item">;
+if(exists(header.is216)) {
+        int             purchasePoint<comment="Set the amount of PVP POINTS required to PAY in order to BUY this item">;
+        }
+} MoneyInfo_4;
+
+
+typedef struct {
+        Currency_Type   currencyType<comment="Set type of currency that is used to purchase this item">;
+        int             sellPrice<comment="Set the amount of (GOLD/MONEY) the user recieves when SELLING this item">;
+    if(exists(header.is216)) {
+        int             pvpPoint<comment="Set the amount of PVP POINTS required to BUY this item">;
+        }
+    if(exists(header.is223f)) {
+        int             goldPoint<comment="Set the amount of GOLD POINTS (gold weapons etc) required to BUY this item">;
+        int             killPoint;
+        int             processPoint;
+        }
+        int             processPoint<comment="Set the amount of Process Points it costs to process">;
+        int             storagePoint<comment="Set the amount it costs to Store this item">;
+} MoneyInfo_5;
+
+typedef struct {
+        Currency_Type   currencyType<comment="Set type of currency that is used to purchase this item">;
+        int             Price<comment="Set the amount of (GOLD/MONEY) the user pays to RECIEVE the item">;
+    if(exists(header.is216)) {
+        int             Point<comment="Set the amount of PVP POINTS required to PAY in order to BUY this item">;
+        }
+        int             RepairPrice<comment="Set the amount of (GOLD/MONEY) the user pays to RECIEVE the item">;
+    if(exists(header.is223)) {
+        int             DestroyRepairPrice<comment="Set the amount of (GOLD/MONEY) the user pays to RECIEVE the item">;
+        }
+} MoneyInfo_6;
+
+typedef struct {
+        Currency_Type   currencyType<comment="Set type of currency that is used to purchase this item">;
+        int             sellPrice<comment="Set the amount of (GOLD/MONEY) the user recieves when SELLING this item">;
+        int             pvpPoint<comment="Set the amount of PVP POINTS required to BUY this item">; 
+    if(exists(header.is223f)) {
+        int             goldPoint<comment="Set the amount of GOLD POINTS (gold weapons etc) required to BUY this item">;
+        }
+    if(exists(header.is223f)) {
+        int             killPoint; 
+        int             processPoint;
+        } else {
+        int             processPoint;        
+        int             killPoint; 
+        }
+        int             storagePrice<comment="Set the amount it costs to Store this item">;
+} MoneyInfo_7;
+
+typedef _str_code Civil <read=readCivil, write=writeCivil, comment="Choices: acc, bcc, ccc, all, bell & cora">;
+typedef _str_code SkillCivil <read=readSkillCivil, write=writeSkillCivil, comment="Choices: acc, bcc, ccc, all">;
+
+typedef struct {
+    int     basic;
+    int     expert;
+    int     elite;
+    int     master;
+} SkillCategory;
+
+typedef struct {
+    int                 melee;
+    int                 range;
+    int                 unit;
+    int                 defense;
+    int                 shield;
+} CombatLimits;
+
+typedef struct {
+    int     weaponAndShield;
+    int     armor;
+    int     ammo;
+} CraftLimits;
+
+typedef struct {
+    SkillCategory       closeRange;
+    SkillCategory       longRange;
+} SkillLimits;
+
+typedef struct {
+    SkillCategory       holy; 
+    SkillCategory       dark;
+    SkillCategory       fire;
+    SkillCategory       water;
+    SkillCategory       earth;
+    SkillCategory       wind;
+} ForceLimits;
+
+struct CheckEffectCodes {
+    int	    contParamCode;
+    int	    contParamIndex;
+    float	contValue;
+    int	    contValueSt;
+};
+
+struct Effect_Data {
+    int                    effectCode;
+    float                  unit<comment="if jade effect of 1 jade">;
+    float                  maxUnit<comment="totaleffect for jades">;
+};
+
+struct Special_Effects {
+    specialEffectTypes      type;
+    float                   percent;
+};
+
+struct Potion_Effects {
+    PotionEffectTypes      type;
+    float                   percent;
+};
+
+struct elements {
+    float   fire;
+    float   water;
+    float   earth;
+    float   wind;
+};
+
+struct elements_int {
+    int   fire;
+    int   water;
+    int   earth;
+    int   wind;
+};
+
+struct Combat_Skills {
+    Combat_Skill_Type   type;
+    int                 points;
+};
+
+struct RESULT
+{
+    char    item_code[8];
+    int     item_amount;
+};
+
+struct Restrict_Item {
+    BOOL    canSell<comment="Allow user to sell this item to an NPC for Money or Gold">;
+    BOOL    canTrade<comment="Allow user to trade this item with another player">;
+    BOOL    canDrop<comment="Allow user to drop this item on the ground">;
+    BOOL    canBank<comment="Allow user to put the item in their bank/storage">;
+    BOOL    canUseNormalAccount<comment="Could be related to the AH as well, not sure">;
+};
+
+struct Restrict_Item2 {
+    BOOL    canSell<comment="Allow user to sell this item to an NPC for Money or Gold">;
+    BOOL    canTrade<comment="Allow user to trade this item with another player">;
+    BOOL    canDrop<comment="Allow user to drop this item on the ground">;
+    BOOL    canBank<comment="Allow user to put the item in their bank/storage">;
+    BOOL    canUseNormalAccount<comment="Could be related to the AH as well, not sure">;
+    BOOL    canUpgrade<comment="Allow user to upgrade this item">;
+};
+
+struct ConsumeItemList {
+    char    itemCode[8];
+    int     amount;
+};
+
+struct Defence_Info {
+    float       power;
+    int         damagePoint;
+    int         gague;
+    float       range;
+    float       rate;
+};
+
+struct LinkedMaterial {
+    char                itemCode[8];
+    uint                upgrades<format=hex>;
+    int                 quantity;
+};
+
+struct LinkedResults {
+    char                LRCode[8];
+    int                 upgrades<format=hex>;
+    if(exists(header.is223)) {
+    int                 effectType;
+    int                 resultEffectMsgCode;
+    }
+    int                 probability;
+    int                 totalOut;
+};
+
+struct MaterialList {
+    char        code[8];
+    int         amount;
+};
+
+struct OutputList {
+    char        code[8];
+    uint        probability;
+};
+
+struct QuestRewardItem {
+    _str_code   code;
+    int         amount;
+    int         link_quest_index;
+};
+
+struct QuestRewardMastery {
+    int         id;
+    int         subId;
+    int         total;
+};
+
+struct QuestFailCondition {
+    int         condition;
+    _str_code   code;
+};
+
+struct ActionNode {
+    int         actType;
+    _str_code   actSub;
+if(exists(header.is216)) {
+    _str_code   actSub1;
+    }
+    _str_code   actArea;
+    int         requestAct;
+    int         setCountPro_100;
+    _str_code   linkQuestItem;
+    int         order;  
+};
+
+struct ContParamList {
+    int     paramCode;
+    int     paramIndex;
+    float   value[7];
+};
+
+struct Consume_Item_List {
+    char    itemCode[8];
+    int     amount;
+};
+
+/*************
+ * FUNCTIONS *
+ *************/
+string read_client_id(uint id)
+{
+    return id_to_code(id);
+}
+
+string readCivil(Civil civil)
+{
+    char race[64];
+    if(Strcmp(civil, "11000") == 0)
+    {
+        return SPrintf(race, "%s", "bell");
+    } 
+    else if(Strcmp(civil, "00110") == 0) 
+    {
+        return SPrintf(race, "%s", "cora");
+    }
+    else if(Strcmp(civil, "00001") == 0) 
+    {
+        return SPrintf(race, "%s", "acc");
+    } 
+    else if(Strcmp(civil, "11111") == 0) 
+    {
+        return SPrintf(race, "%s", "all");
+    }
+    else if(Strcmp(civil, "11110") == 0) 
+    {
+        return SPrintf(race, "%s", "bell & cora");
+    }
+    else
+    {
+        return civil;
+    }
+} 
+
+void writeCivil(Civil &civil, string s)
+{
+    if(Strcmp(s, "bell") == 0)
+    {  
+        SScanf("11000", "%s", civil);
+    } 
+    else if(Strcmp(s, "cora") == 0) 
+    {
+        SScanf("00110", "%s", civil);
+    }
+    else if(Strcmp(s, "acc") == 0) 
+    {
+        SScanf("00001", "%s", civil);
+    } 
+    else if(Strcmp(s, "all") == 0) 
+    {
+        SScanf("11111", "%s", civil);
+    }
+    else if(Strcmp(s, "bell & cora") == 0) 
+    {
+        SScanf("11110", "%s", civil);
+    }
+} 
+
+
+string readSkillCivil(SkillCivil skillcivil)
+{
+    char race[64];
+    if(Strcmp(skillcivil, "110000") == 0)
+    {
+        return SPrintf(race, "%s", "bell");
+    } 
+    else if(Strcmp(skillcivil, "001100") == 0) 
+    {
+        return SPrintf(race, "%s", "cora");
+    }
+    else if(Strcmp(skillcivil, "000010") == 0) 
+    {
+        return SPrintf(race, "%s", "acc");
+    } 
+    else if(Strcmp(skillcivil, "111110") == 0) 
+    {
+        return SPrintf(race, "%s", "all");
+    }
+    else
+    {
+        return skillcivil;
+    }
+} 
+
+void writeSkillCivil(SkillCivil &skillcivil, string s)
+{
+    if(Strcmp(s, "bell") == 0)
+    {  
+        SScanf("110000", "%s", skillcivil);
+    } 
+    else if(Strcmp(s, "cora") == 0) 
+    {
+        SScanf("001100", "%s", skillcivil);
+    }
+    else if(Strcmp(s, "acc") == 0) 
+    {
+        SScanf("000010", "%s", skillcivil);
+    } 
+    else if(Strcmp(s, "all") == 0) 
+    {
+        SScanf("111110", "%s", skillcivil);
+    }
+} 

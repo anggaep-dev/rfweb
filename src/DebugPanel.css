@@ -1,0 +1,174 @@
+.debug-panel {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+}
+
+.debug-panel-hint {
+  position: absolute;
+  top: 1rem;
+  left: 50%;
+  transform: translateX(-50%);
+  color: #ccc;
+  font: 500 0.85rem system-ui, sans-serif;
+  background: rgba(20, 22, 26, 0.6);
+  padding: 0.4rem 0.9rem;
+  border-radius: 999px;
+  pointer-events: none;
+}
+
+.debug-panel-controls {
+  position: absolute;
+  left: 1rem;
+  bottom: 1rem;
+  display: flex;
+  gap: 0.5rem;
+  pointer-events: auto;
+}
+
+.debug-panel-controls button {
+  padding: 0.5rem 1rem;
+  border-radius: 6px;
+  border: 1px solid #444;
+  background: #22252b;
+  color: #eee;
+  font: 500 0.85rem system-ui, sans-serif;
+  text-transform: capitalize;
+  cursor: pointer;
+}
+
+.debug-panel-controls button:hover {
+  background: #2c3038;
+}
+
+.debug-panel-controls button.active {
+  background: #4a7dff;
+  border-color: #4a7dff;
+}
+
+.debug-panel-controls button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.debug-panel-controls-debug {
+  bottom: 4rem;
+}
+
+.debug-panel-cam-select,
+.debug-panel-race-select select {
+  padding: 0.5rem 1rem;
+  border-radius: 6px;
+  border: 1px solid #444;
+  background: #22252b;
+  color: #eee;
+  font: 500 0.85rem system-ui, sans-serif;
+  cursor: pointer;
+}
+
+.debug-panel-cam-select:hover,
+.debug-panel-race-select select:hover {
+  background: #2c3038;
+}
+
+.debug-panel-race-select select:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.debug-panel-race-select {
+  position: absolute;
+  top: 1rem;
+  left: 1rem;
+  pointer-events: auto;
+}
+
+.debug-panel-frame-label {
+  display: flex;
+  align-items: center;
+  padding: 0 0.4rem;
+  color: #9aa4b2;
+  font: 500 0.8rem ui-monospace, monospace;
+}
+
+.debug-panel-stats {
+  position: absolute;
+  top: 1rem;
+  right: 1rem;
+  color: #9aa4b2;
+  font: 500 0.8rem ui-monospace, monospace;
+  background: rgba(20, 22, 26, 0.6);
+  padding: 0.4rem 0.7rem;
+  border-radius: 6px;
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+.debug-panel-equip-panel {
+  position: absolute;
+  top: 3.2rem;
+  right: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  background: rgba(20, 22, 26, 0.6);
+  padding: 0.6rem 0.7rem;
+  border-radius: 6px;
+  pointer-events: auto;
+}
+
+.debug-panel-equip-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  color: #ccc;
+  font: 500 0.8rem system-ui, sans-serif;
+}
+
+.debug-panel-equip-row select {
+  max-width: 11rem;
+  padding: 0.25rem 0.4rem;
+  border-radius: 4px;
+  border: 1px solid #444;
+  background: #22252b;
+  color: #eee;
+  font: 500 0.8rem system-ui, sans-serif;
+}
+
+.debug-panel-equip-row select:disabled {
+  opacity: 0.5;
+}
+
+.debug-panel-command-bar {
+  position: absolute;
+  right: 1rem;
+  bottom: 1rem;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  pointer-events: auto;
+}
+
+.debug-panel-command-input {
+  width: 16rem;
+  padding: 0.5rem 0.7rem;
+  border-radius: 6px;
+  border: 1px solid #444;
+  background: #22252b;
+  color: #eee;
+  font: 500 0.8rem ui-monospace, monospace;
+}
+
+.debug-panel-command-input::placeholder {
+  color: #666;
+}
+
+.debug-panel-command-feedback {
+  max-width: 20rem;
+  color: #9aa4b2;
+  font: 500 0.75rem ui-monospace, monospace;
+  background: rgba(20, 22, 26, 0.6);
+  padding: 0.4rem 0.6rem;
+  border-radius: 6px;
+}

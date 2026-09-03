@@ -2,7 +2,11 @@ import { RaceGender } from './character';
 
 /**
  * Character body-part item categories, matching the client's ModelType enum
- * (public/raw/include_client_resource.bt).
+ * (public/raw/include_client_resource.bt) - Weapon (slot 06) isn't part of
+ * that client enum (weapons are their own PartType there), but the shop/
+ * store slot layout (public/raw/client_common.bt's shopByteCode, and
+ * rf_common.bt's Store_Code) places weapons at index 6 right after the six
+ * body slots, so it's numbered to match that.
  */
 export enum ModelType {
   Helmet = 0,
@@ -11,8 +15,10 @@ export enum ModelType {
   Lower = 3,
   Gauntlet = 4,
   Shoes = 5,
+  Weapon = 6,
 }
 
+/** The six body-part slots every character has a default mesh for - excludes Weapon, which has no "default" (an unarmed character just has empty hands). */
 export const ALL_MODEL_TYPES: ModelType[] = [
   ModelType.Helmet,
   ModelType.Face,
@@ -22,6 +28,9 @@ export const ALL_MODEL_TYPES: ModelType[] = [
   ModelType.Shoes,
 ];
 
+/** Every equippable slot, body parts plus the weapon slot - for UI iteration (equip panel, item preloading). */
+export const ALL_EQUIP_SLOTS: ModelType[] = [...ALL_MODEL_TYPES, ModelType.Weapon];
+
 const ITEM_FILE_BY_SLOT: Record<ModelType, string> = {
   [ModelType.Helmet]: 'helmetItem.json',
   [ModelType.Face]: 'faceItem.json',
@@ -29,13 +38,16 @@ const ITEM_FILE_BY_SLOT: Record<ModelType, string> = {
   [ModelType.Lower]: 'lowerItem.json',
   [ModelType.Gauntlet]: 'gauntletItem.json',
   [ModelType.Shoes]: 'shoeItem.json',
+  [ModelType.Weapon]: 'weaponItem.json',
 };
 
 /**
  * The mesh-filename token for each slot's *default* body part, e.g.
  * "{RACE}_DEFAULT_GLOVES_000.msh" - note this differs from the slot's own
  * name for Gauntlet ("GLOVES" in every mesh archive, "Gauntlet" in the
- * client's ModelType enum).
+ * client's ModelType enum). Weapon has no default part (see ALL_MODEL_TYPES)
+ * so its entry is never actually read - present only so this stays a total
+ * Record over ModelType.
  */
 export const MODEL_TYPE_TO_PART_TOKEN: Record<ModelType, string> = {
   [ModelType.Helmet]: 'HELMET',
@@ -44,6 +56,18 @@ export const MODEL_TYPE_TO_PART_TOKEN: Record<ModelType, string> = {
   [ModelType.Lower]: 'LOWER',
   [ModelType.Gauntlet]: 'GLOVES',
   [ModelType.Shoes]: 'SHOES',
+  [ModelType.Weapon]: '',
+};
+
+/** Human-readable label per slot, for UI (equip panel rows, warning/error messages). */
+export const SLOT_LABELS: Record<ModelType, string> = {
+  [ModelType.Helmet]: 'Helmet',
+  [ModelType.Face]: 'Face',
+  [ModelType.Upper]: 'Upper',
+  [ModelType.Lower]: 'Lower',
+  [ModelType.Gauntlet]: 'Gauntlet',
+  [ModelType.Shoes]: 'Shoes',
+  [ModelType.Weapon]: 'Weapon',
 };
 
 const ITEM_DATA_BASE = '/game-assets/data/item';
@@ -61,7 +85,10 @@ export interface ItemDefinition {
 interface RawItemEntry {
   Name?: string;
   Model?: string;
-  Civil?: string;
+  // weaponItem.json stores this as a bare JSON number (e.g. 11111000)
+  // rather than a zero-padded string like every other slot's item file -
+  // coerced to string below either way.
+  Civil?: string | number;
 }
 
 /**
@@ -89,8 +116,8 @@ async function fetchSlotItems(modelType: ModelType): Promise<ItemDefinition[]> {
 
   const items: ItemDefinition[] = [];
   for (const [id, entry] of Object.entries(raw)) {
-    if (!entry.Model || !entry.Civil) continue;
-    items.push({ id, name: entry.Name ?? id, model: entry.Model, civil: entry.Civil });
+    if (!entry.Model || entry.Civil === undefined) continue;
+    items.push({ id, name: entry.Name ?? id, model: entry.Model, civil: String(entry.Civil) });
   }
   return items;
 }

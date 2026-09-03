@@ -1,67 +1,14 @@
-import { memo, useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import DebugPanel from './DebugPanel';
 import type { CamMode } from './controllers/CameraController';
-import { CLIP_NAMES, RaceGender } from './rf/character';
-import { ALL_MODEL_TYPES, ModelType, loadUsableSlotItems } from './rf/items';
-import type { ItemDefinition } from './rf/items';
+import type { BattleMode, MoveMode } from './controllers/CharacterController';
+import { RaceGender } from './rf/character';
+import { ALL_EQUIP_SLOTS, SLOT_LABELS, loadUsableSlotItems } from './rf/items';
+import type { ModelType, ItemDefinition } from './rf/items';
 import type { SceneManager } from './scenes/SceneManager';
 import type { ViewerDebugStats } from './scenes/ViewerScene';
 import { ViewerScene } from './scenes/ViewerScene';
 import './RfViewer.css';
-
-const RACE_OPTIONS: { value: RaceGender; label: string }[] = [
-  { value: RaceGender.Bell_Male, label: 'Bell Male' },
-  { value: RaceGender.Bell_Female, label: 'Bell Female' },
-  { value: RaceGender.Cora_Male, label: 'Cora Male' },
-  { value: RaceGender.Cora_Female, label: 'Cora Female' },
-  { value: RaceGender.Accretia, label: 'Accretia' },
-];
-
-const SLOT_LABELS: Record<ModelType, string> = {
-  [ModelType.Helmet]: 'Helmet',
-  [ModelType.Face]: 'Face',
-  [ModelType.Upper]: 'Upper',
-  [ModelType.Lower]: 'Lower',
-  [ModelType.Gauntlet]: 'Gauntlet',
-  [ModelType.Shoes]: 'Shoes',
-};
-
-interface EquipPanelProps {
-  equippedItemId: Partial<Record<ModelType, string>>;
-  slotItems: Partial<Record<ModelType, ItemDefinition[]>>;
-  onEquipChange: (modelType: ModelType, itemId: string) => void;
-}
-
-// Some slots carry thousands of items (gauntlet alone has ~2,500 eligible
-// per race), so this renders thousands of <option> elements. memo() keeps
-// that expensive tree from being torn down and rebuilt on every unrelated
-// re-render of RfViewer (e.g. the FPS/memory readout updating twice a
-// second) - only an actual change to this panel's own props should redo it.
-const EquipPanel = memo(function EquipPanel({ equippedItemId, slotItems, onEquipChange }: EquipPanelProps) {
-  return (
-    <div className="rf-viewer-equip-panel">
-      {ALL_MODEL_TYPES.map((modelType) => {
-        const items = slotItems[modelType];
-        return (
-          <label key={modelType} className="rf-viewer-equip-row">
-            <span>{SLOT_LABELS[modelType]}</span>
-            <select
-              value={equippedItemId[modelType] ?? ''}
-              disabled={!items}
-              onChange={(e) => onEquipChange(modelType, e.target.value)}
-            >
-              <option value="">{items ? 'None' : 'Loading…'}</option>
-              {items?.map((item) => (
-                <option key={item.id} value={item.id}>
-                  {item.name}
-                </option>
-              ))}
-            </select>
-          </label>
-        );
-      })}
-    </div>
-  );
-});
 
 export interface RfViewerProps {
   sceneManager: SceneManager;
@@ -79,6 +26,23 @@ export default function RfViewer({ sceneManager, initialRaceGender, onExit }: Rf
   const [debugPaused, setDebugPaused] = useState(false);
   const [frameLabel, setFrameLabel] = useState('');
   const [debugStats, setDebugStats] = useState<ViewerDebugStats>({ fps: 0, heapMB: null, geometries: 0, textures: 0 });
+
+  // The original client's Peace/War battle toggle - War shows the wielded
+  // weapon and switches walk/run to their combat variant, Peace hides it
+  // and always plays the unarmed clips. See CharacterController.setBattleMode.
+  const [battleMode, setBattleMode] = useState<BattleMode>('peace');
+
+  // Walk/run toggle for click-to-move - independent of battleMode, which
+  // only decides whether the combat variant of whichever clip this picks
+  // plays. See CharacterController.setMoveMode.
+  const [moveMode, setMoveMode] = useState<MoveMode>('walk');
+
+  // The debug/dev-tooling UI (race switcher, equip panel, clip buttons,
+  // camera-mode select, frame-stepping, GM console) - everything RfViewer
+  // currently renders, until real gameplay UI is built on top of the scene.
+  // Kept togglable rather than always-on so that future UI has a clean
+  // scene to work with by default.
+  const [showDebugUI, setShowDebugUI] = useState(true);
 
   const [raceGender, setRaceGender] = useState<RaceGender>(initialRaceGender);
   const raceGenderRef = useRef<RaceGender>(initialRaceGender);
@@ -146,6 +110,14 @@ export default function RfViewer({ sceneManager, initialRaceGender, onExit }: Rf
   }, [debugPaused]);
 
   useEffect(() => {
+    viewerSceneRef.current?.characterController.setBattleMode(battleMode);
+  }, [battleMode]);
+
+  useEffect(() => {
+    viewerSceneRef.current?.characterController.setMoveMode(moveMode);
+  }, [moveMode]);
+
+  useEffect(() => {
     raceGenderRef.current = raceGender;
     // The initial load is already kicked off by the mount effect above -
     // this effect only needs to react to actual switches after that.
@@ -157,14 +129,19 @@ export default function RfViewer({ sceneManager, initialRaceGender, onExit }: Rf
   }, [raceGender]);
 
   // An item valid for one race's body may not be for another's, so previous
-  // selections are cleared on a race switch. Done during render by
-  // comparing against a state-held "previous value" - React's documented
-  // pattern for resetting state when a value changes (a ref can't be used
-  // here: reading/writing ref.current during render isn't allowed).
+  // selections are cleared on a race switch - and CharacterController.mount()
+  // resets battleMode back to 'peace' internally for the same "fresh
+  // character" reason, so the toggle button needs to follow suit. Done
+  // during render by comparing against a state-held "previous value" -
+  // React's documented pattern for resetting state when a value changes (a
+  // ref can't be used here: reading/writing ref.current during render
+  // isn't allowed).
   const [prevRaceGenderForEquip, setPrevRaceGenderForEquip] = useState(raceGender);
   if (prevRaceGenderForEquip !== raceGender) {
     setPrevRaceGenderForEquip(raceGender);
     setEquippedItemId({});
+    setBattleMode('peace');
+    setMoveMode('walk');
   }
 
   // Loads each slot's race-eligible item list whenever the character is
@@ -174,7 +151,7 @@ export default function RfViewer({ sceneManager, initialRaceGender, onExit }: Rf
   useEffect(() => {
     if (status !== 'ready') return;
     let cancelled = false;
-    for (const modelType of ALL_MODEL_TYPES) {
+    for (const modelType of ALL_EQUIP_SLOTS) {
       loadUsableSlotItems(modelType, raceGender)
         .then((items) => {
           if (cancelled) return;
@@ -254,26 +231,6 @@ export default function RfViewer({ sceneManager, initialRaceGender, onExit }: Rf
 
   return (
     <div className="rf-viewer">
-      <div className="rf-viewer-race-select">
-        <select value={raceGender} onChange={(e) => setRaceGender(Number(e.target.value) as RaceGender)}>
-          {RACE_OPTIONS.map((opt) => (
-            <option key={opt.value} value={opt.value}>
-              {opt.label}
-            </option>
-          ))}
-        </select>
-      </div>
-      {status === 'ready' && (
-        <div className="rf-viewer-stats">
-          {debugStats.fps} FPS
-          {debugStats.heapMB !== null && <> · {debugStats.heapMB} MB</>}
-          {' · '}
-          {debugStats.geometries} geo · {debugStats.textures} tex
-        </div>
-      )}
-      {status === 'ready' && (
-        <EquipPanel equippedItemId={equippedItemId} slotItems={slotItems} onEquipChange={handleEquipChange} />
-      )}
       {status === 'loading' && <div className="rf-viewer-overlay">Loading character…</div>}
       {status === 'error' && (
         <div className="rf-viewer-overlay rf-viewer-overlay-error">
@@ -282,60 +239,58 @@ export default function RfViewer({ sceneManager, initialRaceGender, onExit }: Rf
           Make sure the files described in public/game-assets/README.md are in place.
         </div>
       )}
-      {status === 'ready' && (
-        <>
-          <div className="rf-viewer-hint">Click the ground to walk there</div>
-          <div className="rf-viewer-controls">
-            {onExit && <button onClick={onExit}>« character select</button>}
-            {CLIP_NAMES.map((name) => (
-              <button
-                key={name}
-                className={name === clipName ? 'active' : ''}
-                onClick={() => handleManualClip(name)}
-              >
-                {name}
-              </button>
-            ))}
-            <button className={showBones ? 'active' : ''} onClick={() => setShowBones((v) => !v)}>
-              bones
-            </button>
-            <select
-              className="rf-viewer-cam-select"
-              value={camMode}
-              onChange={(e) => setCamMode(e.target.value as CamMode)}
-            >
-              <option value="third">3rd person cam</option>
-              <option value="first">1st person cam</option>
-              <option value="debug">debug cam</option>
-            </select>
-          </div>
-          <div className="rf-viewer-controls rf-viewer-controls-debug">
-            <button className={debugPaused ? 'active' : ''} onClick={() => setDebugPaused((v) => !v)}>
-              {debugPaused ? 'resume' : 'pause'}
-            </button>
-            <button disabled={!debugPaused} onClick={() => stepFrame(-1)}>
-              « step
-            </button>
-            <button disabled={!debugPaused} onClick={() => stepFrame(1)}>
-              step »
-            </button>
-            <button onClick={() => logFrameState()}>log now</button>
-            {frameLabel && <span className="rf-viewer-frame-label">{frameLabel}</span>}
-          </div>
-          <div className="rf-viewer-command-bar">
-            <input
-              type="text"
-              className="rf-viewer-command-input"
-              placeholder="GM command, e.g. %addbot 5"
-              value={commandInput}
-              onChange={(e) => setCommandInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') handleCommandSubmit();
-              }}
-            />
-            {commandFeedback && <span className="rf-viewer-command-feedback">{commandFeedback}</span>}
-          </div>
-        </>
+
+      <div className="rf-viewer-toggle-bar">
+        {status === 'ready' && (
+          <button
+            className={`rf-viewer-debug-toggle${moveMode === 'run' ? ' active' : ''}`}
+            onClick={() => setMoveMode((v) => (v === 'walk' ? 'run' : 'walk'))}
+          >
+            {moveMode === 'run' ? 'Run' : 'Walk'}
+          </button>
+        )}
+        {status === 'ready' && (
+          <button
+            className={`rf-viewer-debug-toggle${battleMode === 'war' ? ' active' : ''}`}
+            onClick={() => setBattleMode((v) => (v === 'peace' ? 'war' : 'peace'))}
+          >
+            {battleMode === 'war' ? 'War' : 'Peace'}
+          </button>
+        )}
+        <button
+          className={`rf-viewer-debug-toggle${showDebugUI ? ' active' : ''}`}
+          onClick={() => setShowDebugUI((v) => !v)}
+        >
+          Debug UI
+        </button>
+      </div>
+
+      {showDebugUI && (
+        <DebugPanel
+          ready={status === 'ready'}
+          raceGender={raceGender}
+          onRaceGenderChange={setRaceGender}
+          debugStats={debugStats}
+          equippedItemId={equippedItemId}
+          slotItems={slotItems}
+          onEquipChange={handleEquipChange}
+          clipName={clipName}
+          onManualClip={handleManualClip}
+          showBones={showBones}
+          onToggleBones={() => setShowBones((v) => !v)}
+          camMode={camMode}
+          onCamModeChange={setCamMode}
+          debugPaused={debugPaused}
+          onToggleDebugPaused={() => setDebugPaused((v) => !v)}
+          onStepFrame={stepFrame}
+          onLogFrameState={logFrameState}
+          frameLabel={frameLabel}
+          commandInput={commandInput}
+          onCommandInputChange={setCommandInput}
+          onCommandSubmit={handleCommandSubmit}
+          commandFeedback={commandFeedback}
+          onExit={onExit}
+        />
       )}
     </div>
   );

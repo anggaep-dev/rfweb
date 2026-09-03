@@ -1,14 +1,18 @@
 import { Box3, Matrix4, Object3D, Quaternion, SkeletonHelper, Vector3 } from 'three';
 import type { AnimationAction, Bone, Group, Scene } from 'three';
 import { ANI_FPS } from '../rf/animation';
-import { RaceGender, buildMeshPartObjects, getRaceAssets } from '../rf/character';
+import { RaceGender, buildMeshPartObjects, getRaceAssets, getWeaponClip, loadWeaponMeshObjects, weaponClipKey } from '../rf/character';
 import type { RfCharacter } from '../rf/character';
+import { buildGlowOverlay, disposeGlowOverlay } from '../rf/glowEffect';
+import type { GlowOverlay } from '../rf/glowEffect';
 import { ALL_MODEL_TYPES, MODEL_TYPE_TO_PART_TOKEN, ModelType } from '../rf/items';
 import type { ItemDefinition } from '../rf/items';
-import { resolveItemMeshStem } from '../rf/resource';
+import { resolveItemMeshStem, resolveWeaponMesh } from '../rf/resource';
 
 const ARRIVE_FRACTION_OF_RADIUS = 0.04;
 const WALK_SPEED_RADIUS_PER_SEC = 0.9;
+/** How much faster running is than walking - the actual client's ratio isn't in this data set, so this is a reasonable-looking approximation. */
+const RUN_SPEED_MULTIPLIER = 1.8;
 const TURN_SPEED_RAD_PER_SEC = Math.PI * 2.2;
 // The model's authored "forward" faces the opposite way from three.js's
 // lookAt convention (-Z), so the computed facing needs a 180 degree
@@ -33,6 +37,25 @@ export interface CharacterControllerCallbacks {
 }
 
 export type EquipResult = 'equipped' | 'default' | 'unavailable' | 'no-character';
+
+/** The original client's battle toggle: War shows the wielded weapon and switches walk/run to their combat variant; Peace hides it and stays on the unarmed clips. */
+export type BattleMode = 'peace' | 'war';
+/** Which locomotion clip (and speed) click-to-move uses - independent of BattleMode, which only decides *whether* the combat variant of walk/run/stand plays. */
+export type MoveMode = 'walk' | 'run';
+/** The animation-token equivalent of "no weapon" in the combat clip archive - "COMBAT_FWWALK_NONE_NONE_01_00" etc, the empty-handed War-mode locomotion. */
+const UNARMED_WEAPON_TOKEN = 'NONE';
+
+/** A .eff "speed" byte of this value is the source data's own baseline (see glowEffect.ts); each +1 above it roughly doubles the scroll rate, per the tutorial this was reverse-engineered from. */
+const GLOW_SPEED_BASE_BYTE = 0x40;
+/** UV units/second a scrolling glow texture moves at the baseline speed byte - tuned by eye, the source data has no literal units for this. */
+const GLOW_SCROLL_UV_PER_SEC = 0.6;
+
+/** Fetches (and caches onto character.clips) every combat clip a weapon token needs - walk/run/stand - in parallel. Best-effort: a race/token combination missing one just means resolveClipName() falls back to the unarmed equivalent for that clip. */
+async function prewarmWeaponClips(raceGender: RaceGender, character: RfCharacter, weaponToken: string): Promise<void> {
+  await Promise.all(
+    (['walk', 'run', 'stand'] as const).map((kind) => getWeaponClip(raceGender, character, kind, weaponToken).catch(() => null)),
+  );
+}
 
 function disposeObject3D(root: Object3D): void {
   root.traverse((obj) => {
@@ -69,10 +92,25 @@ export class CharacterController {
 
   /** The three.js objects currently equipped per slot, so a later swap knows exactly what to remove. */
   private equippedObjects: Partial<Record<ModelType, Object3D[]>> = {};
+  /**
+   * The Chef/ glow-effect overlay (see glowEffect.ts) attached per slot,
+   * if that slot's item has one registered - siblings of equippedObjects'
+   * meshes, not their children, so they aren't caught by
+   * disposeObject3D()'s traversal when a slot is re-equipped; disposed
+   * explicitly wherever equippedObjects[slot] is replaced.
+   */
+  private equippedGlowOverlays: Partial<Record<ModelType, GlowOverlay>> = {};
+
+  /** The currently-wielded weapon's animation-set token (see resolveWeaponMesh), or null when unarmed - consulted by update() to pick the armed vs. unarmed walk/run clip. */
+  private currentWeaponToken: string | null = null;
+  /** Peace/War toggle - see BattleMode. Only War shows the weapon mesh and plays combat walk/run; Peace always plays the unarmed clips regardless of what's equipped. */
+  private battleMode: BattleMode = 'peace';
 
   private moveTarget: Vector3 | null = null;
   private walkSpeed = 1;
   private arriveThreshold = 0.05;
+  /** Walk vs run - see MoveMode. Only affects click-to-move (moveTo()); a manual setClip('run') from a debug button is unaffected. */
+  private moveMode: MoveMode = 'walk';
 
   // The render loop reads desiredClip every frame to decide whether to start
   // a transition - not React state, so there's no gap between "caller asked
@@ -117,6 +155,88 @@ export class CharacterController {
     if (this.skeletonHelper) this.skeletonHelper.visible = show;
   }
 
+  getBattleMode(): BattleMode {
+    return this.battleMode;
+  }
+
+  /**
+   * Toggles Peace/War, same as the original client's battle-mode button.
+   * Only the weapon mesh's visibility and update()'s clip resolution
+   * (resolveClipName) change synchronously here - the war-mode walk/run/
+   * stand clips for whatever's currently in hand (or the empty-handed
+   * variant, if nothing is) are fetched in the background and just aren't
+   * ready for a frame or two after a fresh equip+toggle; resolveClipName()
+   * falls back to the unarmed clip transparently until they land, same as
+   * any other "commonly missing" animation lookup in this codebase.
+   */
+  setBattleMode(mode: BattleMode): void {
+    this.battleMode = mode;
+    this.applyWeaponVisibility();
+
+    if (mode === 'war' && this.character && this.raceGender !== null) {
+      void prewarmWeaponClips(this.raceGender, this.character, this.currentWeaponToken ?? UNARMED_WEAPON_TOKEN);
+    }
+  }
+
+  /** A wielded weapon (and its glow overlay, if it has one) is only ever visible in War mode - see setBattleMode/equipWeapon. */
+  private applyWeaponVisibility(): void {
+    const visible = this.battleMode === 'war';
+    const weaponObjects = this.equippedObjects[ModelType.Weapon];
+    if (weaponObjects) for (const obj of weaponObjects) obj.visible = visible;
+    const glowOverlay = this.equippedGlowOverlays[ModelType.Weapon];
+    if (glowOverlay) for (const obj of glowOverlay.objects) obj.visible = visible;
+  }
+
+  private disposeGlowOverlayFor(modelType: ModelType): void {
+    const overlay = this.equippedGlowOverlays[modelType];
+    if (!overlay) return;
+    disposeGlowOverlay(overlay);
+    delete this.equippedGlowOverlays[modelType];
+  }
+
+  /**
+   * Best-effort, fire-and-forget: resolves and attaches a Chef/ glow
+   * overlay (see glowEffect.ts) for a just-equipped item, if the Chef/
+   * effect tables have one registered for it - most items don't, and
+   * that's not an error. Deliberately not awaited by equipItem/
+   * equipWeapon, since glow is a purely cosmetic addition that shouldn't
+   * delay the equip result the caller is waiting on. `sourceObjects` is
+   * compared against the slot's *current* equippedObjects entry once this
+   * resolves (not just this.character, unlike other awaits in this class)
+   * because a slot can be re-equipped again before this lands without the
+   * character itself changing.
+   */
+  private async applyGlowOverlay(
+    modelType: ModelType,
+    item: ItemDefinition | null,
+    character: RfCharacter,
+    sourceObjects: Object3D[],
+  ): Promise<void> {
+    if (!item) return; // defaults/unequips have no catalog entry to look up a glow effect for
+
+    const overlay = await buildGlowOverlay(item.model, sourceObjects);
+    if (this.character !== character || this.equippedObjects[modelType] !== sourceObjects) {
+      disposeGlowOverlay(overlay); // superseded mid-await - character swapped, or this slot got equipped again
+      return;
+    }
+    if (overlay.objects.length === 0) return;
+
+    this.equippedGlowOverlays[modelType] = overlay;
+    if (modelType === ModelType.Weapon) this.applyWeaponVisibility();
+  }
+
+  /** Advances every currently-active scrolling glow texture (movementMode 2 - see glowEffect.ts) by one frame. */
+  private updateGlowAnimation(delta: number): void {
+    for (const overlay of Object.values(this.equippedGlowOverlays)) {
+      for (const { material, speedByte } of overlay.scrollingMaterials) {
+        const texture = material.map;
+        if (!texture) continue;
+        const speedFactor = 2 ** (speedByte - GLOW_SPEED_BASE_BYTE);
+        texture.offset.x = (texture.offset.x + speedFactor * GLOW_SCROLL_UV_PER_SEC * delta) % 1;
+      }
+    }
+  }
+
   setDebugPaused(paused: boolean): void {
     this.debugPaused = paused;
     const active = this.activeAction;
@@ -145,6 +265,19 @@ export class CharacterController {
     this.callbacks.onClipChange?.(name);
   }
 
+  getMoveMode(): MoveMode {
+    return this.moveMode;
+  }
+
+  /** Toggles walk/run for click-to-move. Takes effect immediately if already mid-move, not just on the next moveTo(). */
+  setMoveMode(mode: MoveMode): void {
+    this.moveMode = mode;
+    if (this.moveTarget) {
+      this.desiredClip = mode;
+      this.callbacks.onClipChange?.(mode);
+    }
+  }
+
   moveTo(point: Vector3): void {
     console.log('[anim-debug] click-to-move triggered', {
       from: this.character?.group.position.toArray().map((n) => +n.toFixed(3)),
@@ -152,8 +285,8 @@ export class CharacterController {
       previousClip: this.desiredClip,
     });
     this.moveTarget = point.clone();
-    this.desiredClip = 'walk';
-    this.callbacks.onClipChange?.('walk');
+    this.desiredClip = this.moveMode;
+    this.callbacks.onClipChange?.(this.moveMode);
   }
 
   stepFrame(deltaFrames: number): void {
@@ -197,6 +330,8 @@ export class CharacterController {
    * (see mount()).
    */
   async equipItem(modelType: ModelType, item: ItemDefinition | null): Promise<EquipResult> {
+    if (modelType === ModelType.Weapon) return this.equipWeapon(item);
+
     const character = this.character;
     const raceGender = this.raceGender;
     if (!character || raceGender === null) return 'no-character';
@@ -225,13 +360,82 @@ export class CharacterController {
         disposeObject3D(obj);
       }
     }
+    this.disposeGlowOverlayFor(modelType);
 
     for (const obj of newObjects) {
       if (!obj.parent) character.group.add(obj);
     }
     this.equippedObjects[modelType] = newObjects;
+    void this.applyGlowOverlay(modelType, item, character, newObjects);
 
     return item ? 'equipped' : 'default';
+  }
+
+  /**
+   * Weapon-slot equip: unlike a body part, a weapon has no default mesh (an
+   * unarmed character just has empty hands) and its mesh is a rigid part
+   * parented straight onto the wielding character's own hand bone rather
+   * than a per-race body-part swap - see loadWeaponMeshObjects. Also
+   * pre-warms (and caches) the weapon's combat walk/run clips so update()'s
+   * per-frame clip lookup stays a synchronous object read.
+   */
+  private async equipWeapon(item: ItemDefinition | null): Promise<EquipResult> {
+    const character = this.character;
+    const raceGender = this.raceGender;
+    if (!character || raceGender === null) return 'no-character';
+
+    const previous = this.equippedObjects[ModelType.Weapon];
+
+    if (!item) {
+      if (previous) {
+        for (const obj of previous) {
+          obj.parent?.remove(obj);
+          disposeObject3D(obj);
+        }
+        delete this.equippedObjects[ModelType.Weapon];
+      }
+      this.disposeGlowOverlayFor(ModelType.Weapon);
+      this.currentWeaponToken = null;
+      return 'default';
+    }
+
+    const weaponMesh = await resolveWeaponMesh(item.model);
+    if (this.character !== character) return 'no-character'; // superseded mid-await
+    if (!weaponMesh) return 'unavailable';
+
+    const newObjects = await loadWeaponMeshObjects(weaponMesh.stem, character.builtSkeleton);
+    if (this.character !== character) return 'no-character'; // superseded mid-await
+    if (newObjects.length === 0) return 'unavailable';
+
+    if (weaponMesh.weaponToken) {
+      // Best-effort: a race/token combination with no combat animation
+      // just means update() falls back to the unarmed clip below.
+      await prewarmWeaponClips(raceGender, character, weaponMesh.weaponToken);
+      if (this.character !== character) return 'no-character'; // superseded mid-await
+    }
+
+    if (previous) {
+      for (const obj of previous) {
+        obj.parent?.remove(obj);
+        disposeObject3D(obj);
+      }
+    }
+    this.disposeGlowOverlayFor(ModelType.Weapon);
+
+    for (const obj of newObjects) {
+      if (!obj.parent) character.group.add(obj);
+    }
+    this.equippedObjects[ModelType.Weapon] = newObjects;
+    this.currentWeaponToken = weaponMesh.weaponToken;
+    void this.applyGlowOverlay(ModelType.Weapon, item, character, newObjects);
+
+    // Only actually visible in War mode - see setBattleMode. The combat
+    // clips for this weapon were already prewarmed just above, regardless
+    // of the current mode, so they're ready the instant the
+    // player toggles into War.
+    this.applyWeaponVisibility();
+
+    return 'equipped';
   }
 
   /**
@@ -255,6 +459,12 @@ export class CharacterController {
     this.character = character;
     this.raceGender = raceGender;
     this.equippedObjects = {};
+    // Not individually disposed here - every glow overlay mesh is a
+    // descendant of prevGroup (parented to either the group itself or one
+    // of its bones), so the disposeObject3D(prevGroup) traversal above
+    // already freed them; this just drops the now-stale bookkeeping so
+    // update()/applyWeaponVisibility() stop iterating dangling entries.
+    this.equippedGlowOverlays = {};
     this.scene.add(character.group);
 
     // The toggle button only renders once status is 'ready', so there's no
@@ -275,6 +485,9 @@ export class CharacterController {
     this.desiredClip = 'stand';
     this.currentClipKey = null;
     this.activeAction = null;
+    this.currentWeaponToken = null;
+    this.battleMode = 'peace';
+    this.moveMode = 'walk';
     this.lastQuatByBone.clear();
     this.callbacks.onClipChange?.('stand');
     this.callbacks.onFrameLabelChange?.('');
@@ -315,7 +528,8 @@ export class CharacterController {
         this.callbacks.onClipChange?.('stand');
       } else {
         toTarget.normalize();
-        const step = Math.min(distance, this.walkSpeed * delta);
+        const speed = this.moveMode === 'run' ? this.walkSpeed * RUN_SPEED_MULTIPLIER : this.walkSpeed;
+        const step = Math.min(distance, speed * delta);
         character.group.position.addScaledVector(toTarget, step);
         character.group.position.y = target.y;
 
@@ -329,12 +543,15 @@ export class CharacterController {
     // Driven off desiredClip every frame, not a one-shot effect - switching
     // purely through an external effect lags the rAF loop by at least one
     // commit, which (combined with a hard stopAllAction()/play() cut) was a
-    // real source of visible pops between clips.
-    if (this.desiredClip !== this.currentClipKey) {
-      const nextName = this.desiredClip;
-      const nextClip = character.clips[nextName];
+    // real source of visible pops between clips. Resolved (not desired)
+    // name is what's actually compared/stored, so re-equipping a different
+    // weapon while already walking/running re-triggers the crossfade even
+    // though desiredClip itself ("walk"/"run") hasn't changed.
+    const resolvedName = this.resolveClipName(this.desiredClip);
+    if (resolvedName !== this.currentClipKey) {
+      const nextClip = character.clips[resolvedName];
       if (nextClip) {
-        console.log(`[anim-debug] clip switched to "${nextName}"`);
+        console.log(`[anim-debug] clip switched to "${resolvedName}"`);
         const prevAction = this.activeAction;
         const nextAction = character.mixer.clipAction(nextClip);
 
@@ -350,13 +567,35 @@ export class CharacterController {
         this.activeAction = nextAction;
         this.callbacks.onFrameLabelChange?.(`t=${nextAction.time.toFixed(4)}s / ${nextClip.duration.toFixed(4)}s`);
       }
-      this.currentClipKey = nextName;
+      this.currentClipKey = resolvedName;
     }
 
     character.mixer.update(delta);
     this.checkForPoseAnomalies(character);
+    this.updateGlowAnimation(delta);
 
     return { arrived };
+  }
+
+  /**
+   * Maps an abstract desired clip ("walk"/"run"/"stand"/"sit") to the
+   * actual clips key to play. Only in War mode, and only walk/run/stand:
+   * the combat variant for whatever's currently wielded (or the
+   * empty-handed "NONE" token variant, if nothing is - War still changes
+   * how an unarmed character moves and idles) when it's cached, otherwise
+   * falls through to the plain unarmed clip. Peace mode always plays the
+   * unarmed clip regardless of what's equipped - matching the weapon mesh
+   * itself only being visible in War (see applyWeaponVisibility). There's
+   * no combat "sit" clip in this data set, so that always plays the
+   * unarmed clip in either mode.
+   */
+  private resolveClipName(desiredClip: string): string {
+    if (this.battleMode === 'war' && this.character && (desiredClip === 'walk' || desiredClip === 'run' || desiredClip === 'stand')) {
+      const token = this.currentWeaponToken ?? UNARMED_WEAPON_TOKEN;
+      const armedKey = weaponClipKey(desiredClip, token);
+      if (this.character.clips[armedKey]) return armedKey;
+    }
+    return desiredClip;
   }
 
   // Always-on watchdog: flags a NaN or a suspiciously large single-frame
@@ -402,5 +641,6 @@ export class CharacterController {
     }
     this.character = null;
     this.skeletonHelper = null;
+    this.equippedGlowOverlays = {};
   }
 }

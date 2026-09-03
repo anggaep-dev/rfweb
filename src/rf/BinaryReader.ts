@@ -29,6 +29,12 @@ export class BinaryReader {
     return v;
   }
 
+  i8() {
+    const v = this.view.getInt8(this.offset);
+    this.offset += 1;
+    return v;
+  }
+
   u16() {
     const v = this.view.getUint16(this.offset, true);
     this.offset += 2;
@@ -38,6 +44,12 @@ export class BinaryReader {
   u32() {
     const v = this.view.getUint32(this.offset, true);
     this.offset += 4;
+    return v;
+  }
+
+  i16() {
+    const v = this.view.getInt16(this.offset, true);
+    this.offset += 2;
     return v;
   }
 

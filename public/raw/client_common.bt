@@ -1,0 +1,573 @@
+/**
+ * Intrepid-Web.NET
+ * 
+ * Source code may not be modified without the direct consent and permission
+ * of Intrepid-Web.NET.
+ * 
+ * @copyright   Copyright (c) Intrepid-Web.NET. (www.intrepid-web.net)
+ */
+
+#include "general_functions.1sc";
+
+/***********************
+ * GENERAL DEFINITIONS *
+ ***********************/
+#define code_max_length	64
+#define txt_max_length	1280
+
+typedef char _str_code[code_max_length];
+typedef char _txt_code[txt_max_length];
+
+local int   i;
+local int   totalSkipSize;
+local int   count;
+local int   struct_item_type;
+
+/*********
+ * ENUMS *
+ *********/
+enum bool { NA_TrueFalse = -1, False = 0, True = 1 };
+enum BOOL { NA_TA = -1, F = 0, T = 1 };
+enum <byte> BOOL_BYTE { bTrue = 1, bFalse = 0 };
+
+enum <byte> PartType {
+    Type_Helmet             = 0,
+    Type_Sword_2_hand       = 1,
+    Type_Upper              = 2,
+    Type_Lower_or_Knife     = 3,
+    Type_Gauntlet           = 4,
+    Type_Shoe               = 5,
+    Type_Axe                = 6,
+    Type_Axe_2_hand         = 7,
+    Type_Throwing_Axe       = 8,
+    Type_Crossbow_2_hand    = 10,
+    Type_Mace_2_hand        = 11,
+    Type_Staff              = 12,
+    Type_Firearm            = 13,
+    Type_Spear_2_hand       = 14,
+    Type_Faust_2_hand       = 15,
+    Type_Bow_2_hand         = 16,
+    Type_Launcher_2_hand    = 17,
+    Type_Firearm_2_hand     = 19,
+    Type_Throw_Knife_2_hand = 20,
+};
+
+enum <byte> PortalTypes
+{
+    Portal_Exit=0,
+    Portal_Entrance=1
+};
+
+enum PortalTypes224
+{
+    Portal_Exit_224=0,
+    Portal_Entrance_224=1
+};
+
+enum MonsterRace 
+{ 
+    Beast=0, 
+    Plant=1,
+    Reptil=2,
+    Bug_1=3,
+    Bug_2=4,
+    Cyber=5,
+    DiNo=6,
+    Monster=7,
+    Human=8,
+    Elf=9,
+    Giant=10 
+};
+
+enum <byte> Race 
+{ 
+Any_Race = -1, Bellato = 0, Cora = 1, 
+Accretian = 2 
+};
+
+enum <byte> MonsterType
+{ 
+    Normal_Monster=0, 
+    Ace_Monster=1, 
+    Pit_Boss_Monster=2, 
+    Champion_Monster=3, 
+    Elite_Monster4, 
+    Hero_Monster=5, 
+    Solo_Monster=6 
+};
+
+enum Grade
+{ 
+    Normal_Item=0, 
+    Intense_Item=1, 
+    Type_B_Item=2, 
+    Type_C_Item=3,
+    Relic_Item=4, 
+    Uniform_Item=5, 
+    Special_Item=6, 
+    Majesty_Item=7, 
+    Leon_Item=8, 
+    Archon_Item=9, 
+    Monster_Item=45 
+};
+
+enum Att_Eff_Type
+{ 
+    None=0, 
+    Sword_MAU_Blades=1, 
+    Knife=2, 
+    Axe=3, 
+    Hammer_Staff_MAU_Punch=4, 
+    Hammer_Staff=5, 
+    Spear=6, 
+    Bow=7, 
+    Beam=8, 
+    Gun_1_MAU_Gatling=9, 
+    Gun_2=10, 
+    Grenade_Faust_Launcher=11, 
+    MAU_Launcher=12, 
+    Machine_Gun=13, 
+    Launcher_Weapon=14, 
+    Rifle=15, 
+    Lighting_Gun=16, 
+    Laser_Gun=17, 
+    Plasma_Gun=18, 
+    Axe_Hammer=19, 
+    Bow_2=20, 
+    Throwing_1=22, 
+    Throwing_2=23 
+};
+
+enum <byte> abaility_types 
+{ 
+    No_Ability=0, 
+    SP=1,
+    FP_Consumption_Inc=2, 
+    Pain_Accuracy=3, 
+    Smart_Evasion=4,
+    AdvStrenght_HP_FP=5, 
+    Strong_Attack=6, 
+    Solid_Defense=7, 
+    Skill_LVL=8, 
+    Stealth=9, 
+    Detect=10, 
+    Remove_Skill_Protect=11, 
+    Wind_Speed=12, 
+    FP_Recovery=14, 
+    Force_Attack=15, 
+    FP=16, 
+    Vampire_Steal_HP=17, 
+    Sharp_Critical=19, 
+    Grand_Range=20, 
+    Siege_Kit_Def=21, 
+    Debuff_Assist_Incr=22, 
+    HP_Recovery=23, 
+    Launcher_Speed=25, 
+    Force_Range=26, 
+    Decr_Critical_Hit=27, 
+    Shield_Succes_Rate=28, 
+    Endurance_Resistances=29, 
+    Strenght_HP=30, 
+    Force_Debuff_Decr=31, 
+    Ignore_Def_Rate=32, 
+    Skill_Delay=34, 
+    Force_Attack_Delay=35 
+};
+
+enum <byte> Skill_Type 
+{ 
+    Close_Range=0, 
+    Long_Range=1, 
+    Launcher=2, 
+    Force=3, 
+    Type_Archon=4, 
+    Type_CW=5 
+};
+
+enum <byte> moneytype
+{
+    Currency_Dalant = 0,
+    Currency_PVP_Points = 1,
+    Currency_Gold_Points = 2
+};
+
+enum <byte> Ammo_Type
+{
+    Ammo_Gun_or_Bow=0, 
+    Ammo_Bolt=1, 
+    Ammo_Beam_Cell=2, 
+    Ammo_Magazine=4, 
+    Ammo_Vulcan_Mag=5, 
+    Ammo_Laser_1=6, 
+    Ammo_Laser_2=7, 
+    Ammo_Launcher=8, 
+    Ammo_Fuel=9, 
+    Ammo_Faust_Launcher=10,
+    Ammo_Grenade_1=11, 
+    Ammo_Grenade_2=12, 
+    Ammo_Grenade_3=13, 
+    Ammo_Grenade_4=14
+};
+
+enum shop_code { 
+    Shop_None = -1, 
+    Shop_Base = 0, 
+    Shop_Upper = 1, 
+    Shop_Lower = 2,  
+    Shop_Gaunlet = 3,
+    Shop_Shoes = 4, 
+    Shop_Helmet = 5, 
+    Shop_Weapon = 6,
+    Shop_Shield = 7, 
+    Shop_Cloak = 8, 
+    Shop_Ring = 9,
+    Shop_Amulet = 10, 
+    Shop_Bullet = 11, 
+    Shop_MakeTool = 12,
+    Shop_Potion = 13, 
+    Shop_Bag = 14, 
+    Shop_Battery = 15,
+    Shop_Ore = 16, 
+    Shop_Resource = 17, 
+    Shop_Force = 18,
+    Shop_UnitKey = 19, 
+    Shop_Booty = 20, 
+    Shop_Map = 21,
+    Shop_Town = 22, 
+    Shop_BattleDungeon = 23, 
+    Shop_Animus = 24,
+    Shop_Guard_Tower = 25, 
+    Shop_Trap = 26, 
+    Shop_Siege_Kit = 27,
+    Shop_Ticket = 28, 
+    Shop_Event = 29, 
+    Shop_Recovery = 30,
+    Shop_Box = 31, 
+    Shop_Firecracker = 45, 
+    Shop_Unmanned_Miner = 46,
+    Shop_Radar = 47, 
+    Shop_NpcLink = 48, 
+    Shop_Coupon = 49,
+    Shop_Unit_Head = 32,
+    Shop_Unit_Upper = 33,
+    Shop_Unit_Lower = 34,
+    Shop_Unit_Arm = 35,
+    Shop_Unit_Shoulder = 36,
+    Shop_Unit_Back = 37,
+    Shop_Unit_Bullet = 38,
+    Shop_Item_Make_Data = 39,
+    Shop_Item_Combine = 40,
+    Shop_Item_Make_Offset = 44,
+    Shop_Description = 41,
+    Shop_Unknown5 = 42
+};
+
+enum <byte> shopByteCode { 
+    Shop_None_Byte = -1, 
+    Shop_Base_Byte = 0, 
+    Shop_Upper_Byte = 1, 
+    Shop_Lower_Byte = 2,  
+    Shop_Gaunlet_Byte = 3,
+    Shop_Shoes_Byte = 4, 
+    Shop_Helmet_Byte = 5, 
+    Shop_Weapon_Byte = 6,
+    Shop_Shield_Byte = 7, 
+    Shop_Cloak_Byte = 8, 
+    Shop_Ring_Byte = 9,
+    Shop_Amulet_Byte = 10, 
+    Shop_Bullet_Byte = 11, 
+    Shop_MakeTool_Byte = 12,
+    Shop_Potion_Byte = 13, 
+    Shop_Bag_Byte = 14, 
+    Shop_Battery_Byte = 15,
+    Shop_Ore_Byte = 16, 
+    Shop_Resource_Byte = 17, 
+    Shop_Force_Byte = 18,
+    Shop_UnitKey_Byte = 19, 
+    Shop_Booty_Byte = 20, 
+    Shop_Map_Byte = 21,
+    Shop_Town_Byte = 22, 
+    Shop_BattleDungeon_Byte = 23, 
+    Shop_Animus_Byte = 24,
+    Shop_Guard_Tower_Byte = 25, 
+    Shop_Trap_Byte = 26, 
+    Shop_Siege_Kit_Byte = 27,
+    Shop_Ticket_Byte = 28, 
+    Shop_Event_Byte = 29, 
+    Shop_Recovery_Byte = 30,
+    Shop_Box_Byte = 31, 
+    Shop_Firecracker_Byte = 45, 
+    Shop_Unmanned_Miner_Byte = 46,
+    Shop_Radar_Byte = 47, 
+    Shop_NpcLink_Byte = 48, 
+    Shop_Coupon_Byte = 49,
+    Shop_Unit_Head_Byte = 32,
+    Shop_Unit_Upper_Byte = 33,
+    Shop_Unit_Lower_Byte = 34,
+    Shop_Unit_Arm_Byte = 35,
+    Shop_Unit_Shoulder_Byte = 36,
+    Shop_Unit_Back_Byte = 37,
+    Shop_Unit_Bullet_Byte = 38,
+    Shop_Item_Make_Data_Byte = 39,
+    Shop_Item_Combine_Byte = 40,
+    Shop_Item_Make_Offset_Byte = 44,
+    Shop_Description_Byte = 41,
+    Shop_Unknown5_Byte = 42
+};
+
+enum MonElement
+{ 
+    fire=0, 
+    Water=1,
+    earth=2,
+    Wind=3,
+};
+
+enum Aggressive
+{ 
+    No=0, 
+    Yes=1,
+};
+
+
+enum <uint16> RaceGender {
+    cBell_Armor_Male = 0x00,
+    cBell_Default_Male = 0x05,
+    cBell_Armor_Female = 0x10,
+    cBell_Default_Female = 0x15,
+    cCora_Armor_Male = 0x20,
+    cCora_Default_Male = 0x25,
+    cCora_Armor_Female = 0x30,
+    cCora_Default_Female = 0x35,
+    cAccretia_Armor_Robot = 0x40,
+    cAccretia_Default_Robot = 0x45,
+    cBell_Armor_Military = 0x70,
+    cCora_Armor_Military = 0x80
+};
+
+enum <ubyte> ModelType {
+    cModel_Helmet = 0x00,
+    cModel_Face = 0x01,
+    cModel_Upper = 0x02,
+    cModel_Lower = 0x03,
+    cModel_Gauntlet = 0x04,
+    cModel_Shoes = 0x05
+};
+
+string read_client_id(uint id)
+{
+    return id_to_code(id,-1);
+}
+
+typedef uint _client_id <read=read_client_id,comment="BETA. This is not editable - DO NOT TRY AND EDIT!">;
+
+/***********
+ * STRUCTS *
+ ***********/
+typedef struct {
+    shopByteCode    shopCode;
+    byte    unknown; 
+    int     totalSize<comment="Total size of this structure -10 bytes">;    
+    int     startPosition<comment="Start position of this structure tree">;
+    int     blocks;
+    int     size;
+    count = ((header.size-64-8)/4);
+    struct_item_type = shopCode;
+} head_struct;
+
+typedef struct {
+    int     blocks;
+    int     size;
+} head_char_struct;
+
+typedef struct {
+    if(NAMES_ONLY == 0) {
+    int         index;
+    if(ENABLE_SERVER_CODE == 1) {
+    _client_id  id;
+    } else {
+    uint  id;
+    }
+    } else {
+    FSkip(8);
+    }
+    _str_code   name;
+    if(NAMES_ONLY == 0) {
+    struct {
+        ubyte        index<format=decimal, comment="Same as Resource.dat">;
+        ModelType   type<comment="Same as Resource.dat">;
+        RaceGender  race_gender<comment="NOT the same as Resource.dat">;
+    } model_id<open=true>;
+    int         icon_id;
+    }
+} _base<open=true>;
+
+typedef struct  {
+    struct {
+        float       x;
+        float       y;
+        float       z;
+    } min;
+    struct {
+        float       x;
+        float       y;
+        float       z;
+    } max;
+} Coords;
+
+typedef struct {
+    byte     basic;
+    byte     expert;
+    byte     elite;
+    byte     master;
+} SkillCategory;
+
+typedef struct {
+    byte        melee;
+    byte        range;
+    byte        unit;
+    byte        force;
+    byte        shield;
+    byte        defense;
+} CombatLimits;
+
+typedef struct {
+    byte        weaponAndShield;
+    byte        armor;
+    byte        ammo;
+} CraftLimits;
+
+typedef struct {
+    SkillCategory       holy; 
+    SkillCategory       dark;
+    SkillCategory       fire;
+    SkillCategory       water;
+    SkillCategory       earth;
+    SkillCategory       wind;
+} ForceLimits;
+
+typedef struct {
+    SkillCategory       closeRange;
+    SkillCategory       longRange;
+} SkillLimits;
+
+typedef struct {
+    byte     basic;
+    byte     expert;
+    byte     elite;
+    byte     master;
+} MaximumPoints;
+
+typedef struct {
+    int16       fire;
+    int16       water;
+    int16       soil;
+    int16       wind;
+} elements;
+
+
+typedef struct {
+    char       fire;
+    char       water;
+    char       soil;
+    char       wind;
+} elements_bit;
+
+typedef struct
+{
+    abaility_types      type;
+} ability_stats;
+
+typedef struct
+{
+    float               value;
+} ability_types;
+
+typedef struct {
+    int   blocks;
+    int   size;
+} UNKNOWNHEADER;
+
+typedef struct {
+    Skill_Type      type;
+    byte            unknown<hidden=true>;
+    byte            points;
+} Combat_Skills;
+
+typedef struct(int headerSize) {
+    shopByteCode    itemType;
+    moneytype       currencyType;
+    int16           skip<hidden=true>;
+    int             sellPrice;
+    int             pvpPoint;
+    int             unknown;
+    int             unknown;
+    if(header.size > headerSize)  {
+        int             unknown;
+    }
+    int             storagePoint;
+} Money_Info;
+
+struct rev_shop
+{
+    local int start_value;
+    start_value = startof(class_name2)+32+4+41+199;
+
+    shop_code     shop_id;
+    FSeek(start_value+36+(i*4));
+    int             item_id;
+    i += 4;
+
+    FSeek(start_value+i);
+};
+
+// -------------------------------------
+// Included structures for each type 
+// of item
+// ------------------------------------- 
+#include "../010 Templates/client/item/base.bt"
+#include "../010 Templates/client/item/armor.bt"
+#include "../010 Templates/client/item/weapon.bt"
+#include "../010 Templates/client/item/shield.bt"
+#include "../010 Templates/client/item/cloak.bt"
+#include "../010 Templates/client/item/jewelry.bt"
+#include "../010 Templates/client/item/bullet.bt"
+#include "../010 Templates/client/item/make_tool.bt"
+#include "../010 Templates/client/item/potion.bt"
+#include "../010 Templates/client/item/bag.bt"
+#include "../010 Templates/client/item/battery.bt"
+#include "../010 Templates/client/item/ore.bt"
+#include "../010 Templates/client/item/resource.bt"
+#include "../010 Templates/client/item/force.bt"
+#include "../010 Templates/client/item/unit_key.bt"
+#include "../010 Templates/client/item/booty.bt"
+#include "../010 Templates/client/item/map.bt"
+#include "../010 Templates/client/item/town.bt"
+#include "../010 Templates/client/item/battle_dungeon.bt"
+#include "../010 Templates/client/item/animus.bt"
+#include "../010 Templates/client/item/guard_tower.bt"
+#include "../010 Templates/client/item/trap.bt"
+#include "../010 Templates/client/item/siege_kit.bt"
+#include "../010 Templates/client/item/ticket.bt"
+#include "../010 Templates/client/item/event.bt"
+#include "../010 Templates/client/item/recovery.bt"
+#include "../010 Templates/client/item/box.bt"
+#include "../010 Templates/client/item/firework.bt"
+#include "../010 Templates/client/item/mining_tool.bt"
+#include "../010 Templates/client/item/radar.bt"
+#include "../010 Templates/client/item/npclink.bt"
+#include "../010 Templates/client/item/coupon.bt"
+#include "../010 Templates/client/item/unit_part.bt"
+#include "../010 Templates/client/item/unit_arm.bt"
+#include "../010 Templates/client/item/unit_shoulder.bt"
+#include "../010 Templates/client/item/unit_back.bt"
+#include "../010 Templates/client/item/unit_bullet.bt"
+#include "../010 Templates/client/item/item_make_data.bt"
+#include "../010 Templates/client/item/item_combine.bt"
+#include "../010 Templates/client/item/item_make_offset.bt"
+#include "../010 Templates/client/item/description.bt"
+
+/**
+ * Character Structure Data
+ */
+#include "character_common.bt"

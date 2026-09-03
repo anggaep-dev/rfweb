@@ -28,171 +28,38 @@
   color: #ff8080;
 }
 
-.rf-viewer-hint {
+.rf-viewer-toggle-bar {
+  /* Bottom-center - every screen edge is otherwise claimed by DebugPanel's
+     own clusters (top-left race select, top-right stats/equip, top-center
+     hint, bottom-left controls, bottom-right command bar), and these
+     buttons need to stay clear of all of them whether or not that panel is
+     shown. */
   position: absolute;
-  top: 1rem;
+  bottom: 1rem;
   left: 50%;
   transform: translateX(-50%);
-  color: #ccc;
-  font: 500 0.85rem system-ui, sans-serif;
-  background: rgba(20, 22, 26, 0.6);
-  padding: 0.4rem 0.9rem;
-  border-radius: 999px;
-  pointer-events: none;
-}
-
-.rf-viewer-controls {
-  position: absolute;
-  left: 1rem;
-  bottom: 1rem;
   display: flex;
   gap: 0.5rem;
   pointer-events: auto;
 }
 
-.rf-viewer-controls button {
-  padding: 0.5rem 1rem;
+.rf-viewer-debug-toggle {
+  padding: 0.4rem 0.8rem;
   border-radius: 6px;
   border: 1px solid #444;
-  background: #22252b;
-  color: #eee;
-  font: 500 0.85rem system-ui, sans-serif;
-  text-transform: capitalize;
+  background: rgba(20, 22, 26, 0.6);
+  color: #9aa4b2;
+  font: 500 0.75rem system-ui, sans-serif;
   cursor: pointer;
+  pointer-events: auto;
 }
 
-.rf-viewer-controls button:hover {
+.rf-viewer-debug-toggle:hover {
   background: #2c3038;
+  color: #eee;
 }
 
-.rf-viewer-controls button.active {
-  background: #4a7dff;
+.rf-viewer-debug-toggle.active {
   border-color: #4a7dff;
-}
-
-.rf-viewer-controls button:disabled {
-  opacity: 0.4;
-  cursor: default;
-}
-
-.rf-viewer-controls-debug {
-  bottom: 4rem;
-}
-
-.rf-viewer-cam-select,
-.rf-viewer-race-select select {
-  padding: 0.5rem 1rem;
-  border-radius: 6px;
-  border: 1px solid #444;
-  background: #22252b;
   color: #eee;
-  font: 500 0.85rem system-ui, sans-serif;
-  cursor: pointer;
-}
-
-.rf-viewer-cam-select:hover,
-.rf-viewer-race-select select:hover {
-  background: #2c3038;
-}
-
-.rf-viewer-race-select select:disabled {
-  opacity: 0.4;
-  cursor: default;
-}
-
-.rf-viewer-race-select {
-  position: absolute;
-  top: 1rem;
-  left: 1rem;
-  pointer-events: auto;
-}
-
-.rf-viewer-frame-label {
-  display: flex;
-  align-items: center;
-  padding: 0 0.4rem;
-  color: #9aa4b2;
-  font: 500 0.8rem ui-monospace, monospace;
-}
-
-.rf-viewer-stats {
-  position: absolute;
-  top: 1rem;
-  right: 1rem;
-  color: #9aa4b2;
-  font: 500 0.8rem ui-monospace, monospace;
-  background: rgba(20, 22, 26, 0.6);
-  padding: 0.4rem 0.7rem;
-  border-radius: 6px;
-  pointer-events: none;
-  white-space: nowrap;
-}
-
-.rf-viewer-equip-panel {
-  position: absolute;
-  top: 3.2rem;
-  right: 1rem;
-  display: flex;
-  flex-direction: column;
-  gap: 0.35rem;
-  background: rgba(20, 22, 26, 0.6);
-  padding: 0.6rem 0.7rem;
-  border-radius: 6px;
-  pointer-events: auto;
-}
-
-.rf-viewer-equip-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.6rem;
-  color: #ccc;
-  font: 500 0.8rem system-ui, sans-serif;
-}
-
-.rf-viewer-equip-row select {
-  max-width: 11rem;
-  padding: 0.25rem 0.4rem;
-  border-radius: 4px;
-  border: 1px solid #444;
-  background: #22252b;
-  color: #eee;
-  font: 500 0.8rem system-ui, sans-serif;
-}
-
-.rf-viewer-equip-row select:disabled {
-  opacity: 0.5;
-}
-
-.rf-viewer-command-bar {
-  position: absolute;
-  right: 1rem;
-  bottom: 1rem;
-  display: flex;
-  align-items: center;
-  gap: 0.6rem;
-  pointer-events: auto;
-}
-
-.rf-viewer-command-input {
-  width: 16rem;
-  padding: 0.5rem 0.7rem;
-  border-radius: 6px;
-  border: 1px solid #444;
-  background: #22252b;
-  color: #eee;
-  font: 500 0.8rem ui-monospace, monospace;
-}
-
-.rf-viewer-command-input::placeholder {
-  color: #666;
-}
-
-.rf-viewer-command-feedback {
-  max-width: 20rem;
-  color: #9aa4b2;
-  font: 500 0.75rem ui-monospace, monospace;
-  background: rgba(20, 22, 26, 0.6);
-  padding: 0.4rem 0.6rem;
-  border-radius: 6px;
 }

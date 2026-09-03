@@ -11,13 +11,15 @@ import {
   Object3D,
   SkinnedMesh,
 } from 'three';
+import type { Texture } from 'three';
 import { buildAnimationClip, parseAnimation } from './animation';
+import type { BindPose } from './animation';
 import { parseMesh } from './mesh';
 import type { RfMeshObject } from './mesh';
 import { findRfsEntry, parseRfs, readRfsEntry } from './rfs';
-import type { RfsArchive } from './rfs';
+import type { RfsArchive, RfsEntry } from './rfs';
 import { buildThreeSkeleton, parseSkeleton } from './skeleton';
-import type { BuiltSkeleton } from './skeleton';
+import type { BuiltSkeleton, RfSkeleton } from './skeleton';
 import { decodeRftTexture } from './texture';
 
 const ASSET_BASE = '/game-assets/character/player';
@@ -182,17 +184,144 @@ export interface RaceAssets {
   meshArchive: RfsArchive;
   texArchive: RfsArchive;
   aniArchive: RfsArchive;
+  /** Per-weapon-category combat walk/run/stand clips (character/player/Ani/{race}COA.RFS) - see getWeaponClip(). */
+  weaponAniArchive: RfsArchive;
+}
+
+/**
+ * Builds the ready-to-attach three.js object(s) from an already-parsed set
+ * of mesh sub-objects - geometry, material/texture, and either a skinned
+ * mesh bound to the given skeleton or a rigid mesh already parented to its
+ * bone (by name, looked up in `built`). Shared by every mesh source: the
+ * initial default body, a body-part item equip, and a weapon equip (see
+ * buildMeshPartObjects and loadWeaponMeshObjects below) - all go through
+ * identical mesh-building logic. Rigid parts with a matching bone are
+ * already attached to it on return; anything still parentless (skinned
+ * meshes, or a rigid part whose bone wasn't found) is the caller's to add.
+ */
+function buildObjectsFromParsedMesh(
+  objects: RfMeshObject[],
+  texture: Texture | null,
+  built: BuiltSkeleton,
+  namePrefix: string,
+  // The skeleton a rigid part's objectMatrix is actually expressed
+  // relative to, for computing its local offset from its parent bone -
+  // normally the same as `built` (a body part is authored against the
+  // exact race skeleton it's equipped onto), but weapons are authored
+  // against one fixed reference skeleton regardless of who wields them
+  // (see loadWeaponMeshObjects), so that case passes a different one here.
+  // Only matters for rigid (unweighted) objects; skinned meshes always
+  // bind to `built` itself.
+  rigidReference: BuiltSkeleton = built,
+): Object3D[] {
+  const built3d: Object3D[] = [];
+  // Some multi-part meshes chain a piece's parentName to *another
+  // sub-object in this same file* instead of (or in addition to - via a
+  // longer chain) a skeleton bone - e.g. a staff's ornamental head parented
+  // to its own stick object, itself parented to the hand bone. Verified
+  // against real weapon meshes (BELCOR_WEAPON_TSTAFF_135.msh's W02→W00→
+  // W01→"Bip01 R Finger0" chain): without resolving these, the head fell
+  // through to the "no parent found" case below, got added directly under
+  // the character's root instead of the stick, and visibly separated from
+  // it the instant the wielding bone animated (the stick correctly follows
+  // the bone; the head, parented to the static root, doesn't move at all).
+  // File order is parent-before-child in every real example seen, so a
+  // single forward pass recording each processed object's own name here is
+  // enough - no second pass/topological sort needed.
+  const siblingsByName = new Map<string, { object3D: Object3D; objectMatrix: Matrix4 }>();
+
+  for (const obj of objects) {
+    if (obj.vertices.length === 0) continue;
+
+    const geometry = buildGeometry(obj);
+    const material = new MeshStandardMaterial({
+      map: texture ?? undefined,
+      color: texture ? 0xffffff : 0xcccccc,
+      side: DoubleSide,
+    });
+
+    let builtObject: Object3D;
+
+    if (obj.skinBoneNames && obj.skinWeights) {
+      const { skinIndices, skinWeights } = buildSkinAttributes(obj, built.nameToIndex);
+      geometry.setAttribute('skinIndex', new BufferAttribute(skinIndices, 4));
+      geometry.setAttribute('skinWeight', new BufferAttribute(skinWeights, 4));
+
+      const skinnedMesh = new SkinnedMesh(geometry, material);
+      skinnedMesh.name = obj.name || `${namePrefix}_${objects.indexOf(obj)}`;
+      // SkinnedMesh.bind(skeleton) with no explicit bindMatrix calls
+      // skeleton.calculateInverses() internally, recomputing boneInverses
+      // from the bones' *current* world matrices - and Skeleton is one
+      // object shared by every body-part mesh, so that silently corrupts
+      // the bind pose for every already-equipped part too, not just this
+      // one. Harmless at initial load (nothing has animated yet, so
+      // "current" happens to equal bind pose), but equipping later while
+      // the character is mid-animation was overwriting boneInverses with
+      // garbage and breaking the whole character. Vertex data is already
+      // baked into bind/world space (see mesh.ts), so an explicit identity
+      // bindMatrix is exactly correct here and skips that recompute entirely.
+      skinnedMesh.bind(built.skeleton, IDENTITY_MATRIX);
+      built3d.push(skinnedMesh);
+      builtObject = skinnedMesh;
+    } else {
+      // Rigid (unweighted) part: attach directly to its parent bone (or
+      // parent sub-object - see above) so it follows the pose.
+      const mesh = new Mesh(geometry, material);
+      mesh.name = obj.name || `${namePrefix}_${objects.indexOf(obj)}`;
+
+      const parentIndex = built.nameToIndex.get(obj.parentName);
+      const parentBone = parentIndex !== undefined ? built.bones[parentIndex] : null;
+      const referenceIndex = rigidReference.nameToIndex.get(obj.parentName);
+      const parentSibling = siblingsByName.get(obj.parentName);
+
+      if (parentBone && referenceIndex !== undefined) {
+        // Use the reference skeleton's precomputed bind-pose inverse, not
+        // the (possibly different) attach target bone's *current*
+        // matrixWorld - this can run well after the initial load (equipping
+        // an item mid-animation), by which point the bone has moved from
+        // its bind pose. objectMatrix is always bind-pose (baked into the
+        // .msh at export time, relative to whatever skeleton it was
+        // authored against), so mixing it with a live, posed bone matrix
+        // computes a bogus static offset that then gets carried along as
+        // the bone keeps animating - the part appears to fly around.
+        // boneInverses is fixed at skeleton construction time (true bind
+        // pose), so this is correct however the *target* pose has moved -
+        // and using the reference skeleton's own inverse (rather than the
+        // target's) is what makes this correct even when the two skeletons
+        // differ, as they do for a wielding character mounting a weapon
+        // authored against a different one.
+        const bindInverse = rigidReference.skeleton.boneInverses[referenceIndex];
+        const localMatrix = bindInverse.clone().multiply(obj.objectMatrix);
+        localMatrix.decompose(mesh.position, mesh.quaternion, mesh.scale);
+        parentBone.add(mesh);
+      } else if (parentSibling) {
+        // Chained to another sub-object in this file rather than a bone -
+        // both objectMatrix values live in the same shared per-file
+        // reference space, so the parent's own raw objectMatrix serves
+        // exactly the same role its bind-pose inverse does in the bone
+        // case above (canceling out that shared space to leave only the
+        // relative offset between the two).
+        const localMatrix = parentSibling.objectMatrix.clone().invert().multiply(obj.objectMatrix);
+        localMatrix.decompose(mesh.position, mesh.quaternion, mesh.scale);
+        parentSibling.object3D.add(mesh);
+      } else {
+        obj.objectMatrix.decompose(mesh.position, mesh.quaternion, mesh.scale);
+      }
+      built3d.push(mesh);
+      builtObject = mesh;
+    }
+
+    siblingsByName.set(obj.name, { object3D: builtObject, objectMatrix: obj.objectMatrix });
+  }
+  return built3d;
 }
 
 /**
  * Builds the ready-to-attach three.js object(s) for one named mesh entry
- * (a body part, or an equipped item's mesh) - geometry, material/texture,
- * and either a skinned mesh bound to the given skeleton or a rigid mesh
- * already parented to its bone. Shared by the initial default-body build
- * and by equipping a specific item onto a slot later, so both go through
- * identical mesh-building logic. Rigid parts with a matching bone are
- * already attached to it on return; anything still parentless (skinned
- * meshes, or a rigid part whose bone wasn't found) is the caller's to add.
+ * (a body part, or an equipped item's mesh) inside a race's Mesh/Tex RFS
+ * archives. Shared by the initial default-body build and by equipping a
+ * specific body-part item onto a slot later, so both go through identical
+ * mesh-building logic.
  */
 export function buildMeshPartObjects(
   stem: string,
@@ -208,7 +337,7 @@ export function buildMeshPartObjects(
   const meshBuffer = readRfsEntry(meshArchive, meshEntry);
 
   const texEntry = findRfsEntry(texArchive, `${stem}.RFT`);
-  let texture = null;
+  let texture: Texture | null = null;
   if (texEntry) {
     try {
       texture = decodeRftTexture(readRfsEntry(texArchive, texEntry));
@@ -225,65 +354,142 @@ export function buildMeshPartObjects(
     return [];
   }
 
-  const built3d: Object3D[] = [];
-  for (const obj of objects) {
-    if (obj.vertices.length === 0) continue;
+  return buildObjectsFromParsedMesh(objects, texture, built, stem);
+}
 
-    const geometry = buildGeometry(obj);
-    const material = new MeshStandardMaterial({
-      map: texture ?? undefined,
-      color: texture ? 0xffffff : 0xcccccc,
-      side: DoubleSide,
+const WEAPON_MESH_BASE = '/game-assets/item/Weapon/Mesh';
+const WEAPON_TEX_BASE = '/game-assets/item/Weapon/Tex';
+
+// Weapon meshes/textures are packed into these RFS archives, same as
+// player body parts - NOT loose files (itemResource.json's PathName/
+// TexutrePath point at a bare directory for most entries, with no archive
+// name encoded, so which of these actually holds a given item isn't
+// knowable ahead of time; see loadWeaponMeshObjects). Discovered by
+// listing public/game-assets/item/Weapon/{Mesh,Tex} - there's no
+// client-side directory listing API, so this has to be a fixed list, same
+// as RACE_CONFIGS' archive names elsewhere in this file. Ordered with the
+// common numbered archives first (WEM00 in particular - confirmed to hold
+// COM_WEAPON_*, the everyday weapon prefix) since a hit there resolves
+// fastest for the common case; the named ones after are smaller, more
+// specialized sets (siege kits, event/PvP weapons, elf-only weapons, ...).
+const WEAPON_MESH_ARCHIVE_NAMES = [
+  'WEM00', 'WEM01', 'WEM02', 'WEM03', 'WEM04', 'WEM05', 'WEM06', 'WEM07', 'WEM08', 'WEM09', 'WEM10', 'WEM11', 'WEM12',
+  'WEVM00', 'GEM00', 'NEM00', 'ELFWPM01', 'PVPWP', 'ORI70', 'ORI70SIEG', 'SIEGEORISS', '75siegeMesh', 'ori6770w',
+];
+const WEAPON_TEX_ARCHIVE_NAMES = [
+  'WET00', 'WET01', 'WET02', 'WET03', 'WET04', 'WET05', 'WET06', 'WET07', 'WET08', 'WET09', 'WET10', 'WET11', 'WET12', 'WET13',
+  'WEVT00', 'GET00', 'NET55', 'ELFWPT01', 'PVPWP', 'ORI70', 'ORI70SIEG', 'SIEGEORISS', 'ori6770',
+];
+
+// Lazily fetched and cached per archive name (not just per race like
+// raceAssetCache) - a weapon equip only needs the one or two archives that
+// actually hold that item, not this whole ~150MB set, so nothing here is
+// preloaded up front. Promises are cached up front (same reasoning as
+// raceAssetCache above), so two concurrent lookups that need the same
+// archive share one fetch instead of racing separate ones; a failed load
+// resolves to null (not a rejection) so it's cached as "confirmed absent"
+// rather than retried forever.
+const weaponMeshArchiveCache = new Map<string, Promise<RfsArchive | null>>();
+const weaponTexArchiveCache = new Map<string, Promise<RfsArchive | null>>();
+
+function loadWeaponArchive(
+  base: string,
+  name: string,
+  cache: Map<string, Promise<RfsArchive | null>>,
+): Promise<RfsArchive | null> {
+  let cached = cache.get(name);
+  if (!cached) {
+    cached = fetchRfsArchive(`${base}/${name}.RFS`).catch((err: unknown) => {
+      console.warn(`Failed to load weapon archive "${name}":`, err);
+      return null;
     });
+    cache.set(name, cached);
+  }
+  return cached;
+}
 
-    if (obj.skinBoneNames && obj.skinWeights) {
-      const { skinIndices, skinWeights } = buildSkinAttributes(obj, built.nameToIndex);
-      geometry.setAttribute('skinIndex', new BufferAttribute(skinIndices, 4));
-      geometry.setAttribute('skinWeight', new BufferAttribute(skinWeights, 4));
+/** Searches a fixed list of archives in order for one named entry, fetching (and caching) only as many as it takes to find a hit. */
+async function findInWeaponArchives(
+  archiveNames: string[],
+  base: string,
+  cache: Map<string, RfsArchive | null>,
+  entryName: string,
+): Promise<{ archive: RfsArchive; entry: RfsEntry } | null> {
+  for (const name of archiveNames) {
+    const archive = await loadWeaponArchive(base, name, cache);
+    if (!archive) continue;
+    const entry = findRfsEntry(archive, entryName);
+    if (entry) return { archive, entry };
+  }
+  return null;
+}
 
-      const skinnedMesh = new SkinnedMesh(geometry, material);
-      skinnedMesh.name = obj.name || `${stem}_${objects.indexOf(obj)}`;
-      // SkinnedMesh.bind(skeleton) with no explicit bindMatrix calls
-      // skeleton.calculateInverses() internally, recomputing boneInverses
-      // from the bones' *current* world matrices - and Skeleton is one
-      // object shared by every body-part mesh, so that silently corrupts
-      // the bind pose for every already-equipped part too, not just this
-      // one. Harmless at initial load (nothing has animated yet, so
-      // "current" happens to equal bind pose), but equipping later while
-      // the character is mid-animation was overwriting boneInverses with
-      // garbage and breaking the whole character. Vertex data is already
-      // baked into bind/world space (see mesh.ts), so an explicit identity
-      // bindMatrix is exactly correct here and skips that recompute entirely.
-      skinnedMesh.bind(built.skeleton, IDENTITY_MATRIX);
-      built3d.push(skinnedMesh);
-    } else {
-      // Rigid (unweighted) part: attach directly to its parent bone so it follows the pose.
-      const mesh = new Mesh(geometry, material);
-      mesh.name = obj.name || `${stem}_${objects.indexOf(obj)}`;
+// Weapon meshes' rigid sub-objects have a parentName that names a bone
+// that exists on any character's skeleton (verified against a real
+// weapon .msh: "Bip01 R Finger0"/"Bip01 R Hand" etc), so no separate
+// per-weapon skeleton needs to be *loaded* - but their objectMatrix isn't
+// actually expressed relative to the wielding character's own skeleton.
+// Every weapon mesh checked (a one-handed knife and a two-handed sword,
+// both across multiple races) has an objectMatrix that lines up almost
+// exactly (a small, consistent residual - presumably the real grip
+// offset) with Accretia's own skeleton specifically, not Bell/Cora's -
+// and each weapon's shipped .bn file (itself unused for skinning, since
+// weapons are rigid, not skinned) independently confirms this: its bone
+// world positions match Accretia's real skeleton almost to the decimal.
+// So every weapon was authored/rigged against ONE fixed reference
+// skeleton (Accretia's), regardless of which race can equip it - using
+// the *wielding* character's own skeleton for the bind-pose inverse (as
+// body-part items correctly do, since those really are authored per-race)
+// silently misplaces the weapon for every other race. Loaded once and
+// cached, reused for every weapon equip.
+let weaponReferenceSkeletonPromise: Promise<BuiltSkeleton> | null = null;
+function loadWeaponReferenceSkeleton(): Promise<BuiltSkeleton> {
+  if (!weaponReferenceSkeletonPromise) {
+    weaponReferenceSkeletonPromise = getRaceAssets(RaceGender.Accretia).then(({ skeletonBuffer }) =>
+      buildThreeSkeleton(parseSkeleton(skeletonBuffer)),
+    );
+  }
+  return weaponReferenceSkeletonPromise;
+}
 
-      const parentIndex = built.nameToIndex.get(obj.parentName);
-      const parentBone = parentIndex !== undefined ? built.bones[parentIndex] : null;
-      if (parentBone && parentIndex !== undefined) {
-        // Use the skeleton's precomputed bind-pose inverse, not the bone's
-        // *current* matrixWorld - this can run well after the initial load
-        // (equipping an item mid-animation), by which point the bone has
-        // moved from its bind pose. objectMatrix is always bind-pose (baked
-        // into the .msh at export time), so mixing it with a live, posed
-        // bone matrix computes a bogus static offset that then gets carried
-        // along as the bone keeps animating - the part appears to fly
-        // around. boneInverses is fixed at skeleton construction time
-        // (true bind pose), so this is correct however the pose has moved.
-        const bindInverse = built.skeleton.boneInverses[parentIndex];
-        const localMatrix = bindInverse.clone().multiply(obj.objectMatrix);
-        localMatrix.decompose(mesh.position, mesh.quaternion, mesh.scale);
-        parentBone.add(mesh);
-      } else {
-        obj.objectMatrix.decompose(mesh.position, mesh.quaternion, mesh.scale);
-      }
-      built3d.push(mesh);
+/**
+ * Builds the ready-to-attach three.js object(s) for an equipped weapon.
+ * `built` is the wielding character's own skeleton, used to find the
+ * actual bone object to attach onto (so the weapon follows that
+ * character's own pose) - see loadWeaponReferenceSkeleton above for why
+ * the *placement math* needs a different, fixed skeleton instead. Most
+ * weapon items reference a model variant not present in this asset drop,
+ * so an empty result (mesh not found in any weapon archive) is common -
+ * callers should treat that as "no visual mesh available," not an error.
+ */
+export async function loadWeaponMeshObjects(stem: string, built: BuiltSkeleton): Promise<Object3D[]> {
+  const meshHit = await findInWeaponArchives(WEAPON_MESH_ARCHIVE_NAMES, WEAPON_MESH_BASE, weaponMeshArchiveCache, `${stem}.msh`);
+  if (!meshHit) {
+    console.warn(`No "${stem}.msh" entry in any weapon Mesh archive`);
+    return [];
+  }
+  const meshBuffer = readRfsEntry(meshHit.archive, meshHit.entry);
+
+  let texture: Texture | null = null;
+  const texHit = await findInWeaponArchives(WEAPON_TEX_ARCHIVE_NAMES, WEAPON_TEX_BASE, weaponTexArchiveCache, `${stem}.RFT`);
+  if (texHit) {
+    try {
+      texture = decodeRftTexture(readRfsEntry(texHit.archive, texHit.entry));
+    } catch (err) {
+      console.warn(`Texture decode failed for ${stem}:`, err);
     }
   }
-  return built3d;
+
+  let objects;
+  try {
+    objects = parseMesh(meshBuffer);
+  } catch (err) {
+    console.warn(`Failed to parse "${stem}.msh":`, err);
+    return [];
+  }
+
+  const referenceSkeleton = await loadWeaponReferenceSkeleton();
+  return buildObjectsFromParsedMesh(objects, texture, built, stem, referenceSkeleton);
 }
 
 // Keyed by race so a preload (or a repeat visit to an already-loaded race)
@@ -319,11 +525,17 @@ function loadRaceAssets(raceGender: RaceGender, onFileLoaded?: () => void): Prom
     trackedFetchRfsArchive(`${ASSET_BASE}/Mesh/DEFAULT${race.meshTexCode}.RFS`),
     trackedFetchRfsArchive(`${ASSET_BASE}/Tex/DEFAULT${race.meshTexCode}.RFS`),
     trackedFetchRfsArchive(`${ASSET_BASE}/Ani/${race.aniCode}ETA.RFS`),
-  ]).then(([skeletonBuffer, meshArchive, texArchive, aniArchive]) => ({
+    // COA, not MOA: COA turns out to be a near-superset of MOA (every
+    // BW/FW/LF/RT walk/run entry MOA has, minus 8 redundant PEACE_* ones
+    // already covered by the ETA archive) plus the per-weapon-token
+    // COMBAT_STAND clip that MOA doesn't carry at all.
+    trackedFetchRfsArchive(`${ASSET_BASE}/Ani/${race.aniCode}COA.RFS`),
+  ]).then(([skeletonBuffer, meshArchive, texArchive, aniArchive, weaponAniArchive]) => ({
     skeletonBuffer,
     meshArchive,
     texArchive,
     aniArchive,
+    weaponAniArchive,
   }));
   // Cache the promise up front (not after it resolves) so concurrent callers
   // join it instead of starting their own fetch; a failed load is evicted so
@@ -334,12 +546,13 @@ function loadRaceAssets(raceGender: RaceGender, onFileLoaded?: () => void): Prom
 }
 
 const ALL_RACES = Object.values(RaceGender).filter((v): v is RaceGender => typeof v === 'number');
-const FILES_PER_RACE = 4;
+const FILES_PER_RACE = 5;
 
 /**
  * Fetches and caches every race's assets up front, so switching races later
  * never blocks on the network. Reports progress in units of "files fetched"
- * (4 per race: bone, mesh, tex, ani), not races, for a smoother readout.
+ * (5 per race: bone, mesh, tex, ani, weapon-ani), not races, for a smoother
+ * readout.
  */
 export async function preloadAllRaces(onProgress?: (loaded: number, total: number) => void): Promise<void> {
   const total = ALL_RACES.length * FILES_PER_RACE;
@@ -376,12 +589,7 @@ export async function loadCharacter(raceGender: RaceGender = RaceGender.Bell_Fem
   group.name = race.nameToken;
   group.add(built.root);
 
-  const bindPoseByBone = new Map(
-    rfSkeleton.bones.map((b) => [
-      b.name,
-      { position: b.localPosition, rotation: b.localRotation, scale: b.localScale },
-    ]),
-  );
+  const bindPoseByBone = getCachedBindPose(raceGender, rfSkeleton);
 
   const mixer = new AnimationMixer(group);
   const clips: Record<string, AnimationClip> = {};
@@ -400,4 +608,98 @@ export async function loadCharacter(raceGender: RaceGender = RaceGender.Bell_Fem
   }
 
   return { group, builtSkeleton: built, mixer, clips };
+}
+
+// A race's bind pose (per-bone rest position/rotation/scale) is pure data
+// derived from its skeleton buffer, with no per-character identity - unlike
+// builtSkeleton (real three.js Bone objects, one independent set per
+// mounted character), it's safe and cheap to compute once per race and
+// reuse for every character of that race, including later lazily-built
+// weapon clips (see getWeaponClip) that need it long after the character
+// that first requested it may be gone.
+const bindPoseCache = new Map<RaceGender, Map<string, BindPose>>();
+
+function getCachedBindPose(raceGender: RaceGender, rfSkeleton: RfSkeleton): Map<string, BindPose> {
+  let cached = bindPoseCache.get(raceGender);
+  if (!cached) {
+    cached = new Map(
+      rfSkeleton.bones.map((b) => [
+        b.name,
+        { position: b.localPosition, rotation: b.localRotation, scale: b.localScale },
+      ]),
+    );
+    bindPoseCache.set(raceGender, cached);
+  }
+  return cached;
+}
+
+async function getBindPoseByBoneAsync(raceGender: RaceGender): Promise<Map<string, BindPose>> {
+  const cached = bindPoseCache.get(raceGender);
+  if (cached) return cached;
+  const { skeletonBuffer } = await loadRaceAssets(raceGender);
+  return getCachedBindPose(raceGender, parseSkeleton(skeletonBuffer));
+}
+
+/** Cache key (also the character.clips key) for a weapon-conditional walk/run/stand clip. */
+export function weaponClipKey(kind: 'walk' | 'run' | 'stand', weaponToken: string): string {
+  return `${kind}:${weaponToken}`;
+}
+
+// Accretia's COA archive names walk/run with a directional FW prefix
+// ("ACCRETIA_COMBAT_FWWALK_<token>_NONE_01_00") - and also carries a
+// second, plain non-directional form alongside it ("..._COMBAT_WALK_...").
+// Every other race (Bell/Cora, both genders) only ever has the plain form
+// - verified by counting entries: 0 FWWALK/FWRUN matches across all of
+// BMCOA/BFCOA/CMCOA/CFCOA, 56 in ACCOA alongside 56 plain ones. Since our
+// character always faces its travel direction, the plain form is exactly
+// what "forward" needs anyway on those races - it's their only combat
+// walk/run, not a different animation. Both spellings are tried, FW first
+// since it's the more explicit match when both exist. STAND has no
+// directional variant on any race.
+const WEAPON_CLIP_SEGMENTS: Record<'walk' | 'run' | 'stand', string[]> = {
+  walk: ['FWWALK', 'WALK'],
+  run: ['FWRUN', 'RUN'],
+  stand: ['STAND'],
+};
+
+/**
+ * Lazily builds (and caches onto `character.clips`) the combat walk/run/
+ * stand clip for a given weapon category token (see resolveWeaponMesh's
+ * weaponToken, e.g. "RKNIFE"/"TSWORD"/"DAXE"). Not every race has a combat
+ * animation for every weapon token (some heavy weapons are Accretia-only,
+ * for instance), so this commonly resolves to null; callers should fall
+ * back to the unarmed clip, not treat it as an error.
+ */
+export async function getWeaponClip(
+  raceGender: RaceGender,
+  character: RfCharacter,
+  kind: 'walk' | 'run' | 'stand',
+  weaponToken: string,
+): Promise<AnimationClip | null> {
+  const key = weaponClipKey(kind, weaponToken);
+  const cached = character.clips[key];
+  if (cached) return cached;
+
+  const race = RACE_CONFIGS[raceGender];
+  const { weaponAniArchive } = await getRaceAssets(raceGender);
+
+  let aniEntry: RfsEntry | null = null;
+  let fileName = '';
+  for (const segment of WEAPON_CLIP_SEGMENTS[kind]) {
+    fileName = `${race.nameToken}_COMBAT_${segment}_${weaponToken}_NONE_01_00.ANI`;
+    aniEntry = findRfsEntry(weaponAniArchive, fileName);
+    if (aniEntry) break;
+  }
+  if (!aniEntry) return null;
+
+  try {
+    const buffer = readRfsEntry(weaponAniArchive, aniEntry);
+    const bindPoseByBone = await getBindPoseByBoneAsync(raceGender);
+    const clip = buildAnimationClip(key, parseAnimation(buffer), bindPoseByBone);
+    character.clips[key] = clip;
+    return clip;
+  } catch (err) {
+    console.warn(`Skipping weapon animation "${fileName}":`, err);
+    return null;
+  }
 }
