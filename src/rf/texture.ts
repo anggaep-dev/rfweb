@@ -32,10 +32,8 @@ function decodeRft(buffer: ArrayBuffer): ArrayBuffer {
   return decoded.buffer;
 }
 
-export async function loadRftTexture(url: string): Promise<CompressedTexture> {
-  const response = await fetch(url);
-  if (!response.ok) throw new Error(`Failed to fetch texture at ${url}: ${response.status}`);
-  const rawBuffer = await response.arrayBuffer();
+/** Decodes an already-in-memory .RFT buffer (e.g. sliced out of a parsed .RFS archive). */
+export function decodeRftTexture(rawBuffer: ArrayBuffer): CompressedTexture {
   const ddsBuffer = decodeRft(rawBuffer);
 
   const loader = new DDSLoader();
@@ -54,4 +52,11 @@ export async function loadRftTexture(url: string): Promise<CompressedTexture> {
   texture.colorSpace = SRGBColorSpace;
   texture.needsUpdate = true;
   return texture;
+}
+
+export async function loadRftTexture(url: string): Promise<CompressedTexture> {
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`Failed to fetch texture at ${url}: ${response.status}`);
+  const rawBuffer = await response.arrayBuffer();
+  return decodeRftTexture(rawBuffer);
 }

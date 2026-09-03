@@ -12,20 +12,59 @@ import {
 import { buildAnimationClip, parseAnimation } from './animation';
 import { parseMesh } from './mesh';
 import type { RfMeshObject } from './mesh';
+import { findRfsEntry, parseRfs, readRfsEntry } from './rfs';
+import type { RfsArchive } from './rfs';
 import { buildThreeSkeleton, parseSkeleton } from './skeleton';
 import type { BuiltSkeleton } from './skeleton';
-import { loadRftTexture } from './texture';
+import { decodeRftTexture } from './texture';
 
-const ASSET_BASE = '/game-assets';
+const ASSET_BASE = '/game-assets/character/player';
 
 const MESH_PART_NAMES = ['FACE', 'GLOVES', 'HELMET', 'LOWER', 'SHOES', 'UPPER'] as const;
 
-export const ANIMATION_FILES: Record<string, string> = {
-  stand: 'BELFEMALE_PEACE_STAND_NONE_NONE_01_00.ANI',
-  walk: 'BELFEMALE_PEACE_WALK_NONE_NONE_01_00.ANI',
-  run: 'BELFEMALE_PEACE_RUN_NONE_NONE_01_00.ANI',
-  sit: 'BELFEMALE_COMMON_SIT_NONE_NONE_01_00.ANI',
+export const CLIP_NAMES = ['stand', 'walk', 'run', 'sit'] as const;
+
+/**
+ * Playable race/gender bodies, matching the client's RACEGENDER enum
+ * (public/raw/include_client_resource.bt) - not to be confused with that
+ * same file's separate, differently-scoped RaceGender (uint16, used inside
+ * MODEL_ID for armor variants).
+ */
+export enum RaceGender {
+  Bell_Male = 0,
+  Bell_Female = 1,
+  Cora_Male = 2,
+  Cora_Female = 3,
+  Accretia = 4,
+}
+
+interface RaceConfig {
+  /** Filename prefix used throughout mesh/animation entries, e.g. "BELFEMALE". */
+  nameToken: string;
+  /** 2-letter code for the character/player/{Mesh,Tex}/DEFAULT{code}.RFS archives. */
+  meshTexCode: string;
+  /** 2-letter code for the character/player/Ani/{code}ETA.RFS archive (Accretia's differs from its mesh/tex code). */
+  aniCode: string;
+  /** Bone file stem under character/player/Bone/, exact on-disk casing. */
+  boneFile: string;
+}
+
+const RACE_CONFIGS: Record<RaceGender, RaceConfig> = {
+  [RaceGender.Bell_Male]: { nameToken: 'BELMALE', meshTexCode: 'BM', aniCode: 'BM', boneFile: 'BelMale' },
+  [RaceGender.Bell_Female]: { nameToken: 'BELFEMALE', meshTexCode: 'BF', aniCode: 'BF', boneFile: 'BelFemale' },
+  [RaceGender.Cora_Male]: { nameToken: 'CORMALE', meshTexCode: 'CM', aniCode: 'CM', boneFile: 'CorMale' },
+  [RaceGender.Cora_Female]: { nameToken: 'CORFEMALE', meshTexCode: 'CF', aniCode: 'CF', boneFile: 'CorFemale' },
+  [RaceGender.Accretia]: { nameToken: 'ACCRETIA', meshTexCode: 'AA', aniCode: 'AC', boneFile: 'Accretia' },
 };
+
+function animationFileNames(nameToken: string): Record<(typeof CLIP_NAMES)[number], string> {
+  return {
+    stand: `${nameToken}_PEACE_STAND_NONE_NONE_01_00.ANI`,
+    walk: `${nameToken}_PEACE_WALK_NONE_NONE_01_00.ANI`,
+    run: `${nameToken}_PEACE_RUN_NONE_NONE_01_00.ANI`,
+    sit: `${nameToken}_COMMON_SIT_NONE_NONE_01_00.ANI`,
+  };
+}
 
 export interface RfCharacter {
   /** Add this to your scene. Keep its transform at identity - skin binding assumes it. */
@@ -130,33 +169,120 @@ function buildGeometry(meshObj: RfMeshObject): BufferGeometry {
   return geometry;
 }
 
-/** Loads BelFemale's skeleton, equipped mesh parts and animation clips into a ready-to-render character. */
-export async function loadCharacter(): Promise<RfCharacter> {
-  const skeletonBuffer = await fetchBuffer(`${ASSET_BASE}/bone/BelFemale.bn`);
+async function fetchRfsArchive(url: string): Promise<RfsArchive> {
+  return parseRfs(await fetchBuffer(url));
+}
+
+interface RaceAssets {
+  skeletonBuffer: ArrayBuffer;
+  meshArchive: RfsArchive;
+  texArchive: RfsArchive;
+  aniArchive: RfsArchive;
+}
+
+// Keyed by race so a preload (or a repeat visit to an already-loaded race)
+// never re-fetches. In-flight promises are cached too, not just settled
+// results, so two overlapping requests for the same not-yet-loaded race
+// (e.g. preloadAllRaces() racing a user's manual race switch) share one
+// fetch instead of doubling it up.
+const raceAssetCache = new Map<RaceGender, Promise<RaceAssets>>();
+
+function loadRaceAssets(raceGender: RaceGender, onFileLoaded?: () => void): Promise<RaceAssets> {
+  const cached = raceAssetCache.get(raceGender);
+  if (cached) return cached;
+
+  const race = RACE_CONFIGS[raceGender];
+  const trackedFetchBuffer = (url: string) =>
+    fetchBuffer(url).then((buffer) => {
+      onFileLoaded?.();
+      return buffer;
+    });
+  const trackedFetchRfsArchive = (url: string) =>
+    fetchRfsArchive(url).then((archive) => {
+      onFileLoaded?.();
+      return archive;
+    });
+
+  const promise = Promise.all([
+    trackedFetchBuffer(`${ASSET_BASE}/Bone/${race.boneFile}.bn`),
+    trackedFetchRfsArchive(`${ASSET_BASE}/Mesh/DEFAULT${race.meshTexCode}.RFS`),
+    trackedFetchRfsArchive(`${ASSET_BASE}/Tex/DEFAULT${race.meshTexCode}.RFS`),
+    trackedFetchRfsArchive(`${ASSET_BASE}/Ani/${race.aniCode}ETA.RFS`),
+  ]).then(([skeletonBuffer, meshArchive, texArchive, aniArchive]) => ({
+    skeletonBuffer,
+    meshArchive,
+    texArchive,
+    aniArchive,
+  }));
+  // Cache the promise up front (not after it resolves) so concurrent callers
+  // join it instead of starting their own fetch; a failed load is evicted so
+  // a later retry can actually try again rather than replaying the same rejection.
+  raceAssetCache.set(raceGender, promise);
+  promise.catch(() => raceAssetCache.delete(raceGender));
+  return promise;
+}
+
+const ALL_RACES = Object.values(RaceGender).filter((v): v is RaceGender => typeof v === 'number');
+const FILES_PER_RACE = 4;
+
+/**
+ * Fetches and caches every race's assets up front, so switching races later
+ * never blocks on the network. Reports progress in units of "files fetched"
+ * (4 per race: bone, mesh, tex, ani), not races, for a smoother readout.
+ */
+export async function preloadAllRaces(onProgress?: (loaded: number, total: number) => void): Promise<void> {
+  const total = ALL_RACES.length * FILES_PER_RACE;
+  let loaded = 0;
+  onProgress?.(loaded, total);
+  await Promise.all(
+    ALL_RACES.map((race) =>
+      loadRaceAssets(race, () => {
+        loaded += 1;
+        onProgress?.(loaded, total);
+      }),
+    ),
+  );
+}
+
+/** Loads a race/gender's skeleton, default equipped mesh parts and base animation clips into a ready-to-render character. */
+export async function loadCharacter(raceGender: RaceGender = RaceGender.Bell_Female): Promise<RfCharacter> {
+  const race = RACE_CONFIGS[raceGender];
+  const { skeletonBuffer, meshArchive, texArchive, aniArchive } = await loadRaceAssets(raceGender);
+
   const rfSkeleton = parseSkeleton(skeletonBuffer);
   const built = buildThreeSkeleton(rfSkeleton);
 
   const group = new Group();
-  group.name = 'BelFemale';
+  group.name = race.nameToken;
   group.add(built.root);
 
   for (const part of MESH_PART_NAMES) {
-    const stem = `BELFEMALE_DEFAULT_${part}_000`;
+    const stem = `${race.nameToken}_DEFAULT_${part}_000`;
 
-    let meshBuffer: ArrayBuffer;
-    try {
-      meshBuffer = await fetchBuffer(`${ASSET_BASE}/mesh/${stem}.msh`);
-    } catch (err) {
-      console.warn(`Skipping mesh part ${part}:`, err);
+    const meshEntry = findRfsEntry(meshArchive, `${stem}.msh`);
+    if (!meshEntry) {
+      console.warn(`Skipping mesh part ${part}: no "${stem}.msh" entry in the Mesh archive`);
       continue;
     }
+    const meshBuffer = readRfsEntry(meshArchive, meshEntry);
 
-    const texture = await loadRftTexture(`${ASSET_BASE}/tex/${stem}.RFT`).catch((err) => {
-      console.warn(`Texture load failed for ${stem}:`, err);
-      return null;
-    });
+    const texEntry = findRfsEntry(texArchive, `${stem}.RFT`);
+    let texture = null;
+    if (texEntry) {
+      try {
+        texture = decodeRftTexture(readRfsEntry(texArchive, texEntry));
+      } catch (err) {
+        console.warn(`Texture decode failed for ${stem}:`, err);
+      }
+    }
 
-    const objects = parseMesh(meshBuffer);
+    let objects;
+    try {
+      objects = parseMesh(meshBuffer);
+    } catch (err) {
+      console.warn(`Skipping mesh part ${part}: failed to parse "${stem}.msh" (entry size ${meshEntry.size} bytes):`, err);
+      continue;
+    }
     for (const obj of objects) {
       if (obj.vertices.length === 0) continue;
 
@@ -205,9 +331,14 @@ export async function loadCharacter(): Promise<RfCharacter> {
 
   const mixer = new AnimationMixer(group);
   const clips: Record<string, AnimationClip> = {};
-  for (const [clipName, fileName] of Object.entries(ANIMATION_FILES)) {
+  for (const [clipName, fileName] of Object.entries(animationFileNames(race.nameToken))) {
+    const aniEntry = findRfsEntry(aniArchive, fileName);
+    if (!aniEntry) {
+      console.warn(`Skipping animation ${clipName}: no "${fileName}" entry in the Ani archive`);
+      continue;
+    }
     try {
-      const buffer = await fetchBuffer(`${ASSET_BASE}/ani/${fileName}`);
+      const buffer = readRfsEntry(aniArchive, aniEntry);
       clips[clipName] = buildAnimationClip(clipName, parseAnimation(buffer), bindPoseByBone);
     } catch (err) {
       console.warn(`Skipping animation ${clipName}:`, err);

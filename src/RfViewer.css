@@ -83,7 +83,8 @@
   bottom: 4rem;
 }
 
-.rf-viewer-cam-select {
+.rf-viewer-cam-select,
+.rf-viewer-race-select select {
   padding: 0.5rem 1rem;
   border-radius: 6px;
   border: 1px solid #444;
@@ -93,8 +94,20 @@
   cursor: pointer;
 }
 
-.rf-viewer-cam-select:hover {
+.rf-viewer-cam-select:hover,
+.rf-viewer-race-select select:hover {
   background: #2c3038;
+}
+
+.rf-viewer-race-select select:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.rf-viewer-race-select {
+  position: absolute;
+  top: 1rem;
+  left: 1rem;
 }
 
 .rf-viewer-frame-label {
@@ -103,4 +116,17 @@
   padding: 0 0.4rem;
   color: #9aa4b2;
   font: 500 0.8rem ui-monospace, monospace;
+}
+
+.rf-viewer-stats {
+  position: absolute;
+  top: 1rem;
+  right: 1rem;
+  color: #9aa4b2;
+  font: 500 0.8rem ui-monospace, monospace;
+  background: rgba(20, 22, 26, 0.6);
+  padding: 0.4rem 0.7rem;
+  border-radius: 6px;
+  pointer-events: none;
+  white-space: nowrap;
 }
