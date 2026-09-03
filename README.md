@@ -1,75 +1,33 @@
-# React + TypeScript + Vite
+# rfweb
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+A browser-based viewer for RF Online client assets. Built with React + TypeScript + Vite, it loads the game's raw formats (`.msh`, `.bn`/`.bbx`, `.ani`, `.bsp`, `.r3e`, `.dds`) directly at runtime — no conversion step, no Blender required to view them.
 
-Currently, two official plugins are available:
+[`extra/cbb-rf-online-addon-main`](extra/cbb-rf-online-addon-main) (the Blender addon this project uses as a format reference) documents how these formats are structured and how the pieces relate to each other (skeleton → mesh → animation, map → entities, etc.).
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+## Status
 
-## React Compiler
+First milestone reached: BelFemale renders in-browser with three.js — skinned mesh + skeleton, textured, playing back the stand/walk/run/sit animations from `public/game-assets/ani/`. See [`src/rf/`](src/rf/) for the format parsers (`.bn` skeleton, `.msh` mesh, `.ani` animation, `.RFT` texture) and [`src/RfViewer.tsx`](src/RfViewer.tsx) for the scene/camera/animation-mixer wiring.
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+Next up: more animations, other characters/equipment, and eventually the map (`.bsp`/`.r3e`) milestone.
 
-## Expanding the ESLint configuration
+## Getting started
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-
+```bash
+npm install
+npm run dev
 ```
 
-You can also install [eslint-plugin-react-x](https://npmx.dev/package/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://npmx.dev/package/eslint-plugin-react-dom) for React-specific lint rules:
+Other scripts: `npm run build`, `npm run lint`, `npm run preview`.
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+## Game assets
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+Raw client files live in [`public/game-assets/`](public/game-assets/) so Vite serves them as-is and the loaders can fetch them at runtime. This folder is git-ignored (the assets are the original game's copyrighted files) — only [`public/game-assets/README.md`](public/game-assets/README.md) is tracked, so its layout expectations survive even though the contents don't.
 
-```
+Currently populated with one character's slice, following the client's own relative folder structure:
+
+- `ani/` — `BELFEMALE_*.ANI` animations (sit, run, stand, walk)
+- `bone/` — `BelFemale.bn` skeleton
+- `mesh/` — `BELFEMALE_DEFAULT_*.msh` (face, gloves, helmet, lower, shoes, upper)
+- `tex/` — matching `BELFEMALE_DEFAULT_*.RFT` textures
+
+See that folder's own README for the conventions to follow when adding more.

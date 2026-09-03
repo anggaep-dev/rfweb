@@ -1,0 +1,427 @@
+/**
+ * Intrepid-Web.NET
+ * 
+ * Source code may not be modified without the direct consent and permission
+ * of Intrepid-Web.NET.
+ * 
+ * @copyright   Copyright (c) Intrepid-Web.NET. (www.intrepid-web.net)
+ */
+
+#define MAX_CHAR_TYPE				6
+#define CTI_AVATAR					0xF				// 아바타를 제외한 나머지 값들은 서버측과 맞춘것임
+#define CTI_PLAYER					0			
+#define CTI_MONSTER					1
+#define CTI_NPC						2
+#define CTI_ANIMUS					3
+#define CTI_GUARD_TOWER				4
+#define CTI_UNIT					0x5
+#define CTI_OBSERVER				0x6
+#define CTI_DUMMY					0x7
+
+// Resource Data List ID ( RLI_ )
+#define MAX_RES_DATA_LIST        9
+#define RLI_PLAYER                        0
+#define RLI_MONSTER                        1
+#define RLI_ANIMUS                        2
+#define RLI_GUARD_TOWER                3
+#define RLI_NPC                                4
+#define RLI_ITEM                        5
+#define RLI_UNIT                        6
+#define RLI_SKILL                        7
+#define RLI_FORCE                        8
+
+
+#define MAX_ITEM_TYPE				( 26 + 8 )		// 항상 + 8 이다.
+#define IEPT_FACE					CEPT_FACE
+#define IEPT_UPPER_PART				CEPT_UPPER_PART
+#define IEPT_LOWER_PART				CEPT_LOWER_PART
+#define IEPT_GLOVES					CEPT_GLOVES
+#define IEPT_SHOES					CEPT_SHOES
+#define IEPT_HELMET					CEPT_HELMET
+#define IEPT_WEAPON					CEPT_WEAPON
+#define IEPT_SHIELD					CEPT_SHIELD
+#define IEPT_CLOAK					CEPT_CLOAK
+#define IEPT_RING					9
+#define IEPT_AMULET					10
+#define IEPT_BULLET					11
+#define IEPT_WORKTOOL				12
+#define IEPT_POTION					13
+#define IEPT_ETC					14
+#define IEPT_BATTERY				15
+#define IEPT_ORE					16
+#define IEPT_INGOT					17
+#define IEPT_FORCE					18
+#define IEPT_UNIT					19
+#define IEPT_LOOT					20
+#define IEPT_MAP					21
+#define IEPT_RETURN					22
+#define IEPT_DUNGEON				23
+#define IEPT_ANIMUS					24
+#define IEPT_GUARD_TOWER			25
+#define IEPT_UNIT_HELMET			26				// Unit Part 데이터부터는 클라이언트 전용임.
+#define IEPT_UNIT_UPPER_PART		27
+#define IEPT_UNIT_LOWER_PART		28
+#define IEPT_UNIT_ARMS				29
+#define IEPT_UNIT_SHOULDER			30
+#define IEPT_UNIT_BACKPACK			31
+#define IEPT_UNIT_BULLET			32
+#define IEPT_ITEM_WORK				33				// 아이템 제작 데이터는 항상 제일 마지막 ( 원래는 아이템 데이터가 아니지만, 편의상! )
+
+
+enum BOOL { False = 0, True = 1 }; 
+enum RACEGENDER { Bell_Male = 0, Bell_Female = 1, Cora_Male = 2, Cora_Female = 3, Accretia = 4}; 
+enum MonsterType
+{ 
+    Normal_Monster=0, 
+    Ace_Monster=1, 
+    Pit_Boss_Monster=2, 
+    Champion_Monster=3, 
+    Elite_Monster4, 
+    Hero_Monster=5, 
+    Solo_Monster=6 
+};
+
+enum <byte> ANI_TYPE
+{
+	WARPOWERUP_00 = -128,
+	WARPOWERUP_01 = -127,
+	WARPOWERUP_02 = -126,
+	WARPOWERUP_03 = -125,
+	WARPOWERUP_04 = -124,
+	WARPOWERUP_05 = -123,
+	WARPOWERUP_06 = -122,
+	WARPOWERUP_07 = -121,
+	WARPOWERUP_08 = -120,
+	WARPOWERUP_09 = -119,
+	WARPOWERUP_10 = -118,
+	WARPOWERUP_11 = -117,
+	WARPOWERUP_12 = -116,
+	WARPOWERUP_13 = -115,
+	WARPOWERUP_14 = -114,
+	WARPOWERUP_15 = -113,
+
+	WARATTACK_00 = -112,
+	WARATTACK_01 = -111,
+	WARATTACK_02 = -110,
+	WARATTACK_03 = -109,
+	WARATTACK_04 = -108,
+	WARATTACK_05 = -107,
+	WARATTACK_06 = -106,
+	WARATTACK_07 = -105,
+	WARATTACK_08 = -104,
+	WARATTACK_09 = -103,
+	WARATTACK_10 = -102,
+	WARATTACK_11 = -101,
+	WARATTACK_12 = -100,
+	WARATTACK_13 = -99,
+	WARATTACK_14 = -98,
+	WARATTACK_15 = -97,
+
+	RECRUIT_00 = -96,
+	RECRUIT_01 = -95,
+	RECRUIT_02 = -94,
+	RECRUIT_03 = -93,
+	RECRUIT_04 = -92,
+	RECRUIT_05 = -91,
+	RECRUIT_06 = -90,
+	RECRUIT_07 = -89,
+	RECRUIT_08 = -88,
+	RECRUIT_09 = -87,
+	RECRUIT_10 = -86,
+	RECRUIT_11 = -85,
+	RECRUIT_12 = -84,
+	RECRUIT_13 = -83,
+	RECRUIT_14 = -82,
+	RECRUIT_15 = -81,
+
+	WARCORPSE_00 = -80,
+	WARCORPSE_01 = -79,
+	WARCORPSE_02 = -78,
+	WARCORPSE_03 = -77,
+	WARCORPSE_04 = -76,
+	WARCORPSE_05 = -75,
+	WARCORPSE_06 = -74,
+	WARCORPSE_07 = -73,
+	WARCORPSE_08 = -72,
+	WARCORPSE_09 = -71,
+	WARCORPSE_10 = -70,
+	WARCORPSE_11 = -69,
+	WARCORPSE_12 = -68,
+	WARCORPSE_13 = -67,
+	WARCORPSE_14 = -66,
+	WARCORPSE_15 = -65,
+
+	WARFORCEATTACK_00 = -64,
+	WARFORCEATTACK_01 = -63,
+	WARFORCEATTACK_02 = -62,
+	WARFORCEATTACK_03 = -61,
+	WARFORCEATTACK_04 = -60,
+	WARFORCEATTACK_05 = -59,
+	WARFORCEATTACK_06 = -58,
+	WARFORCEATTACK_07 = -57,
+	WARFORCEATTACK_08 = -56,
+	WARFORCEATTACK_09 = -55,
+	WARFORCEATTACK_10 = -54,
+	WARFORCEATTACK_11 = -53,
+	WARFORCEATTACK_12 = -52,
+	WARFORCEATTACK_13 = -51,
+	WARFORCEATTACK_14 = -50,
+	WARFORCEATTACK_15 = -49,
+
+	WARFORCESUPPORT_00 = -48,
+	WARFORCESUPPORT_01 = -47,
+	WARFORCESUPPORT_02 = -46,
+	WARFORCESUPPORT_03 = -45,
+	WARFORCESUPPORT_04 = -44,
+	WARFORCESUPPORT_05 = -43,
+	WARFORCESUPPORT_06 = -42,
+	WARFORCESUPPORT_07 = -41,
+	WARFORCESUPPORT_08 = -40,
+	WARFORCESUPPORT_09 = -39,
+	WARFORCESUPPORT_10 = -38,
+	WARFORCESUPPORT_11 = -37,
+	WARFORCESUPPORT_12 = -36,
+	WARFORCESUPPORT_13 = -35,
+	WARFORCESUPPORT_14 = -34,
+	WARFORCESUPPORT_15 = -33,
+
+	PEACECRITICAL_00 = -32,
+	PEACECRITICAL_01 = -31,
+	PEACECRITICAL_02 = -30,
+	PEACECRITICAL_03 = -29,
+	PEACECRITICAL_04 = -28,
+	PEACECRITICAL_05 = -27,
+	PEACECRITICAL_06 = -26,
+	PEACECRITICAL_07 = -25,
+	PEACECRITICAL_08 = -24,
+	PEACECRITICAL_09 = -23,
+	PEACECRITICAL_10 = -22,
+	PEACECRITICAL_11 = -21,
+	PEACECRITICAL_12 = -20,
+	PEACECRITICAL_13 = -19,
+	PEACECRITICAL_14 = -18,
+	PEACECRITICAL_15 = -17,
+
+	WARCRITICAL_00 = -16,
+	WARCRITICAL_01 = -15,
+	WARCRITICAL_02 = -14,
+	WARCRITICAL_03 = -13,
+	WARCRITICAL_04 = -12,
+	WARCRITICAL_05 = -11,
+	WARCRITICAL_06 = -10,
+	WARCRITICAL_07 = -9,
+	WARCRITICAL_08 = -8,
+	WARCRITICAL_09 = -7,
+	WARCRITICAL_10 = -6,
+	WARCRITICAL_11 = -5,
+	WARCRITICAL_12 = -4,
+	WARCRITICAL_13 = -3,
+	WARCRITICAL_14 = -2,
+	WARCRITICAL_15 = -1,
+
+	PEACESTAND_00 = 0,
+	PEACESTAND_01 = 1,
+	PEACESTAND_02 = 2,
+	PEACESTAND_03 = 3,
+	PEACESTAND_04 = 4,
+	PEACESTAND_05 = 5,
+	PEACESTAND_06 = 6,
+	PEACESTAND_07 = 7,
+	PEACESTAND_08 = 8,
+	PEACESTAND_09 = 9,
+	PEACESTAND_10 = 10,
+	PEACESTAND_11 = 11,
+	PEACESTAND_12 = 12,
+	PEACESTAND_13 = 13,
+	PEACESTAND_14 = 14,
+	PEACESTAND_15 = 15,
+
+	PEACEWALK_00 = 16,
+	PEACEWALK_01 = 17,
+	PEACEWALK_02 = 18,
+	PEACEWALK_03 = 19,
+	PEACEWALK_04 = 20,
+	PEACEWALK_05 = 21,
+	PEACEWALK_06 = 22,
+	PEACEWALK_07 = 23,
+	PEACEWALK_08 = 24,
+	PEACEWALK_09 = 25,
+	PEACEWALK_10 = 26,
+	PEACEWALK_11 = 27,
+	PEACEWALK_12 = 28,
+	PEACEWALK_13 = 29,
+	PEACEWALK_14 = 30,
+	PEACEWALK_15 = 31,
+
+	PEACEIDLE_00 = 32,
+	PEACEIDLE_01 = 33,
+	PEACEIDLE_02 = 34,
+	PEACEIDLE_03 = 35,
+	PEACEIDLE_04 = 36,
+	PEACEIDLE_05 = 37,
+	PEACEIDLE_06 = 38,
+	PEACEIDLE_07 = 39,
+	PEACEIDLE_08 = 40,
+	PEACEIDLE_09 = 41,
+	PEACEIDLE_10 = 42,
+	PEACEIDLE_11 = 43,
+	PEACEIDLE_12 = 44,
+	PEACEIDLE_13 = 45,
+	PEACEIDLE_14 = 46,
+	PEACEIDLE_15 = 47,
+
+	WARSTAND_00 = 64,
+	WARSTAND_01 = 65,
+	WARSTAND_02 = 66,
+	WARSTAND_03 = 67,
+	WARSTAND_04 = 68,
+	WARSTAND_05 = 69,
+	WARSTAND_06 = 70,
+	WARSTAND_07 = 71,
+	WARSTAND_08 = 72,
+	WARSTAND_09 = 73,
+	WARSTAND_10 = 74,
+	WARSTAND_11 = 75,
+	WARSTAND_12 = 76,
+	WARSTAND_13 = 77,
+	WARSTAND_14 = 78,
+	WARSTAND_15 = 79,
+
+    WARWALK_00 = 80,
+    WARWALK_01 = 81,
+    WARWALK_02 = 82,
+    WARWALK_03 = 83,
+    WARWALK_04 = 84,
+    WARWALK_05 = 85,
+    WARWALK_06 = 86,
+    WARWALK_07 = 87,
+    WARWALK_08 = 89,
+    WARWALK_09 = 89,
+    WARWALK_10 = 90,
+    WARWALK_11 = 91,
+    WARWALK_12 = 92,
+    WARWALK_13 = 93,
+    WARWALK_14 = 94,
+    WARWALK_15 = 95,
+
+    WARIDLE_00 = 96,
+    WARIDLE_01 = 97,
+    WARIDLE_02 = 98,
+    WARIDLE_03 = 99,
+    WARIDLE_04 = 100,
+    WARIDLE_05 = 101,
+    WARIDLE_06 = 102,
+    WARIDLE_07 = 103,
+    WARIDLE_08 = 104,
+    WARIDLE_09 = 105,
+    WARIDLE_10 = 106,
+    WARIDLE_11 = 107,
+    WARIDLE_12 = 108,
+    WARIDLE_13 = 109,
+    WARIDLE_14 = 110,
+    WARIDLE_15 = 111,
+
+};
+
+enum <uint16> RaceGender {
+    cBell_Armor_Male = 0x00,
+    cBell_Default_Male = 0x05,
+    cBell_Armor_Female = 0x10,
+    cBell_Default_Female = 0x15,
+    cCora_Armor_Male = 0x20,
+    cCora_Default_Male = 0x25,
+    cCora_Armor_Female = 0x30,
+    cCora_Default_Female = 0x35,
+    cAccretia_Armor_Robot = 0x40,
+    cAccretia_Default_Robot = 0x45,
+   
+    cBell_Armor_Military = 0x70,
+   
+    cCora_Armor_Military = 0x80
+};
+
+enum <ubyte> ModelType {
+    cModel_Helmet = 0x00,
+    cModel_Face = 0x01,
+    cModel_Upper = 0x02,
+    cModel_Lower = 0x03,
+    cModel_Gauntlet = 0x04,
+    cModel_Shoes = 0x05
+};
+
+typedef struct MODEL_ID {
+        ubyte      index<format=decimal, comment="e.g. ..._XXX.MSH, where XXX is this value. [e.g. 196 = C4 = This value]">;
+        ModelType type<comment="Same as the value in Item.dat">;
+        RaceGender race_gender<comment="Same as the value in Resource.dat">;
+};
+
+struct PLAYER_BONE {
+    RACEGENDER  race_gender;
+    char        bone_path[128];
+    char        bn_filename[64];
+    char        bbx_filename[64];
+};
+
+struct GENERAL_BONE {
+    int         index;
+    char        bone_path[128];
+    char        bn_filename[64];
+    char        bbx_filename[64];
+};
+
+struct  PLAYER_MESH {
+    MODEL_ID    model_id<open=true>;
+    RACEGENDER  boneID;
+    char        mesh_path[128];
+    char        mesh_filename[64];
+    char        tex_path[128];
+};
+
+struct  GENERAL_MESH {
+    MODEL_ID    model_id<open=true>;
+    int         boneID;
+    char        mesh_path[128];
+    char        mesh_filename[64];
+    char        tex_path[128];
+};
+
+struct  PLAYER_ANI {
+    ANI_TYPE    type;
+    int16       id;
+    byte        unknown<hidden=true>;
+    RACEGENDER  race_gender;
+    char        ani_path[128];
+    char        ani_filename[64];
+    int         total_active_effects;
+    int         effect[10];
+};
+
+enum <int> iAniAction {
+    iAction_Default = 0,
+    iAction_Equip = 1,
+    iAction_UnEquip = 2,
+    iAction_Attack = 3,
+    iAction_Use = 4,
+    iAction_UnUse = 5
+};
+
+struct  GENERAL_ANI {
+    /*iAniAction  actionType;
+    ubyte       unknown;
+    ubyte       unknown;
+    ubyte       unknown;*/
+
+    DWORD       id;
+
+    local int   meshID = (id & 0x0FFFF000) >> (3*4);
+    local int   effectType = (id & 0x00000FF0) >> (1*4);
+    local iAniAction   animationID = (id & 0x0000000F);
+
+    int         set_number;
+
+    char        ani_path[128];
+    char        ani_filename[64];
+
+    int         total_active_effects;
+    int         effect[10];
+};

@@ -1,0 +1,57 @@
+import { CompressedTexture, LinearFilter, LinearMipmapLinearFilter, RepeatWrapping, SRGBColorSpace } from 'three';
+import type { CompressedPixelFormat } from 'three';
+import { DDSLoader } from 'three/examples/jsm/loaders/DDSLoader.js';
+
+/**
+ * RF Online's .RFT files are DDS textures whose 128-byte header is XORed
+ * with a fixed password (the same "unlock_dds" scheme the client used for
+ * .r3t material atlases). Pixel data after the header is untouched.
+ */
+const RFT_PASSWORD_BYTES = new Uint8Array([
+  0x2e, 0x80, 0x4d, 0x76, 0x2e, 0xf8, 0xd1, 0xf0, 0xbd, 0x3f, 0x86, 0x81, 0x58, 0x2c, 0x3f, 0x3f, 0x2e, 0x2e, 0x67,
+  0x6f, 0x3f, 0x40, 0x3f, 0x78, 0x3c, 0x3f, 0xf1, 0xc0, 0xa5, 0xf6, 0x3b, 0x9f, 0xc1, 0x20, 0x3f, 0xd7, 0xc8, 0xc1,
+  0xe9, 0x85, 0x86, 0xbd, 0xef, 0x56, 0x3f, 0xa1, 0xfb, 0x2e, 0x87, 0x86, 0x61, 0x4c, 0x21, 0x3b, 0x4e, 0xb4, 0x78,
+  0x57, 0xae, 0x97, 0x3f, 0x2e, 0x4a, 0x2e, 0x3f, 0x4c, 0x2e, 0x44, 0xcd, 0xc5, 0x5f, 0xe8, 0xe9, 0xec, 0xeb, 0xbd,
+  0xbe, 0xbb, 0xf7, 0x6c, 0x2e, 0xf2, 0xe4, 0x2e, 0x3f, 0x3f, 0x97, 0x9f, 0x9d, 0xb3, 0x21, 0xb9, 0x76, 0x65, 0x54,
+  0x3f, 0xe6, 0xf6, 0xc6, 0xf0, 0x79, 0xdb, 0xe2, 0xb2, 0x4b, 0x2e, 0x2e, 0xeb, 0xd3, 0xd3, 0xca, 0xab, 0xea, 0xc7,
+  0xed, 0x9c, 0xc7, 0xd9, 0xd0, 0x65, 0x48, 0xb4, 0xfa, 0x35, 0x2e, 0x2e, 0x6a, 0x9b,
+]);
+
+const DDS_MAGIC = 0x20534444; // 'DDS ' little-endian
+
+function decodeRft(buffer: ArrayBuffer): ArrayBuffer {
+  const bytes = new Uint8Array(buffer);
+  const view = new DataView(buffer);
+  if (view.getUint32(0, true) === DDS_MAGIC) {
+    return buffer;
+  }
+  const decoded = bytes.slice();
+  for (let i = 0; i < 128; i++) {
+    decoded[i] ^= RFT_PASSWORD_BYTES[i];
+  }
+  return decoded.buffer;
+}
+
+export async function loadRftTexture(url: string): Promise<CompressedTexture> {
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`Failed to fetch texture at ${url}: ${response.status}`);
+  const rawBuffer = await response.arrayBuffer();
+  const ddsBuffer = decodeRft(rawBuffer);
+
+  const loader = new DDSLoader();
+  const ddsData = loader.parse(ddsBuffer, true);
+
+  const texture = new CompressedTexture(
+    ddsData.mipmaps,
+    ddsData.width,
+    ddsData.height,
+    ddsData.format as CompressedPixelFormat,
+  );
+  texture.minFilter = ddsData.mipmapCount > 1 ? LinearMipmapLinearFilter : LinearFilter;
+  texture.magFilter = LinearFilter;
+  texture.wrapS = RepeatWrapping;
+  texture.wrapT = RepeatWrapping;
+  texture.colorSpace = SRGBColorSpace;
+  texture.needsUpdate = true;
+  return texture;
+}
