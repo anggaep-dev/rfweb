@@ -10,33 +10,23 @@ import {
   RingGeometry,
   Scene,
   Vector3,
-  WebGLRenderer,
 } from 'three';
-import type { Camera } from 'three';
+import type { Material } from 'three';
 
 /**
- * Owns the base three.js scene graph and renderer: lighting, the ground
- * grid/plane, the click-to-move target marker, and the render/resize
- * plumbing. Deliberately camera-agnostic - CameraController owns the
- * camera(s); this just renders whichever one it's handed.
+ * Ground/lighting dressing reused by any AppScene that stages a character
+ * on a floor: ambient + sun lighting, the ground grid/plane, and the
+ * click-to-move target marker. Deliberately renderer- and camera-agnostic -
+ * SceneManager owns the single shared renderer, each AppScene owns its own
+ * camera(s) and calls into this for the rest of the scene graph.
  */
 export class SceneController {
   readonly scene = new Scene();
-  readonly renderer: WebGLRenderer;
   readonly grid = new GridHelper(4, 32, 0x555555, 0x333333);
   readonly groundPlane = new Plane(new Vector3(0, 1, 0), 0);
   readonly targetMarker: Mesh;
 
-  private readonly container: HTMLElement;
-
-  constructor(container: HTMLElement) {
-    this.container = container;
-
-    this.renderer = new WebGLRenderer({ antialias: true });
-    this.renderer.setSize(container.clientWidth, container.clientHeight);
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    container.appendChild(this.renderer.domElement);
-
+  constructor() {
     this.scene.add(new AmbientLight(0xffffff, 0.6));
     const sun = new DirectionalLight(0xffffff, 2.2);
     sun.position.set(2, 3, 2);
@@ -70,17 +60,10 @@ export class SceneController {
     this.targetMarker.visible = false;
   }
 
-  /** Call on window resize - the renderer's canvas size only, camera aspect is CameraController's job. */
-  resize(): void {
-    this.renderer.setSize(this.container.clientWidth, this.container.clientHeight);
-  }
-
-  render(camera: Camera): void {
-    this.renderer.render(this.scene, camera);
-  }
-
   dispose(): void {
-    this.renderer.dispose();
-    this.container.removeChild(this.renderer.domElement);
+    this.grid.geometry.dispose();
+    (this.grid.material as Material).dispose();
+    this.targetMarker.geometry.dispose();
+    (this.targetMarker.material as Material).dispose();
   }
 }

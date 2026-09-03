@@ -104,33 +104,42 @@ export function parseMesh(buffer: ArrayBuffer): RfMeshObject[] {
     }
 
     const weightsByVertex = new Map<number, { boneNames: string[]; weights: number[] }>();
-    if (weightAmount > 0) {
-      if (weightModelType === 1) {
-        const boneAmount = r.u32();
-        const boneNamesForAssignment: string[] = [];
-        for (let i = 0; i < boneAmount; i++) boneNamesForAssignment.push(r.fixedString(100, 'euc-kr'));
+    if (weightModelType === 1) {
+      // The bone-count + bone-name table is part of this object's weight
+      // *model* (weightModelType), not its weight *assignment count*
+      // (weightAmount) - it's present even when weightAmount is 0 (an
+      // object using the indexed model but with no actual per-vertex
+      // weights, e.g. ACCRETIA_DEFAULT_UPPER_000.msh's 3rd sub-object).
+      // Previously this was nested inside `weightAmount > 0`, so that case
+      // silently skipped a real boneAmount field (0 bones, but still 4
+      // bytes on disk), misaligning every subsequent read for the rest of
+      // the file - the next sub-object's name/parent would come out empty
+      // or garbled, cascading into "Offset is outside the bounds of the
+      // DataView" once the corrupted counts got large enough to overrun.
+      const boneAmount = r.u32();
+      const boneNamesForAssignment: string[] = [];
+      for (let i = 0; i < boneAmount; i++) boneNamesForAssignment.push(r.fixedString(100, 'euc-kr'));
 
-        for (let i = 0; i < weightAmount; i++) {
-          const vertexIndex = r.u32();
-          r.u32(); // amount of weights - unused, zero-weight bone slots are marked with index -1 instead
-          const boneIndices = [r.i32(), r.i32(), r.i32(), r.i32()];
-          const w = [r.f32(), r.f32(), r.f32(), r.f32()];
-          const boneNames = boneIndices.map((bi) => (bi !== -1 ? boneNamesForAssignment[bi] : INVALID_NAME));
-          weightsByVertex.set(vertexIndex, { boneNames, weights: w });
-        }
-      } else {
-        for (let i = 0; i < weightAmount; i++) {
-          const vertexIndex = r.u32();
-          r.u32(); // amount of weights - unused
-          const boneNames = [
-            r.fixedString(100, 'euc-kr'),
-            r.fixedString(100, 'euc-kr'),
-            r.fixedString(100, 'euc-kr'),
-            r.fixedString(100, 'euc-kr'),
-          ];
-          const w = [r.f32(), r.f32(), r.f32(), r.f32()];
-          weightsByVertex.set(vertexIndex, { boneNames, weights: w });
-        }
+      for (let i = 0; i < weightAmount; i++) {
+        const vertexIndex = r.u32();
+        r.u32(); // amount of weights - unused, zero-weight bone slots are marked with index -1 instead
+        const boneIndices = [r.i32(), r.i32(), r.i32(), r.i32()];
+        const w = [r.f32(), r.f32(), r.f32(), r.f32()];
+        const boneNames = boneIndices.map((bi) => (bi !== -1 ? boneNamesForAssignment[bi] : INVALID_NAME));
+        weightsByVertex.set(vertexIndex, { boneNames, weights: w });
+      }
+    } else if (weightAmount > 0) {
+      for (let i = 0; i < weightAmount; i++) {
+        const vertexIndex = r.u32();
+        r.u32(); // amount of weights - unused
+        const boneNames = [
+          r.fixedString(100, 'euc-kr'),
+          r.fixedString(100, 'euc-kr'),
+          r.fixedString(100, 'euc-kr'),
+          r.fixedString(100, 'euc-kr'),
+        ];
+        const w = [r.f32(), r.f32(), r.f32(), r.f32()];
+        weightsByVertex.set(vertexIndex, { boneNames, weights: w });
       }
     }
 

@@ -1,0 +1,61 @@
+.character-select-screen {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+}
+
+.character-select-hint {
+  position: absolute;
+  top: 1rem;
+  left: 50%;
+  transform: translateX(-50%);
+  color: #ccc;
+  font: 500 0.85rem system-ui, sans-serif;
+  background: rgba(20, 22, 26, 0.6);
+  padding: 0.4rem 0.9rem;
+  border-radius: 999px;
+  pointer-events: none;
+}
+
+.character-select-panel {
+  pointer-events: auto;
+  position: absolute;
+  left: 50%;
+  bottom: 2rem;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  background: rgba(20, 22, 26, 0.75);
+  border: 1px solid #333;
+  border-radius: 10px;
+  padding: 0.9rem 1.2rem;
+}
+
+.character-select-name {
+  min-width: 10rem;
+  color: #eee;
+  font: 600 1rem system-ui, sans-serif;
+  text-align: center;
+}
+
+.character-select-panel button {
+  padding: 0.6rem 1.2rem;
+  border-radius: 6px;
+  border: 1px solid #4a7dff;
+  background: #4a7dff;
+  color: #fff;
+  font: 600 0.9rem system-ui, sans-serif;
+  cursor: pointer;
+}
+
+.character-select-panel button:hover {
+  background: #3a6ae8;
+}
+
+.character-select-panel button:disabled {
+  background: #2c3038;
+  border-color: #444;
+  color: #777;
+  cursor: default;
+}

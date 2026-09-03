@@ -1,19 +1,14 @@
 .rf-viewer {
   /* Fixed, not relative: #root (index.css) centers a max-width column for
      the template's docs content, which would otherwise push a vw-sized
-     child off to one side instead of covering the actual viewport. */
+     child off to one side instead of covering the actual viewport. This
+     layer sits on top of SceneApp's shared canvas (a separate sibling, not
+     a child of this component anymore) - it's click-through by default so
+     the canvas below still receives click-to-move etc, with each
+     interactive panel opting back in via pointer-events: auto. */
   position: fixed;
   inset: 0;
-  background: #14161a;
-}
-
-.rf-viewer-canvas {
-  width: 100%;
-  height: 100%;
-}
-
-.rf-viewer-canvas canvas {
-  display: block;
+  pointer-events: none;
 }
 
 .rf-viewer-overlay {
@@ -52,6 +47,7 @@
   bottom: 1rem;
   display: flex;
   gap: 0.5rem;
+  pointer-events: auto;
 }
 
 .rf-viewer-controls button {
@@ -108,6 +104,7 @@
   position: absolute;
   top: 1rem;
   left: 1rem;
+  pointer-events: auto;
 }
 
 .rf-viewer-frame-label {
@@ -129,4 +126,73 @@
   border-radius: 6px;
   pointer-events: none;
   white-space: nowrap;
+}
+
+.rf-viewer-equip-panel {
+  position: absolute;
+  top: 3.2rem;
+  right: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  background: rgba(20, 22, 26, 0.6);
+  padding: 0.6rem 0.7rem;
+  border-radius: 6px;
+  pointer-events: auto;
+}
+
+.rf-viewer-equip-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  color: #ccc;
+  font: 500 0.8rem system-ui, sans-serif;
+}
+
+.rf-viewer-equip-row select {
+  max-width: 11rem;
+  padding: 0.25rem 0.4rem;
+  border-radius: 4px;
+  border: 1px solid #444;
+  background: #22252b;
+  color: #eee;
+  font: 500 0.8rem system-ui, sans-serif;
+}
+
+.rf-viewer-equip-row select:disabled {
+  opacity: 0.5;
+}
+
+.rf-viewer-command-bar {
+  position: absolute;
+  right: 1rem;
+  bottom: 1rem;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  pointer-events: auto;
+}
+
+.rf-viewer-command-input {
+  width: 16rem;
+  padding: 0.5rem 0.7rem;
+  border-radius: 6px;
+  border: 1px solid #444;
+  background: #22252b;
+  color: #eee;
+  font: 500 0.8rem ui-monospace, monospace;
+}
+
+.rf-viewer-command-input::placeholder {
+  color: #666;
+}
+
+.rf-viewer-command-feedback {
+  max-width: 20rem;
+  color: #9aa4b2;
+  font: 500 0.75rem ui-monospace, monospace;
+  background: rgba(20, 22, 26, 0.6);
+  padding: 0.4rem 0.6rem;
+  border-radius: 6px;
 }

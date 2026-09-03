@@ -1,0 +1,112 @@
+import { RaceGender } from './character';
+
+/**
+ * Character body-part item categories, matching the client's ModelType enum
+ * (public/raw/include_client_resource.bt).
+ */
+export enum ModelType {
+  Helmet = 0,
+  Face = 1,
+  Upper = 2,
+  Lower = 3,
+  Gauntlet = 4,
+  Shoes = 5,
+}
+
+export const ALL_MODEL_TYPES: ModelType[] = [
+  ModelType.Helmet,
+  ModelType.Face,
+  ModelType.Upper,
+  ModelType.Lower,
+  ModelType.Gauntlet,
+  ModelType.Shoes,
+];
+
+const ITEM_FILE_BY_SLOT: Record<ModelType, string> = {
+  [ModelType.Helmet]: 'helmetItem.json',
+  [ModelType.Face]: 'faceItem.json',
+  [ModelType.Upper]: 'upperItem.json',
+  [ModelType.Lower]: 'lowerItem.json',
+  [ModelType.Gauntlet]: 'gauntletItem.json',
+  [ModelType.Shoes]: 'shoeItem.json',
+};
+
+/**
+ * The mesh-filename token for each slot's *default* body part, e.g.
+ * "{RACE}_DEFAULT_GLOVES_000.msh" - note this differs from the slot's own
+ * name for Gauntlet ("GLOVES" in every mesh archive, "Gauntlet" in the
+ * client's ModelType enum).
+ */
+export const MODEL_TYPE_TO_PART_TOKEN: Record<ModelType, string> = {
+  [ModelType.Helmet]: 'HELMET',
+  [ModelType.Face]: 'FACE',
+  [ModelType.Upper]: 'UPPER',
+  [ModelType.Lower]: 'LOWER',
+  [ModelType.Gauntlet]: 'GLOVES',
+  [ModelType.Shoes]: 'SHOES',
+};
+
+const ITEM_DATA_BASE = '/game-assets/data/item';
+
+export interface ItemDefinition {
+  /** The hash key this item is stored under in its item JSON file, e.g. "ifdbf01". */
+  id: string;
+  name: string;
+  /** Numeric resource id, links to playerResource.json/itemResource.json's Mesh tables. */
+  model: string;
+  /** Raw eligibility bitmask string - see isItemUsableByRace(). */
+  civil: string;
+}
+
+interface RawItemEntry {
+  Name?: string;
+  Model?: string;
+  Civil?: string;
+}
+
+/**
+ * "Civil" is a per-race eligibility bitmask: one decimal digit per race, in
+ * the same left-to-right order as the RaceGender enum (Bell_Male,
+ * Bell_Female, Cora_Male, Cora_Female, Accretia) - e.g. "10000" means
+ * Bell_Male only, "11000000" means either Bellato gender. Verified against
+ * the real item data: faceItem.json stores it unpadded ("1" for an
+ * Accretia-only face), while gauntletItem.json stores it zero-padded to 8
+ * digits with 3 unused trailing digits ("00001000" for Accretia-only
+ * gloves) - left-padding to 5 before indexing by RaceGender handles both.
+ */
+export function isItemUsableByRace(civil: string, raceGender: RaceGender): boolean {
+  const padded = civil.padStart(5, '0');
+  return padded.charAt(raceGender) === '1';
+}
+
+const slotItemsCache = new Map<ModelType, Promise<ItemDefinition[]>>();
+
+async function fetchSlotItems(modelType: ModelType): Promise<ItemDefinition[]> {
+  const url = `${ITEM_DATA_BASE}/${ITEM_FILE_BY_SLOT[modelType]}`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Failed to fetch ${url}: ${res.status}`);
+  const raw = (await res.json()) as Record<string, RawItemEntry>;
+
+  const items: ItemDefinition[] = [];
+  for (const [id, entry] of Object.entries(raw)) {
+    if (!entry.Model || !entry.Civil) continue;
+    items.push({ id, name: entry.Name ?? id, model: entry.Model, civil: entry.Civil });
+  }
+  return items;
+}
+
+/** Loads (and caches) every item defined for a slot, across all races - the file content itself is race-independent. */
+export function loadSlotItems(modelType: ModelType): Promise<ItemDefinition[]> {
+  let cached = slotItemsCache.get(modelType);
+  if (!cached) {
+    cached = fetchSlotItems(modelType);
+    slotItemsCache.set(modelType, cached);
+  }
+  return cached;
+}
+
+/** Loads a slot's items filtered to the ones a given race/gender is actually allowed to wear. */
+export async function loadUsableSlotItems(modelType: ModelType, raceGender: RaceGender): Promise<ItemDefinition[]> {
+  const items = await loadSlotItems(modelType);
+  return items.filter((item) => isItemUsableByRace(item.civil, raceGender));
+}

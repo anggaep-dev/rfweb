@@ -1,7 +1,11 @@
-import { Box3, Group, Matrix4, Quaternion, SkeletonHelper, Vector3 } from 'three';
-import type { AnimationAction, Bone, Scene } from 'three';
+import { Box3, Matrix4, Object3D, Quaternion, SkeletonHelper, Vector3 } from 'three';
+import type { AnimationAction, Bone, Group, Scene } from 'three';
 import { ANI_FPS } from '../rf/animation';
+import { RaceGender, buildMeshPartObjects, getRaceAssets } from '../rf/character';
 import type { RfCharacter } from '../rf/character';
+import { ALL_MODEL_TYPES, MODEL_TYPE_TO_PART_TOKEN, ModelType } from '../rf/items';
+import type { ItemDefinition } from '../rf/items';
+import { resolveItemMeshStem } from '../rf/resource';
 
 const ARRIVE_FRACTION_OF_RADIUS = 0.04;
 const WALK_SPEED_RADIUS_PER_SEC = 0.9;
@@ -28,8 +32,10 @@ export interface CharacterControllerCallbacks {
   onFrameLabelChange?: (label: string) => void;
 }
 
-function disposeGroup(group: Group): void {
-  group.traverse((obj) => {
+export type EquipResult = 'equipped' | 'default' | 'unavailable' | 'no-character';
+
+function disposeObject3D(root: Object3D): void {
+  root.traverse((obj) => {
     const renderable = obj as { geometry?: { dispose(): void }; material?: unknown };
     renderable.geometry?.dispose();
     const materials = Array.isArray(renderable.material)
@@ -46,17 +52,23 @@ function disposeGroup(group: Group): void {
 
 /**
  * Owns the currently-mounted RfCharacter: adding/disposing its group and
- * skeleton helper, click-to-move movement + facing, animation clip
- * crossfades, the frame-stepping debug tools, and the pose-anomaly
- * watchdog. Scene-aware only enough to add/remove its own objects - camera
- * framing and the click-to-move target marker are the caller's job (they're
- * cross-cutting scene concerns, not character state).
+ * skeleton helper, per-slot equipping (including the default body, which
+ * goes through the exact same path so a later item swap correctly replaces
+ * it instead of rendering underneath it), click-to-move movement + facing,
+ * animation clip crossfades, the frame-stepping debug tools, and the
+ * pose-anomaly watchdog. Scene-aware only enough to add/remove its own
+ * objects - camera framing and the click-to-move target marker are the
+ * caller's job (they're cross-cutting scene concerns, not character state).
  */
 export class CharacterController {
   private character: RfCharacter | null = null;
+  private raceGender: RaceGender | null = null;
   private skeletonHelper: SkeletonHelper | null = null;
   private hipsBone: Bone | null = null;
   private headBone: Bone | null = null;
+
+  /** The three.js objects currently equipped per slot, so a later swap knows exactly what to remove. */
+  private equippedObjects: Partial<Record<ModelType, Object3D[]>> = {};
 
   private moveTarget: Vector3 | null = null;
   private walkSpeed = 1;
@@ -175,16 +187,65 @@ export class CharacterController {
   }
 
   /**
-   * Swaps in a freshly loaded character: disposes the previous one (group +
-   * skeleton helper), resets all movement/animation state, and returns its
+   * Equips one slot: either a specific item (resolved via
+   * playerResource.json's Mesh table - most real, non-"Default ..." items
+   * aren't in it yet, so this commonly returns 'unavailable') or, when
+   * `item` is null, that slot's default body part for the current race.
+   * Replaces whatever this controller last equipped in that slot, so
+   * calling this - not building meshes some other way - is the only
+   * correct way to change a slot, including for the initial default body
+   * (see mount()).
+   */
+  async equipItem(modelType: ModelType, item: ItemDefinition | null): Promise<EquipResult> {
+    const character = this.character;
+    const raceGender = this.raceGender;
+    if (!character || raceGender === null) return 'no-character';
+
+    let stem: string;
+    if (item) {
+      const resolvedStem = await resolveItemMeshStem(item.model);
+      if (!resolvedStem) return 'unavailable';
+      stem = resolvedStem;
+    } else {
+      stem = `${character.group.name}_DEFAULT_${MODEL_TYPE_TO_PART_TOKEN[modelType]}_000`;
+    }
+
+    const { meshArchive, texArchive } = await getRaceAssets(raceGender);
+    // A newer mount()/equipItem() may have replaced the character while the
+    // above awaits were in flight - bail rather than mutate a stale/disposed group.
+    if (this.character !== character) return 'no-character';
+
+    const newObjects = buildMeshPartObjects(stem, meshArchive, texArchive, character.builtSkeleton);
+    if (newObjects.length === 0) return 'unavailable';
+
+    const previous = this.equippedObjects[modelType];
+    if (previous) {
+      for (const obj of previous) {
+        obj.parent?.remove(obj);
+        disposeObject3D(obj);
+      }
+    }
+
+    for (const obj of newObjects) {
+      if (!obj.parent) character.group.add(obj);
+    }
+    this.equippedObjects[modelType] = newObjects;
+
+    return item ? 'equipped' : 'default';
+  }
+
+  /**
+   * Swaps in a freshly loaded (bodiless) character: disposes the previous
+   * one (group + skeleton helper), resets all movement/animation state,
+   * equips every slot's default body part, and returns the resulting
    * bounding box for the caller to frame the camera/ground with (units/scale
    * differ per race, so that can't be baked in ahead of time).
    */
-  mount(character: RfCharacter): CharacterBounds {
+  async mount(character: RfCharacter, raceGender: RaceGender): Promise<CharacterBounds> {
     const prevGroup = this.character?.group;
     if (prevGroup) {
       this.scene.remove(prevGroup);
-      disposeGroup(prevGroup);
+      disposeObject3D(prevGroup);
     }
     if (this.skeletonHelper) {
       this.scene.remove(this.skeletonHelper);
@@ -192,6 +253,8 @@ export class CharacterController {
     }
 
     this.character = character;
+    this.raceGender = raceGender;
+    this.equippedObjects = {};
     this.scene.add(character.group);
 
     // The toggle button only renders once status is 'ready', so there's no
@@ -215,6 +278,8 @@ export class CharacterController {
     this.lastQuatByBone.clear();
     this.callbacks.onClipChange?.('stand');
     this.callbacks.onFrameLabelChange?.('');
+
+    await Promise.all(ALL_MODEL_TYPES.map((modelType) => this.equipItem(modelType, null)));
 
     const box = new Box3().setFromObject(character.group, true);
     const size = box.getSize(new Vector3());
@@ -329,7 +394,7 @@ export class CharacterController {
     const group = this.character?.group;
     if (group) {
       this.scene.remove(group);
-      disposeGroup(group);
+      disposeObject3D(group);
     }
     if (this.skeletonHelper) {
       this.scene.remove(this.skeletonHelper);

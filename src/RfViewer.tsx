@@ -1,11 +1,11 @@
-import { useEffect, useRef, useState } from 'react';
-import { Raycaster, Timer, Vector2, Vector3 } from 'three';
-import { AssetController } from './controllers/AssetController';
-import { CameraController } from './controllers/CameraController';
+import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import type { CamMode } from './controllers/CameraController';
-import { CharacterController } from './controllers/CharacterController';
-import { SceneController } from './controllers/SceneController';
 import { CLIP_NAMES, RaceGender } from './rf/character';
+import { ALL_MODEL_TYPES, ModelType, loadUsableSlotItems } from './rf/items';
+import type { ItemDefinition } from './rf/items';
+import type { SceneManager } from './scenes/SceneManager';
+import type { ViewerDebugStats } from './scenes/ViewerScene';
+import { ViewerScene } from './scenes/ViewerScene';
 import './RfViewer.css';
 
 const RACE_OPTIONS: { value: RaceGender; label: string }[] = [
@@ -16,217 +16,133 @@ const RACE_OPTIONS: { value: RaceGender; label: string }[] = [
   { value: RaceGender.Accretia, label: 'Accretia' },
 ];
 
-const CLICK_DRAG_TOLERANCE_PX = 12;
-/** How often the FPS/memory readout refreshes - every frame would be unreadable and wasteful to re-render for. */
-const STATS_UPDATE_INTERVAL_SEC = 0.5;
-const BYTES_PER_MB = 1024 * 1024;
+const SLOT_LABELS: Record<ModelType, string> = {
+  [ModelType.Helmet]: 'Helmet',
+  [ModelType.Face]: 'Face',
+  [ModelType.Upper]: 'Upper',
+  [ModelType.Lower]: 'Lower',
+  [ModelType.Gauntlet]: 'Gauntlet',
+  [ModelType.Shoes]: 'Shoes',
+};
 
-/** Chrome-only, non-standard - not in the DOM lib types. Absent on other engines. */
-interface PerformanceMemoryInfo {
-  usedJSHeapSize: number;
+interface EquipPanelProps {
+  equippedItemId: Partial<Record<ModelType, string>>;
+  slotItems: Partial<Record<ModelType, ItemDefinition[]>>;
+  onEquipChange: (modelType: ModelType, itemId: string) => void;
 }
 
-export default function RfViewer() {
-  const containerRef = useRef<HTMLDivElement>(null);
+// Some slots carry thousands of items (gauntlet alone has ~2,500 eligible
+// per race), so this renders thousands of <option> elements. memo() keeps
+// that expensive tree from being torn down and rebuilt on every unrelated
+// re-render of RfViewer (e.g. the FPS/memory readout updating twice a
+// second) - only an actual change to this panel's own props should redo it.
+const EquipPanel = memo(function EquipPanel({ equippedItemId, slotItems, onEquipChange }: EquipPanelProps) {
+  return (
+    <div className="rf-viewer-equip-panel">
+      {ALL_MODEL_TYPES.map((modelType) => {
+        const items = slotItems[modelType];
+        return (
+          <label key={modelType} className="rf-viewer-equip-row">
+            <span>{SLOT_LABELS[modelType]}</span>
+            <select
+              value={equippedItemId[modelType] ?? ''}
+              disabled={!items}
+              onChange={(e) => onEquipChange(modelType, e.target.value)}
+            >
+              <option value="">{items ? 'None' : 'Loading…'}</option>
+              {items?.map((item) => (
+                <option key={item.id} value={item.id}>
+                  {item.name}
+                </option>
+              ))}
+            </select>
+          </label>
+        );
+      })}
+    </div>
+  );
+});
 
-  const [status, setStatus] = useState<'preloading' | 'loading' | 'ready' | 'error'>('preloading');
+export interface RfViewerProps {
+  sceneManager: SceneManager;
+  initialRaceGender: RaceGender;
+  /** Optional "back to character select" action, shown as a button when provided. */
+  onExit?: () => void;
+}
+
+export default function RfViewer({ sceneManager, initialRaceGender, onExit }: RfViewerProps) {
+  const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading');
   const [errorMessage, setErrorMessage] = useState('');
-  const [preloadProgress, setPreloadProgress] = useState({ loaded: 0, total: 1 });
   const [clipName, setClipName] = useState<string>('stand');
   const [showBones, setShowBones] = useState(false);
   const [camMode, setCamMode] = useState<CamMode>('third');
   const [debugPaused, setDebugPaused] = useState(false);
   const [frameLabel, setFrameLabel] = useState('');
-  const [debugStats, setDebugStats] = useState({ fps: 0, heapMB: null as number | null, geometries: 0, textures: 0 });
+  const [debugStats, setDebugStats] = useState<ViewerDebugStats>({ fps: 0, heapMB: null, geometries: 0, textures: 0 });
 
-  const [raceGender, setRaceGender] = useState<RaceGender>(RaceGender.Bell_Female);
-  const raceGenderRef = useRef<RaceGender>(RaceGender.Bell_Female);
+  const [raceGender, setRaceGender] = useState<RaceGender>(initialRaceGender);
+  const raceGenderRef = useRef<RaceGender>(initialRaceGender);
   const isFirstRaceEffectRef = useRef(true);
 
-  // Assigned by the mount effect below, so the smaller effects further down
-  // (keyed on showBones/camMode/debugPaused/raceGender) can reach the
-  // controllers without needing them in their own dependency arrays.
-  const cameraControllerRef = useRef<CameraController | null>(null);
-  const characterControllerRef = useRef<CharacterController | null>(null);
-  const loadRaceRef = useRef<((race: RaceGender) => void) | null>(null);
+  // Equip-slot selection: which item id (if any) is picked per ModelType
+  // slot, and the race-filtered item list each slot's dropdown offers.
+  // Selecting an item here does not yet change the rendered mesh - see the
+  // note in the equip panel below.
+  const [equippedItemId, setEquippedItemId] = useState<Partial<Record<ModelType, string>>>({});
+  const [slotItems, setSlotItems] = useState<Partial<Record<ModelType, ItemDefinition[]>>>({});
 
-  const statsFrameCountRef = useRef(0);
-  const statsElapsedRef = useRef(0);
+  // GM command console (e.g. "%addbot 5").
+  const [commandInput, setCommandInput] = useState('');
+  const [commandFeedback, setCommandFeedback] = useState('');
+
+  // Assigned by the mount effect below, so the smaller effects further down
+  // (keyed on showBones/camMode/debugPaused/raceGender) and the JSX
+  // handlers can reach the scene without needing it in their own dependency
+  // arrays.
+  const viewerSceneRef = useRef<ViewerScene | null>(null);
 
   useEffect(() => {
-    const container = containerRef.current;
-    if (!container) return;
-
     let disposed = false;
 
-    const sceneController = new SceneController(container);
-    const cameraController = new CameraController(
-      sceneController.renderer.domElement,
-      container.clientWidth / container.clientHeight,
-      sceneController.scene,
-    );
-    const characterController = new CharacterController(sceneController.scene, {
+    const viewerScene = new ViewerScene(sceneManager.renderer, raceGenderRef.current, {
       onClipChange: (name) => {
         if (!disposed) setClipName(name);
       },
       onFrameLabelChange: (label) => {
         if (!disposed) setFrameLabel(label);
       },
+      onStatusChange: (nextStatus, message) => {
+        if (disposed) return;
+        setStatus(nextStatus);
+        setErrorMessage(message ?? '');
+      },
+      onStatsUpdate: (stats) => {
+        if (!disposed) setDebugStats(stats);
+      },
     });
-    const assetController = new AssetController();
-
-    cameraControllerRef.current = cameraController;
-    characterControllerRef.current = characterController;
-
-    const loadRace = (race: RaceGender) => {
-      setStatus('loading');
-      setErrorMessage('');
-      assetController
-        .loadRace(race)
-        .then((character) => {
-          if (disposed || !character) return; // null means a newer loadRace() superseded this one
-
-          const bounds = characterController.mount(character);
-          sceneController.frameGround(bounds.box, bounds.radius);
-          cameraController.frameOnCharacter(bounds);
-          setStatus('ready');
-        })
-        .catch((err: unknown) => {
-          if (disposed) return;
-          console.error('Failed to load character:', err);
-          setErrorMessage(err instanceof Error ? err.message : String(err));
-          setStatus('error');
-        });
-    };
-    loadRaceRef.current = loadRace;
-
-    const timer = new Timer();
-    let animationFrame: number;
-
-    const render = () => {
-      animationFrame = requestAnimationFrame(render);
-      timer.update();
-      const delta = timer.getDelta();
-
-      const { arrived } = characterController.update(delta);
-      if (arrived) sceneController.hideTargetMarker();
-
-      const character = characterController.getCharacter();
-      cameraController.update(delta, {
-        hipsBone: characterController.getHipsBone(),
-        headBone: characterController.getHeadBone(),
-        characterGroupQuaternion: character ? character.group.quaternion : null,
-        characterPosition: character ? character.group.position : null,
-        isMoving: characterController.isMoving(),
-      });
-
-      sceneController.render(cameraController.camera);
-
-      statsFrameCountRef.current += 1;
-      statsElapsedRef.current += delta;
-      if (statsElapsedRef.current >= STATS_UPDATE_INTERVAL_SEC) {
-        const perfMemory = (performance as Performance & { memory?: PerformanceMemoryInfo }).memory;
-        setDebugStats({
-          fps: Math.round(statsFrameCountRef.current / statsElapsedRef.current),
-          heapMB: perfMemory ? Math.round(perfMemory.usedJSHeapSize / BYTES_PER_MB) : null,
-          geometries: sceneController.renderer.info.memory.geometries,
-          textures: sceneController.renderer.info.memory.textures,
-        });
-        statsFrameCountRef.current = 0;
-        statsElapsedRef.current = 0;
-      }
-    };
-    render();
-
-    // Click-to-move: left-button only (right button is camera orbit, owned
-    // by CameraController). Kept here rather than in either controller since
-    // it inherently needs camera (for the raycast) + scene (the ground
-    // plane + marker) + character (the move command) together.
-    const raycaster = new Raycaster();
-    const pointerNdc = new Vector2();
-    const pointerDownPos = { current: null as { x: number; y: number } | null };
-
-    const handlePointerDown = (event: PointerEvent) => {
-      if (event.button !== 0) return;
-      pointerDownPos.current = { x: event.clientX, y: event.clientY };
-    };
-
-    const handlePointerUp = (event: PointerEvent) => {
-      const down = pointerDownPos.current;
-      pointerDownPos.current = null;
-      if (!down) return;
-      const movedPx = Math.hypot(event.clientX - down.x, event.clientY - down.y);
-      if (movedPx > CLICK_DRAG_TOLERANCE_PX) return; // was a camera drag, not a click
-      if (cameraController.getMode() !== 'third') return; // click-to-move only makes sense in 3rd person
-      if (!characterController.getCharacter()) return;
-
-      const rect = sceneController.renderer.domElement.getBoundingClientRect();
-      pointerNdc.set(
-        ((event.clientX - rect.left) / rect.width) * 2 - 1,
-        -((event.clientY - rect.top) / rect.height) * 2 + 1,
-      );
-      raycaster.setFromCamera(pointerNdc, cameraController.camera);
-      const hit = new Vector3();
-      if (raycaster.ray.intersectPlane(sceneController.groundPlane, hit)) {
-        characterController.moveTo(hit);
-        sceneController.showTargetMarker(hit);
-      }
-    };
-
-    sceneController.renderer.domElement.addEventListener('pointerdown', handlePointerDown);
-    sceneController.renderer.domElement.addEventListener('pointerup', handlePointerUp);
-
-    // Blocks the character load screen until every race's assets are cached,
-    // so switching races afterward is instant rather than hitting the network.
-    assetController
-      .preload((loaded, total) => {
-        if (disposed) return;
-        setPreloadProgress({ loaded, total });
-      })
-      .then(() => {
-        if (disposed) return;
-        loadRace(raceGenderRef.current);
-      })
-      .catch((err: unknown) => {
-        if (disposed) return;
-        console.error('Failed to preload race assets:', err);
-        setErrorMessage(err instanceof Error ? err.message : String(err));
-        setStatus('error');
-      });
-
-    const handleResize = () => {
-      if (!container) return;
-      cameraController.setAspect(container.clientWidth / container.clientHeight);
-      sceneController.resize();
-    };
-    window.addEventListener('resize', handleResize);
+    viewerSceneRef.current = viewerScene;
+    // Resource disposal is SceneManager's job once this scene is superseded
+    // (or on full app unmount) - not this cleanup's, since the replacement
+    // screen's own mount effect is what calls setScene() next, and until
+    // that happens this scene should keep rendering/updating undisturbed.
+    void sceneManager.setScene(viewerScene);
 
     return () => {
       disposed = true;
-      window.removeEventListener('resize', handleResize);
-      sceneController.renderer.domElement.removeEventListener('pointerdown', handlePointerDown);
-      sceneController.renderer.domElement.removeEventListener('pointerup', handlePointerUp);
-      cancelAnimationFrame(animationFrame);
-      cameraControllerRef.current = null;
-      characterControllerRef.current = null;
-      loadRaceRef.current = null;
-      assetController.cancelPending();
-      cameraController.dispose();
-      characterController.dispose();
-      sceneController.dispose();
+      viewerSceneRef.current = null;
     };
-  }, []);
+  }, [sceneManager]);
 
   useEffect(() => {
-    characterControllerRef.current?.setShowBones(showBones);
+    viewerSceneRef.current?.characterController.setShowBones(showBones);
   }, [showBones]);
 
   useEffect(() => {
-    cameraControllerRef.current?.setMode(camMode);
+    viewerSceneRef.current?.cameraController.setMode(camMode);
   }, [camMode]);
 
   useEffect(() => {
-    characterControllerRef.current?.setDebugPaused(debugPaused);
+    viewerSceneRef.current?.characterController.setDebugPaused(debugPaused);
   }, [debugPaused]);
 
   useEffect(() => {
@@ -237,11 +153,44 @@ export default function RfViewer() {
       isFirstRaceEffectRef.current = false;
       return;
     }
-    loadRaceRef.current?.(raceGender);
+    viewerSceneRef.current?.loadRace(raceGender);
   }, [raceGender]);
 
+  // An item valid for one race's body may not be for another's, so previous
+  // selections are cleared on a race switch. Done during render by
+  // comparing against a state-held "previous value" - React's documented
+  // pattern for resetting state when a value changes (a ref can't be used
+  // here: reading/writing ref.current during render isn't allowed).
+  const [prevRaceGenderForEquip, setPrevRaceGenderForEquip] = useState(raceGender);
+  if (prevRaceGenderForEquip !== raceGender) {
+    setPrevRaceGenderForEquip(raceGender);
+    setEquippedItemId({});
+  }
+
+  // Loads each slot's race-eligible item list whenever the character is
+  // ready or the race changes. Item JSON files are cached per slot in
+  // rf/items.ts, so a race switch only re-filters already-fetched data
+  // rather than re-downloading it.
+  useEffect(() => {
+    if (status !== 'ready') return;
+    let cancelled = false;
+    for (const modelType of ALL_MODEL_TYPES) {
+      loadUsableSlotItems(modelType, raceGender)
+        .then((items) => {
+          if (cancelled) return;
+          setSlotItems((prev) => ({ ...prev, [modelType]: items }));
+        })
+        .catch((err: unknown) => {
+          console.warn(`Failed to load items for slot ${SLOT_LABELS[modelType]}:`, err);
+        });
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [status, raceGender]);
+
   const logFrameState = () => {
-    const result = characterControllerRef.current?.getFrameStateRows();
+    const result = viewerSceneRef.current?.characterController.getFrameStateRows();
     if (!result) return;
     const { rows, action } = result;
     console.log(`[anim-debug] clip="${clipName}" time=${action.time.toFixed(4)}s / ${action.getClip().duration.toFixed(4)}s`);
@@ -249,23 +198,64 @@ export default function RfViewer() {
   };
 
   const stepFrame = (deltaFrames: number) => {
-    characterControllerRef.current?.stepFrame(deltaFrames);
+    viewerSceneRef.current?.characterController.stepFrame(deltaFrames);
     logFrameState();
   };
 
   const handleManualClip = (name: string) => {
-    characterControllerRef.current?.setClip(name);
+    viewerSceneRef.current?.characterController.setClip(name);
+  };
+
+  // Depends only on slotItems (needed to resolve the picked id back to an
+  // ItemDefinition) - that only changes on an actual item-load/race-switch
+  // event, not on every render, so this still doesn't defeat EquipPanel's memo().
+  const handleEquipChange = useCallback(
+    (modelType: ModelType, itemId: string) => {
+      const item = itemId === '' ? null : (slotItems[modelType]?.find((i) => i.id === itemId) ?? null);
+
+      setEquippedItemId((prev) => {
+        if (itemId === '') {
+          const next = { ...prev };
+          delete next[modelType];
+          return next;
+        }
+        return { ...prev, [modelType]: itemId };
+      });
+
+      // equipItem() resolves the item's mesh via playerResource.json - most
+      // real (non-"Default ...") items aren't in that table yet, so
+      // 'unavailable' is common; the selection is kept either way, it just
+      // won't visually change the model until resource data covers it.
+      viewerSceneRef.current?.characterController
+        .equipItem(modelType, item)
+        .then((result) => {
+          if (result === 'unavailable') {
+            console.warn(
+              `No mesh data available for "${item?.name ?? 'this item'}" yet - selection kept, but the model won't change.`,
+            );
+          }
+        })
+        .catch((err: unknown) => {
+          console.error(`Failed to equip item for slot ${SLOT_LABELS[modelType]}:`, err);
+        });
+    },
+    [slotItems],
+  );
+
+  const handleCommandSubmit = () => {
+    const trimmed = commandInput.trim();
+    if (!trimmed) return;
+    setCommandInput('');
+    viewerSceneRef.current
+      ?.runCommand(trimmed)
+      .then((result) => setCommandFeedback(result))
+      .catch((err: unknown) => setCommandFeedback(`Error: ${err instanceof Error ? err.message : String(err)}`));
   };
 
   return (
     <div className="rf-viewer">
-      <div className="rf-viewer-canvas" ref={containerRef} />
       <div className="rf-viewer-race-select">
-        <select
-          value={raceGender}
-          disabled={status === 'preloading'}
-          onChange={(e) => setRaceGender(Number(e.target.value) as RaceGender)}
-        >
+        <select value={raceGender} onChange={(e) => setRaceGender(Number(e.target.value) as RaceGender)}>
           {RACE_OPTIONS.map((opt) => (
             <option key={opt.value} value={opt.value}>
               {opt.label}
@@ -281,10 +271,8 @@ export default function RfViewer() {
           {debugStats.geometries} geo · {debugStats.textures} tex
         </div>
       )}
-      {status === 'preloading' && (
-        <div className="rf-viewer-overlay">
-          Preloading all races… {preloadProgress.loaded}/{preloadProgress.total}
-        </div>
+      {status === 'ready' && (
+        <EquipPanel equippedItemId={equippedItemId} slotItems={slotItems} onEquipChange={handleEquipChange} />
       )}
       {status === 'loading' && <div className="rf-viewer-overlay">Loading character…</div>}
       {status === 'error' && (
@@ -298,6 +286,7 @@ export default function RfViewer() {
         <>
           <div className="rf-viewer-hint">Click the ground to walk there</div>
           <div className="rf-viewer-controls">
+            {onExit && <button onClick={onExit}>« character select</button>}
             {CLIP_NAMES.map((name) => (
               <button
                 key={name}
@@ -332,6 +321,19 @@ export default function RfViewer() {
             </button>
             <button onClick={() => logFrameState()}>log now</button>
             {frameLabel && <span className="rf-viewer-frame-label">{frameLabel}</span>}
+          </div>
+          <div className="rf-viewer-command-bar">
+            <input
+              type="text"
+              className="rf-viewer-command-input"
+              placeholder="GM command, e.g. %addbot 5"
+              value={commandInput}
+              onChange={(e) => setCommandInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') handleCommandSubmit();
+              }}
+            />
+            {commandFeedback && <span className="rf-viewer-command-feedback">{commandFeedback}</span>}
           </div>
         </>
       )}

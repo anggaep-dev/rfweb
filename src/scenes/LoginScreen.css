@@ -1,0 +1,67 @@
+.login-screen {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.login-screen-panel {
+  pointer-events: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  width: 20rem;
+  padding: 1.75rem;
+  background: rgba(20, 22, 26, 0.75);
+  border: 1px solid #333;
+  border-radius: 10px;
+  color: #eee;
+  font: 500 0.9rem system-ui, sans-serif;
+}
+
+.login-screen-panel h1 {
+  margin: 0 0 0.5rem;
+  font-size: 1.3rem;
+  text-align: center;
+}
+
+.login-screen-panel label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  font-size: 0.8rem;
+  color: #9aa4b2;
+}
+
+.login-screen-panel input {
+  padding: 0.5rem 0.6rem;
+  border-radius: 6px;
+  border: 1px solid #444;
+  background: #22252b;
+  color: #eee;
+  font: 500 0.9rem system-ui, sans-serif;
+}
+
+.login-screen-panel button {
+  margin-top: 0.4rem;
+  padding: 0.6rem 1rem;
+  border-radius: 6px;
+  border: 1px solid #4a7dff;
+  background: #4a7dff;
+  color: #fff;
+  font: 600 0.9rem system-ui, sans-serif;
+  cursor: pointer;
+}
+
+.login-screen-panel button:hover {
+  background: #3a6ae8;
+}
+
+.login-screen-hint {
+  margin: 0;
+  text-align: center;
+  color: #666;
+  font-size: 0.75rem;
+}

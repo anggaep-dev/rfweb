@@ -1,7 +1,7 @@
-import RfViewer from './RfViewer';
+import SceneApp from './SceneApp';
 
 function App() {
-  return <RfViewer />;
+  return <SceneApp />;
 }
 
 export default App;
