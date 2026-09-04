@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
 import RfViewer from './RfViewer';
-import { preloadAllRaces, preloadWeaponMeshes } from './rf/character';
-import type { RaceGender } from './rf/character';
-import { loadSlotItems, ModelType } from './rf/items';
-import CharacterSelectScreen from './scenes/CharacterSelectScreen';
-import LoginScreen from './scenes/LoginScreen';
-import { SceneManager } from './scenes/SceneManager';
+import { preloadAllRaces, preloadWeaponMeshes } from '../../rf/character';
+import type { RaceGender } from '../../rf/character';
+import { loadSlotItems, ModelType } from '../../rf/items';
+import CharacterSelectScreen from './CharacterSelectScreen';
+import LoginScreen from './LoginScreen';
+import { SceneManager } from '../../scenes/SceneManager';
 import './SceneApp.css';
 
 type Screen = 'preloading' | 'login' | 'characterSelect' | 'viewer';

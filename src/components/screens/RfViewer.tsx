@@ -1,17 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import CommandConsole from './CommandConsole';
-import DebugPanel from './DebugPanel';
-import EquipPanel from './EquipPanel';
-import MobileControls from './MobileControls';
-import StatsPanel from './StatsPanel';
-import type { CamMode } from './controllers/CameraController';
-import type { BattleMode, MoveMode } from './controllers/CharacterController';
-import { RaceGender } from './rf/character';
-import { ALL_EQUIP_SLOTS, SLOT_LABELS, loadUsableSlotItems } from './rf/items';
-import type { ModelType, ItemDefinition } from './rf/items';
-import type { SceneManager } from './scenes/SceneManager';
-import type { ViewerDebugStats } from './scenes/ViewerScene';
-import { ViewerScene } from './scenes/ViewerScene';
+import CommandConsole from '../debug/CommandConsole';
+import DebugPanel from '../debug/DebugPanel';
+import EquipPanel from '../debug/EquipPanel';
+import MobileControls from '../hud/MobileControls';
+import StatsPanel from '../debug/StatsPanel';
+import type { CamMode } from '../../controllers/CameraController';
+import type { BattleMode, MoveMode } from '../../controllers/CharacterController';
+import { RaceGender } from '../../rf/character';
+import { ALL_EQUIP_SLOTS, SLOT_LABELS, loadUsableSlotItems } from '../../rf/items';
+import type { ModelType, ItemDefinition } from '../../rf/items';
+import type { SceneManager } from '../../scenes/SceneManager';
+import type { ViewerDebugStats } from '../../scenes/ViewerScene';
+import { ViewerScene } from '../../scenes/ViewerScene';
 import './RfViewer.css';
 
 export interface RfViewerProps {

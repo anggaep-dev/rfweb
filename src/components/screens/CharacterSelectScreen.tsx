@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
-import type { RaceGender } from '../rf/character';
-import { CharacterSelectScene } from './CharacterSelectScene';
-import type { SceneManager } from './SceneManager';
+import type { RaceGender } from '../../rf/character';
+import { CharacterSelectScene } from '../../scenes/CharacterSelectScene';
+import type { SceneManager } from '../../scenes/SceneManager';
 import './CharacterSelectScreen.css';
 
 export interface CharacterSelectScreenProps {

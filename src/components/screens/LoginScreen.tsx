@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { FormEvent } from 'react';
-import { LoginScene } from './LoginScene';
-import type { SceneManager } from './SceneManager';
+import { LoginScene } from '../../scenes/LoginScene';
+import type { SceneManager } from '../../scenes/SceneManager';
 import './LoginScreen.css';
 
 export interface LoginScreenProps {

@@ -1,4 +1,4 @@
-import type { ViewerDebugStats } from './scenes/ViewerScene';
+import type { ViewerDebugStats } from '../../scenes/ViewerScene';
 import './DebugPanel.css';
 
 export interface StatsPanelProps {

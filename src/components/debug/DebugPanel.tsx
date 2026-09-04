@@ -1,5 +1,5 @@
-import type { CamMode } from './controllers/CameraController';
-import { CLIP_NAMES, RaceGender } from './rf/character';
+import type { CamMode } from '../../controllers/CameraController';
+import { CLIP_NAMES, RaceGender } from '../../rf/character';
 import './DebugPanel.css';
 
 const RACE_OPTIONS: { value: RaceGender; label: string }[] = [

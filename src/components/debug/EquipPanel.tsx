@@ -1,6 +1,6 @@
 import { memo } from 'react';
-import { ALL_EQUIP_SLOTS, SLOT_LABELS } from './rf/items';
-import type { ItemDefinition, ModelType } from './rf/items';
+import { ALL_EQUIP_SLOTS, SLOT_LABELS } from '../../rf/items';
+import type { ItemDefinition, ModelType } from '../../rf/items';
 import './DebugPanel.css';
 
 export interface EquipPanelProps {
