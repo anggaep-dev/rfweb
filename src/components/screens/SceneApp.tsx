@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import OnlineScreen from './OnlineScreen';
 import RfViewer from './RfViewer';
 import { preloadAllRaces, preloadWeaponMeshes } from '../../rf/character';
 import type { RaceGender } from '../../rf/character';
@@ -9,6 +10,9 @@ import { SceneManager } from '../../scenes/SceneManager';
 import './SceneApp.css';
 
 type Screen = 'preloading' | 'login' | 'characterSelect' | 'viewer';
+
+/** "/debug" reaches the old offline/debug viewer (ViewerScene); every other path is online play (OnlineScene). */
+const isDebugRoute = window.location.pathname.replace(/\/+$/, '') === '/debug';
 
 /**
  * Owns the single shared SceneManager (renderer/canvas/render loop) and the
@@ -117,13 +121,22 @@ export default function SceneApp() {
           }}
         />
       )}
-      {sceneManager && screen === 'viewer' && selectedRace !== null && (
-        <RfViewer
-          sceneManager={sceneManager}
-          initialRaceGender={selectedRace}
-          onExit={() => setScreen('characterSelect')}
-        />
-      )}
+      {sceneManager &&
+        screen === 'viewer' &&
+        selectedRace !== null &&
+        (isDebugRoute ? (
+          <RfViewer
+            sceneManager={sceneManager}
+            initialRaceGender={selectedRace}
+            onExit={() => setScreen('characterSelect')}
+          />
+        ) : (
+          <OnlineScreen
+            sceneManager={sceneManager}
+            initialRaceGender={selectedRace}
+            onExit={() => setScreen('characterSelect')}
+          />
+        ))}
     </div>
   );
 }

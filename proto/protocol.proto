@@ -1,0 +1,118 @@
+syntax = "proto3";
+
+package protocol;
+option go_package = "github.com/eld/rfworld/internal/protocol";
+
+// ─── Client → Server ─────────────────────────────────────────────────────────
+
+message MovementInput {
+    uint32 sequence = 1;
+    sint32 dir_x = 2;
+    sint32 dir_z = 3;
+    bool   running = 4;
+}
+
+message ChatAllRequest {
+    string message = 1;
+}
+
+message WhisperRequest {
+    uint32 target_player_id = 1;
+    string message = 2;
+}
+
+// client_time is an opaque client-side monotonic timestamp (performance.now(),
+// milliseconds) - the server never interprets it, only echoes it back
+// unchanged in PongEvent so the client can compute round-trip time itself.
+message PingRequest {
+    uint32 client_time = 1;
+}
+
+message ClientPacket {
+    oneof payload {
+        MovementInput   movement    = 1;
+        ChatAllRequest  chat_all    = 2;
+        WhisperRequest  whisper     = 3;
+        PingRequest     ping        = 4;
+    }
+}
+
+// ─── Server → Client ─────────────────────────────────────────────────────────
+
+message EntitySnapshot {
+    uint32 entity_id = 1;
+    sint32 x = 2;
+    sint32 y = 3;
+    sint32 z = 4;
+    uint32 rotation = 5;
+    uint32 state = 6;
+}
+
+message WorldSnapshot {
+    uint32 server_tick = 1;
+    repeated EntitySnapshot entities = 2;
+}
+
+message EntityEnter {
+    uint32 entity_id = 1;
+    EntitySnapshot entity = 2;
+}
+
+message EntityUpdate {
+    uint32 entity_id = 1;
+    sint32 dx = 2;
+    sint32 dy = 3;
+    sint32 dz = 4;
+    uint32 rotation = 5;
+    uint32 state = 6;
+}
+
+message EntityExit {
+    uint32 entity_id = 1;
+}
+
+message WorldDelta {
+    uint32 server_tick = 1;
+    repeated EntityEnter  enters  = 2;
+    repeated EntityUpdate updates = 3;
+    repeated EntityExit   exits   = 4;
+}
+
+message ChatEvent {
+    uint32 player_id = 1;
+    string player_name = 2;
+    string message = 3;
+}
+
+message WhisperEvent {
+    uint32 player_id = 1;
+    string player_name = 2;
+    string message = 3;
+}
+
+message SystemMessage {
+    string message = 1;
+}
+
+// Echo of PingRequest.client_time - see its comment.
+message PongEvent {
+    uint32 client_time = 1;
+}
+
+// Sent once, right after connecting - the only way the client learns which
+// entity_id (in WorldSnapshot/WorldDelta) is itself.
+message WelcomeEvent {
+    uint32 player_id = 1;
+}
+
+message ServerPacket {
+    oneof payload {
+        WorldSnapshot world_snapshot = 1;
+        WorldDelta    world_delta    = 2;
+        ChatEvent     chat           = 3;
+        WhisperEvent  whisper        = 4;
+        SystemMessage system_message = 5;
+        PongEvent     pong           = 6;
+        WelcomeEvent  welcome        = 7;
+    }
+}

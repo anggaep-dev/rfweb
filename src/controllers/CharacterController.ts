@@ -16,7 +16,8 @@ import type { ItemDefinition } from '../rf/items';
 import { resolveItemMeshStem, resolveWeaponMesh } from '../rf/resource';
 
 const ARRIVE_FRACTION_OF_RADIUS = 0.04;
-const WALK_SPEED_RADIUS_PER_SEC = 0.9;
+/** Exported for OnlineScene - it derives a server-units-to-scene-units scale by matching the server's own walk speed constant against this one. */
+export const WALK_SPEED_RADIUS_PER_SEC = 0.9;
 /** How much faster running is than walking - the actual client's ratio isn't in this data set, so this is a reasonable-looking approximation. */
 const RUN_SPEED_MULTIPLIER = 1.8;
 const TURN_SPEED_RAD_PER_SEC = Math.PI * 2.2;

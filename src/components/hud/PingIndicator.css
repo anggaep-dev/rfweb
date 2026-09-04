@@ -1,0 +1,26 @@
+.ping-indicator {
+  position: absolute;
+  top: 1rem;
+  left: 1rem;
+  padding: 0.3rem 0.6rem;
+  border-radius: 6px;
+  background: rgba(20, 22, 26, 0.6);
+  font: 600 0.75rem system-ui, sans-serif;
+  pointer-events: none;
+}
+
+.ping-indicator-good {
+  color: #6bdc7c;
+}
+
+.ping-indicator-warn {
+  color: #e8c14a;
+}
+
+.ping-indicator-bad {
+  color: #ff8080;
+}
+
+.ping-indicator-unknown {
+  color: #9aa4b2;
+}
