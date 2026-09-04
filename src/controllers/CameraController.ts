@@ -1,4 +1,4 @@
-import { CameraHelper, Euler, MathUtils, MOUSE, PerspectiveCamera, Vector3 } from 'three';
+import { CameraHelper, Euler, MathUtils, MOUSE, PerspectiveCamera, TOUCH, Vector3 } from 'three';
 import type { Bone, Quaternion, Scene } from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import type { CharacterBounds } from './CharacterController';
@@ -99,6 +99,12 @@ export class CameraController {
     // Left button is reserved for click-to-move; orbiting is right-drag only.
     // Zoom (scroll wheel) stays on - only the middle-button dolly drag is disabled.
     this.controls.mouseButtons = { LEFT: null, MIDDLE: null, RIGHT: MOUSE.ROTATE };
+    // One-finger drag orbits (touch has no right-click equivalent, so this
+    // doubles as third-person orbit on mobile); two-finger pinch dollies the
+    // camera through the exact same handleTouchMoveDolly()/zoomSpeed path a
+    // desktop scroll does - DOLLY_PAN's pan half is a no-op since enablePan
+    // is false above, so a pinch is pure zoom, not zoom+pan.
+    this.controls.touches = { ONE: TOUCH.ROTATE, TWO: TOUCH.DOLLY_PAN };
     this.controls.update();
 
     // Debug-cam gizmo: a literal camera object placed at the character's

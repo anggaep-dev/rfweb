@@ -1,0 +1,71 @@
+.mobile-controls {
+  /* Same click-through convention as .rf-viewer - see that file's comment. */
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.mobile-controls-joystick-base {
+  position: absolute;
+  left: 1.5rem;
+  bottom: 1.5rem;
+  width: 6.5rem;
+  height: 6.5rem;
+  border-radius: 50%;
+  background: rgba(20, 22, 26, 0.45);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  pointer-events: auto;
+  /* touch-action alone isn't enough on iOS - a held finger can still trigger
+     the text-selection callout/magnifier, which steals the touch mid-drag
+     (fires pointercancel) and reads as the joystick randomly releasing. */
+  touch-action: none;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.mobile-controls-joystick-stick {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 2.75rem;
+  height: 2.75rem;
+  margin-left: -1.375rem;
+  margin-top: -1.375rem;
+  border-radius: 50%;
+  background: rgba(74, 125, 255, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.3);
+}
+
+.mobile-controls-actions {
+  position: absolute;
+  right: 1.5rem;
+  bottom: 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  pointer-events: auto;
+}
+
+.mobile-controls-btn {
+  width: 4rem;
+  height: 4rem;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: rgba(20, 22, 26, 0.45);
+  color: #eee;
+  font: 600 0.7rem system-ui, sans-serif;
+  cursor: pointer;
+  touch-action: none;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.mobile-controls-btn:active {
+  background: rgba(74, 125, 255, 0.6);
+}
+
+.mobile-controls-btn-attack {
+  align-self: flex-end;
+}

@@ -1,5 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import CommandConsole from './CommandConsole';
 import DebugPanel from './DebugPanel';
+import EquipPanel from './EquipPanel';
+import MobileControls from './MobileControls';
+import StatsPanel from './StatsPanel';
 import type { CamMode } from './controllers/CameraController';
 import type { BattleMode, MoveMode } from './controllers/CharacterController';
 import { RaceGender } from './rf/character';
@@ -37,12 +41,18 @@ export default function RfViewer({ sceneManager, initialRaceGender, onExit }: Rf
   // plays. See CharacterController.setMoveMode.
   const [moveMode, setMoveMode] = useState<MoveMode>('walk');
 
-  // The debug/dev-tooling UI (race switcher, equip panel, clip buttons,
-  // camera-mode select, frame-stepping, GM console) - everything RfViewer
-  // currently renders, until real gameplay UI is built on top of the scene.
-  // Kept togglable rather than always-on so that future UI has a clean
-  // scene to work with by default.
-  const [showDebugUI, setShowDebugUI] = useState(true);
+  // The debug/dev-tooling panel (race switcher, clip buttons, camera-mode
+  // select, frame-stepping) - hidden by default and revealed only via the
+  // GM console's "%debug 1"/"%debug 0" (see handleCommandSubmit below), not
+  // a UI button, so it stays out of the way until someone actually wants it.
+  const [showDebugPanel, setShowDebugPanel] = useState(false);
+
+  // StatsPanel/EquipPanel spawn independently of showDebugPanel (and of each
+  // other) via the GM console's "%stats 1"/"%eq 1" (see handleCommandSubmit)
+  // - same "hidden until summoned" pattern as showDebugPanel. The "Debug UI"
+  // button is a shortcut that flips both together.
+  const [showStats, setShowStats] = useState(false);
+  const [showEquip, setShowEquip] = useState(false);
 
   const [raceGender, setRaceGender] = useState<RaceGender>(initialRaceGender);
   const raceGenderRef = useRef<RaceGender>(initialRaceGender);
@@ -183,6 +193,18 @@ export default function RfViewer({ sceneManager, initialRaceGender, onExit }: Rf
     viewerSceneRef.current?.characterController.setClip(name);
   };
 
+  // Memoized (stable identity) - MobileControls' unmount-cleanup effect used
+  // to depend on this prop, so a fresh function reference on every RfViewer
+  // re-render (which happens constantly while walking - see onStatsUpdate/
+  // onClipChange above) fired that cleanup spuriously, repeatedly zeroing
+  // the joystick input mid-hold. Fixed on both ends (see MobileControls'
+  // onMoveRef), but keeping this stable is still the right call regardless.
+  const handleJoystickMove = useCallback((input: { x: number; y: number } | null) => {
+    viewerSceneRef.current?.setJoystickInput(input);
+  }, []);
+
+  const handleEquipClose = useCallback(() => setShowEquip(false), []);
+
   // Depends only on slotItems (needed to resolve the picked id back to an
   // ItemDefinition) - that only changes on an actual item-load/race-switch
   // event, not on every render, so this still doesn't defeat EquipPanel's memo().
@@ -223,6 +245,33 @@ export default function RfViewer({ sceneManager, initialRaceGender, onExit }: Rf
     const trimmed = commandInput.trim();
     if (!trimmed) return;
     setCommandInput('');
+
+    // Debug-panel/stats/equip visibility is pure UI state, not scene state -
+    // handled here rather than round-tripping through ViewerScene.runCommand.
+    const debugMatch = /^%debug\s+([01])$/.exec(trimmed);
+    if (debugMatch) {
+      const show = debugMatch[1] === '1';
+      setShowDebugPanel(show);
+      setCommandFeedback(`Debug panel ${show ? 'shown' : 'hidden'}.`);
+      return;
+    }
+
+    const statsMatch = /^%stats\s+([01])$/.exec(trimmed);
+    if (statsMatch) {
+      const show = statsMatch[1] === '1';
+      setShowStats(show);
+      setCommandFeedback(`Stats panel ${show ? 'shown' : 'hidden'}.`);
+      return;
+    }
+
+    const equipMatch = /^%eq\s+([01])$/.exec(trimmed);
+    if (equipMatch) {
+      const show = equipMatch[1] === '1';
+      setShowEquip(show);
+      setCommandFeedback(`Equip panel ${show ? 'shown' : 'hidden'}.`);
+      return;
+    }
+
     viewerSceneRef.current
       ?.runCommand(trimmed)
       .then((result) => setCommandFeedback(result))
@@ -258,22 +307,44 @@ export default function RfViewer({ sceneManager, initialRaceGender, onExit }: Rf
           </button>
         )}
         <button
-          className={`rf-viewer-debug-toggle${showDebugUI ? ' active' : ''}`}
-          onClick={() => setShowDebugUI((v) => !v)}
+          className={`rf-viewer-debug-toggle${showStats || showEquip ? ' active' : ''}`}
+          onClick={() => {
+            setShowStats((v) => !v);
+            setShowEquip((v) => !v);
+          }}
         >
           Debug UI
         </button>
       </div>
 
-      {showDebugUI && (
+      {status === 'ready' && <MobileControls onMove={handleJoystickMove} />}
+
+      {/* Always rendered (not gated by showDebugPanel) - it's the only way to send "%debug 1" and bring the panel back once hidden. */}
+      {status === 'ready' && (
+        <CommandConsole
+          commandInput={commandInput}
+          onCommandInputChange={setCommandInput}
+          onCommandSubmit={handleCommandSubmit}
+          commandFeedback={commandFeedback}
+        />
+      )}
+
+      {status === 'ready' && showStats && <StatsPanel stats={debugStats} />}
+
+      {status === 'ready' && showEquip && (
+        <EquipPanel
+          equippedItemId={equippedItemId}
+          slotItems={slotItems}
+          onEquipChange={handleEquipChange}
+          onClose={handleEquipClose}
+        />
+      )}
+
+      {showDebugPanel && (
         <DebugPanel
           ready={status === 'ready'}
           raceGender={raceGender}
           onRaceGenderChange={setRaceGender}
-          debugStats={debugStats}
-          equippedItemId={equippedItemId}
-          slotItems={slotItems}
-          onEquipChange={handleEquipChange}
           clipName={clipName}
           onManualClip={handleManualClip}
           showBones={showBones}
@@ -285,10 +356,6 @@ export default function RfViewer({ sceneManager, initialRaceGender, onExit }: Rf
           onStepFrame={stepFrame}
           onLogFrameState={logFrameState}
           frameLabel={frameLabel}
-          commandInput={commandInput}
-          onCommandInputChange={setCommandInput}
-          onCommandSubmit={handleCommandSubmit}
-          commandFeedback={commandFeedback}
           onExit={onExit}
         />
       )}

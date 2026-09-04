@@ -9,6 +9,7 @@ import type { RaceGender } from '../rf/character';
 import type { AppScene } from './AppScene';
 
 const CLICK_DRAG_TOLERANCE_PX = 12;
+const UP_AXIS = new Vector3(0, 1, 0);
 /** How often the FPS/memory readout refreshes - every frame would be unreadable and wasteful to re-render for. */
 const STATS_UPDATE_INTERVAL_SEC = 0.5;
 const BYTES_PER_MB = 1024 * 1024;
@@ -54,6 +55,12 @@ export class ViewerScene implements AppScene {
   private readonly raycaster = new Raycaster();
   private readonly pointerNdc = new Vector2();
   private pointerDownPos: { x: number; y: number } | null = null;
+
+  /** Raw stick vector from the mobile joystick (x = right, y = forward), or null while untouched. Converted to a camera-relative world direction each frame in update(). */
+  private joystickInput: { x: number; y: number } | null = null;
+  private readonly joystickForward = new Vector3();
+  private readonly joystickRight = new Vector3();
+  private readonly joystickDirection = new Vector3();
 
   private statsFrameCount = 0;
   private statsElapsed = 0;
@@ -134,7 +141,26 @@ export class ViewerScene implements AppScene {
     }
   }
 
+  /** Mobile joystick input: x = right, y = forward, both roughly [-1, 1] (magnitude scales speed). Pass null on release. Resolved to a camera-relative world direction fresh every frame in update(), so it stays correct as the camera orbits. */
+  setJoystickInput(input: { x: number; y: number } | null): void {
+    this.joystickInput = input;
+    if (input) this.sceneController.hideTargetMarker(); // joystick engaging supersedes any pending click-to-move
+  }
+
   update(delta: number): void {
+    if (this.joystickInput) {
+      const { x, y } = this.joystickInput;
+      const camera = this.cameraController.camera;
+      camera.getWorldDirection(this.joystickForward);
+      this.joystickForward.y = 0;
+      if (this.joystickForward.lengthSq() > 1e-8) this.joystickForward.normalize();
+      this.joystickRight.crossVectors(this.joystickForward, UP_AXIS).normalize();
+      this.joystickDirection.set(0, 0, 0).addScaledVector(this.joystickForward, y).addScaledVector(this.joystickRight, x);
+      this.characterController.setMoveDirection(this.joystickDirection);
+    } else {
+      this.characterController.setMoveDirection(null);
+    }
+
     const { arrived } = this.characterController.update(delta);
     if (arrived) this.sceneController.hideTargetMarker();
     this.botController.update(delta);

@@ -1,9 +1,5 @@
-import { memo } from 'react';
 import type { CamMode } from './controllers/CameraController';
 import { CLIP_NAMES, RaceGender } from './rf/character';
-import { ALL_EQUIP_SLOTS, SLOT_LABELS } from './rf/items';
-import type { ItemDefinition, ModelType } from './rf/items';
-import type { ViewerDebugStats } from './scenes/ViewerScene';
 import './DebugPanel.css';
 
 const RACE_OPTIONS: { value: RaceGender; label: string }[] = [
@@ -14,56 +10,12 @@ const RACE_OPTIONS: { value: RaceGender; label: string }[] = [
   { value: RaceGender.Accretia, label: 'Accretia' },
 ];
 
-interface EquipPanelProps {
-  equippedItemId: Partial<Record<ModelType, string>>;
-  slotItems: Partial<Record<ModelType, ItemDefinition[]>>;
-  onEquipChange: (modelType: ModelType, itemId: string) => void;
-}
-
-// Some slots carry thousands of items (gauntlet alone has ~2,500 eligible
-// per race), so this renders thousands of <option> elements. memo() keeps
-// that expensive tree from being torn down and rebuilt on every unrelated
-// re-render of DebugPanel (e.g. the FPS/memory readout updating twice a
-// second) - only an actual change to this panel's own props should redo it.
-const EquipPanel = memo(function EquipPanel({ equippedItemId, slotItems, onEquipChange }: EquipPanelProps) {
-  return (
-    <div className="debug-panel-equip-panel">
-      {ALL_EQUIP_SLOTS.map((modelType) => {
-        const items = slotItems[modelType];
-        return (
-          <label key={modelType} className="debug-panel-equip-row">
-            <span>{SLOT_LABELS[modelType]}</span>
-            <select
-              value={equippedItemId[modelType] ?? ''}
-              disabled={!items}
-              onChange={(e) => onEquipChange(modelType, e.target.value)}
-            >
-              <option value="">{items ? 'None' : 'Loading…'}</option>
-              {items?.map((item) => (
-                <option key={item.id} value={item.id}>
-                  {item.name}
-                </option>
-              ))}
-            </select>
-          </label>
-        );
-      })}
-    </div>
-  );
-});
-
 export interface DebugPanelProps {
   /** Whether a character is currently mounted and ready - gates everything except the race switcher, which should stay usable while loading. */
   ready: boolean;
 
   raceGender: RaceGender;
   onRaceGenderChange: (race: RaceGender) => void;
-
-  debugStats: ViewerDebugStats;
-
-  equippedItemId: Partial<Record<ModelType, string>>;
-  slotItems: Partial<Record<ModelType, ItemDefinition[]>>;
-  onEquipChange: (modelType: ModelType, itemId: string) => void;
 
   clipName: string;
   onManualClip: (name: string) => void;
@@ -78,30 +30,23 @@ export interface DebugPanelProps {
   onLogFrameState: () => void;
   frameLabel: string;
 
-  commandInput: string;
-  onCommandInputChange: (value: string) => void;
-  onCommandSubmit: () => void;
-  commandFeedback: string;
-
   /** Optional "back to character select" action, shown as a button when provided. */
   onExit?: () => void;
 }
 
 /**
- * All the asset-viewer/dev tooling that used to be RfViewer's entire UI:
- * race switcher, FPS/memory readout, equip-slot dropdowns, animation clip
- * buttons, camera-mode select, frame-stepping tools, and the GM command
- * console. Kept as one togglable layer (see RfViewer's showDebugUI) so real
- * gameplay UI can be built on the scene without this cluttering it up.
+ * The asset-viewer/dev tooling that used to be RfViewer's entire UI: race
+ * switcher, animation clip buttons, camera-mode select, and frame-stepping
+ * tools. Hidden by default - RfViewer only mounts this once the GM console
+ * gets a "%debug 1" (see its showDebugPanel state). The equip-slot dropdowns
+ * and FPS/memory readout used to live here too, but now spawn independently
+ * (RfViewer's StatsPanel/EquipPanel, via "%stats 1"/"%eq 1") so they stay
+ * reachable even while this panel - and the console itself - are hidden.
  */
 export default function DebugPanel({
   ready,
   raceGender,
   onRaceGenderChange,
-  debugStats,
-  equippedItemId,
-  slotItems,
-  onEquipChange,
   clipName,
   onManualClip,
   showBones,
@@ -113,10 +58,6 @@ export default function DebugPanel({
   onStepFrame,
   onLogFrameState,
   frameLabel,
-  commandInput,
-  onCommandInputChange,
-  onCommandSubmit,
-  commandFeedback,
   onExit,
 }: DebugPanelProps) {
   return (
@@ -133,15 +74,6 @@ export default function DebugPanel({
 
       {ready && (
         <>
-          <div className="debug-panel-stats">
-            {debugStats.fps} FPS
-            {debugStats.heapMB !== null && <> · {debugStats.heapMB} MB</>}
-            {' · '}
-            {debugStats.geometries} geo · {debugStats.textures} tex
-          </div>
-
-          <EquipPanel equippedItemId={equippedItemId} slotItems={slotItems} onEquipChange={onEquipChange} />
-
           <div className="debug-panel-hint">Click the ground to walk there</div>
 
           <div className="debug-panel-controls">
@@ -177,20 +109,6 @@ export default function DebugPanel({
             </button>
             <button onClick={onLogFrameState}>log now</button>
             {frameLabel && <span className="debug-panel-frame-label">{frameLabel}</span>}
-          </div>
-
-          <div className="debug-panel-command-bar">
-            <input
-              type="text"
-              className="debug-panel-command-input"
-              placeholder="GM command, e.g. %addbot 5"
-              value={commandInput}
-              onChange={(e) => onCommandInputChange(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') onCommandSubmit();
-              }}
-            />
-            {commandFeedback && <span className="debug-panel-command-feedback">{commandFeedback}</span>}
           </div>
         </>
       )}

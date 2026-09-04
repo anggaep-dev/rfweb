@@ -117,6 +117,33 @@
   pointer-events: auto;
 }
 
+.debug-panel-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  color: #ccc;
+  font: 600 0.8rem system-ui, sans-serif;
+  margin-bottom: 0.15rem;
+}
+
+.debug-panel-panel-close {
+  width: 1.4rem;
+  height: 1.4rem;
+  padding: 0;
+  border-radius: 4px;
+  border: 1px solid #444;
+  background: #22252b;
+  color: #eee;
+  font: 600 0.9rem system-ui, sans-serif;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.debug-panel-panel-close:hover {
+  background: #2c3038;
+}
+
 .debug-panel-equip-row {
   display: flex;
   align-items: center;

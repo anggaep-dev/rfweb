@@ -113,6 +113,8 @@ export class CharacterController {
   private battleMode: BattleMode = 'peace';
 
   private moveTarget: Vector3 | null = null;
+  /** Continuous move input (e.g. from a mobile joystick), world-space XZ - magnitude 0-1 scales speed, direction sets facing. Takes priority over moveTarget; see setMoveDirection. */
+  private moveDirection: Vector3 | null = null;
   private walkSpeed = 1;
   private arriveThreshold = 0.05;
   /** Walk vs run - see MoveMode. Only affects click-to-move (moveTo()); a manual setClip('run') from a debug button is unaffected. */
@@ -153,7 +155,14 @@ export class CharacterController {
   }
 
   isMoving(): boolean {
-    return this.moveTarget !== null;
+    return this.moveTarget !== null || this.moveDirection !== null;
+  }
+
+  /** Only fires onClipChange when the resolved desired clip actually changes, so continuous per-frame callers (the joystick) don't spam it every frame. */
+  private setDesiredClip(name: string): void {
+    if (this.desiredClip === name) return;
+    this.desiredClip = name;
+    this.callbacks.onClipChange?.(name);
   }
 
   setShowBones(show: boolean): void {
@@ -282,21 +291,18 @@ export class CharacterController {
   /** Manual clip selection (e.g. a debug button), overriding whatever click-to-move was doing. */
   setClip(name: string): void {
     this.moveTarget = null;
-    this.desiredClip = name;
-    this.callbacks.onClipChange?.(name);
+    this.moveDirection = null;
+    this.setDesiredClip(name);
   }
 
   getMoveMode(): MoveMode {
     return this.moveMode;
   }
 
-  /** Toggles walk/run for click-to-move. Takes effect immediately if already mid-move, not just on the next moveTo(). */
+  /** Toggles walk/run for click-to-move / joystick movement. Takes effect immediately if already mid-move, not just on the next moveTo(). */
   setMoveMode(mode: MoveMode): void {
     this.moveMode = mode;
-    if (this.moveTarget) {
-      this.desiredClip = mode;
-      this.callbacks.onClipChange?.(mode);
-    }
+    if (this.moveTarget || this.moveDirection) this.setDesiredClip(mode);
   }
 
   moveTo(point: Vector3): void {
@@ -305,9 +311,27 @@ export class CharacterController {
       to: point.toArray().map((n) => +n.toFixed(3)),
       previousClip: this.desiredClip,
     });
+    this.moveDirection = null;
     this.moveTarget = point.clone();
-    this.desiredClip = this.moveMode;
-    this.callbacks.onClipChange?.(this.moveMode);
+    this.setDesiredClip(this.moveMode);
+  }
+
+  /**
+   * Continuous move input for the mobile joystick (or any future analog
+   * input): a world-space XZ vector whose direction sets facing/heading and
+   * whose magnitude (0-1) scales speed, applied fresh every frame by
+   * update(). Pass null (or a ~zero vector) to release - drops back to
+   * "stand" unless a click-to-move target is still pending. Overrides (and
+   * clears) any active click-to-move target the moment it's engaged.
+   */
+  setMoveDirection(direction: Vector3 | null): void {
+    if (direction && direction.lengthSq() > 1e-6) {
+      this.moveDirection = direction.clone();
+      this.moveTarget = null;
+    } else {
+      this.moveDirection = null;
+      if (!this.moveTarget) this.setDesiredClip('stand');
+    }
   }
 
   stepFrame(deltaFrames: number): void {
@@ -505,6 +529,7 @@ export class CharacterController {
     // Reset per-character state - the mixer/clips/skeleton above all belong
     // to the character being replaced.
     this.moveTarget = null;
+    this.moveDirection = null;
     this.desiredClip = 'stand';
     this.currentClipKey = null;
     this.activeAction = null;
@@ -538,28 +563,42 @@ export class CharacterController {
     if (!character) return { arrived: false };
 
     let arrived = false;
-    const target = this.moveTarget;
-    if (target) {
-      const toTarget = new Vector3(target.x - character.group.position.x, 0, target.z - character.group.position.z);
-      const distance = toTarget.length();
+    const direction = this.moveDirection;
+    if (direction) {
+      const magnitude = direction.length();
+      const dirNorm = direction.clone().divideScalar(magnitude);
+      const intensity = Math.min(magnitude, 1);
+      const speed = (this.moveMode === 'run' ? this.walkSpeed * RUN_SPEED_MULTIPLIER : this.walkSpeed) * intensity;
+      character.group.position.addScaledVector(dirNorm, speed * delta);
 
-      if (distance <= this.arriveThreshold) {
-        this.moveTarget = null;
-        arrived = true;
-        console.log('[anim-debug] arrived at click-to-move target, switching to "stand"');
-        this.desiredClip = 'stand';
-        this.callbacks.onClipChange?.('stand');
-      } else {
-        toTarget.normalize();
-        const speed = this.moveMode === 'run' ? this.walkSpeed * RUN_SPEED_MULTIPLIER : this.walkSpeed;
-        const step = Math.min(distance, speed * delta);
-        character.group.position.addScaledVector(toTarget, step);
-        character.group.position.y = target.y;
+      const facePoint = character.group.position.clone().add(dirNorm);
+      this.lookMatrix.lookAt(facePoint, character.group.position, character.group.up);
+      this.lookTargetQuat.setFromRotationMatrix(this.lookMatrix).multiply(FACING_CORRECTION);
+      character.group.quaternion.rotateTowards(this.lookTargetQuat, TURN_SPEED_RAD_PER_SEC * delta);
+      this.setDesiredClip(this.moveMode);
+    } else {
+      const target = this.moveTarget;
+      if (target) {
+        const toTarget = new Vector3(target.x - character.group.position.x, 0, target.z - character.group.position.z);
+        const distance = toTarget.length();
 
-        const facePoint = character.group.position.clone().add(toTarget);
-        this.lookMatrix.lookAt(facePoint, character.group.position, character.group.up);
-        this.lookTargetQuat.setFromRotationMatrix(this.lookMatrix).multiply(FACING_CORRECTION);
-        character.group.quaternion.rotateTowards(this.lookTargetQuat, TURN_SPEED_RAD_PER_SEC * delta);
+        if (distance <= this.arriveThreshold) {
+          this.moveTarget = null;
+          arrived = true;
+          console.log('[anim-debug] arrived at click-to-move target, switching to "stand"');
+          this.setDesiredClip('stand');
+        } else {
+          toTarget.normalize();
+          const speed = this.moveMode === 'run' ? this.walkSpeed * RUN_SPEED_MULTIPLIER : this.walkSpeed;
+          const step = Math.min(distance, speed * delta);
+          character.group.position.addScaledVector(toTarget, step);
+          character.group.position.y = target.y;
+
+          const facePoint = character.group.position.clone().add(toTarget);
+          this.lookMatrix.lookAt(facePoint, character.group.position, character.group.up);
+          this.lookTargetQuat.setFromRotationMatrix(this.lookMatrix).multiply(FACING_CORRECTION);
+          character.group.quaternion.rotateTowards(this.lookTargetQuat, TURN_SPEED_RAD_PER_SEC * delta);
+        }
       }
     }
 
