@@ -368,8 +368,10 @@ via `/_WEAPON_([A-Z]+)_\d+$/`. This token is exactly what the per-race
 combat-animation archive keys its clip names off of, so equip-time
 resolution never needs a separate weapon-type → animation-token table.
 
-**Weapon combat clips** live in `character/player/Ani/{race}COA.RFS`
-(*not* `MOA` - see the suffix table below), and cover two shapes:
+**Weapon combat clips** primarily live in `character/player/Ani/{race}COA.RFS`
+(plain form + `COMBAT_STAND`; see "Directional (backward/strafe) locomotion"
+below for where `MOA` also comes in - the suffix table has the full split),
+and cover two shapes:
 - Locomotion: `"{RACE}_COMBAT_{WALK|RUN}_{TOKEN}_NONE_01_00.ANI"` on
   **Bell/Cora** (both genders) - no directional prefix, this plain form is
   their *only* combat walk/run. **Accretia** additionally has a directional
@@ -395,6 +397,46 @@ missing falls back to the unarmed clip. There's still no combat "sit"
 clip anywhere in this data set, so sitting always plays the unarmed clip
 regardless of what's equipped.
 
+**Directional (backward/strafe) locomotion is implemented**
+(`CharacterController`'s `LocomotionDirection` = `'bw' | 'lf' | 'rt'`,
+`ViewerScene.classifyLocomotionDirection`): holding S (backward) or
+A/D-only (pure strafe) with the joystick/WASD plays a real backward/strafe
+clip and keeps the character facing forward, instead of turning to face
+travel direction like click-to-move and forward-dominant/diagonal input
+still do. Two independent data sources feed this:
+- **Unarmed** - `character/player/Ani/{race}ETA.RFS`'s `PEACE_{DIR}{WALK|
+  RUN}_NONE_NONE_01_00.ANI` entries, confirmed present for **every race**
+  (all 5 checked directly via RFS parsing - unlike the combat case above,
+  no race caveat here). Loaded eagerly in `loadCharacter()` alongside the
+  base 4 clips, keyed `walk:bw`/`walk:lf`/`walk:rt`/`run:bw`/`run:lf`/
+  `run:rt`.
+- **Armed (War mode)** - initially assumed Accretia-only (`COA`'s own
+  BW/LF/RT/FW entries really are: confirmed 0 across Bell/Cora's `COA`
+  archives, 27 of each direction in `ACCOA`'s 162 directional entries) -
+  but **every race actually has full directional armed coverage**, it just
+  lives in `MOA` instead of `COA` for the 4 non-Accretia races (found by
+  inspecting a real `CFMOA.RFS` and noticing `CORFEMALE_COMBAT_RTWALK_
+  TMACE_...`/`..._LFWALK_TSWORD_...` entries - this project's own
+  `RaceAssets` wasn't even fetching `MOA` at the time, since the suffix
+  table below previously (wrongly) claimed `COA` was a superset of it).
+  Verified by direct count: `BMMOA`/`BFMOA` have 24 of each direction,
+  `CMMOA`/`CFMOA` 23, `ACMOA` 27 - and cross-checking token sets confirms
+  MOA's directional tokens are the *same* set `COA`'s plain-form tokens
+  cover for that race, just truncated differently in the 32-byte name
+  field (`WALK_` vs `RTWALK_` shift where the cutoff lands). `MOA` has no
+  `COMBAT_STAND` at all though (0 in every archive checked), so it's only
+  ever tried for directional walk/run, never as a general `COA`
+  substitute. `getWeaponClip()` tries `COA` first, then `MOA`, for a
+  directional lookup; `weaponClipKey()` takes an optional
+  `LocomotionDirection` to key the result either way.
+
+  `resolveClipName()`'s priority order still puts the *unarmed* directional
+  clip ahead of the direction-blind plain combat clip when a directional
+  armed one truly isn't found for a given race/token combo (some
+  weapon/direction pairs are still missing even with MOA in the mix):
+  directional-armed (COA or MOA) → directional-unarmed → plain-armed →
+  plain-unarmed.
+
 **Peace/War battle toggle** (`CharacterController.setBattleMode`, matching
 the original client's battle-mode button): the token used for the combat
 clip lookups above isn't just "whatever's equipped" - it's gated on this
@@ -417,8 +459,8 @@ real entry names (not documented anywhere client-side that we've found):
 |---|---|
 | `ETA` | `PEACE` (unarmed) stand/walk/run/sit/fly + `BW/FW/LF/RT` directional variants; common/corpse/dead poses. Currently the only archive `loadCharacter()` fetches for the base `stand`/`walk`/`run`/`sit` clips. |
 | `ATA` | `COMBAT_ATTACK_{weapon}_{TOP\|MIDDLE\|BOTTOM}` - melee/ranged attack swings. |
-| `COA` | The real superset: full `COMBAT_{BW\|FW\|LF\|RT}{WALK\|RUN}_{weapon token}_NONE_01_00` locomotion set **plus** `COMBAT_STAND_{weapon token}_NONE_01_00` (per-weapon-type idle - every race has one, though not every race/token combination does) and a non-directional `COMBAT_RUN_{token}` variant. This is the archive `getWeaponClip()` actually fetches. |
-| `MOA` | Same directional walk/run set as `COA` minus 8 redundant `PEACE_{BW\|FW\|LF\|RT}{WALK\|RUN}_NONE_NONE` entries (already covered by `ETA`) - and **no** `COMBAT_STAND` at all. `COA` is a strict superset for anything this project needs, so `getWeaponClip()` uses `COA`, not this. |
+| `COA` | Non-directional `COMBAT_{WALK\|RUN}_{weapon token}_NONE_01_00` locomotion on every race, **plus** `COMBAT_STAND_{weapon token}_NONE_01_00` (per-weapon-type idle - MOA doesn't have this at all) - and, **Accretia only**, the same set again with a `BW\|FW\|LF\|RT` directional prefix. The primary archive `getWeaponClip()` fetches (plain form + STAND, always); see `MOA` for where the other 4 races' directional walk/run actually lives. |
+| `MOA` | The directional walk/run counterpart for the 4 races `COA` doesn't cover directionally (Bell/Cora, both genders) - full `COMBAT_{BW\|FW\|LF\|RT}{WALK\|RUN}_{weapon token}_NONE_01_00`, token-for-token matching `COA`'s plain-form coverage for that race - **plus** 8 redundant `PEACE_{BW\|FW\|LF\|RT}{WALK\|RUN}_NONE_NONE` entries already covered by `ETA`, and **no** `COMBAT_STAND` at all. Previously assumed to be a redundant subset of `COA` and skipped entirely (wrong - see "Directional (backward/strafe) locomotion" above for how this was actually caught); `getWeaponClip()` now fetches this too and tries it as a fallback after `COA` for any directional lookup. |
 | `MEA` | `MELEE_BLOW_{weapon}_00..02` - light hit reactions. |
 | `MHA` | `MELEE_DEEPINJURY_{weapon}_00..02` - heavier hit reactions. |
 | `RAA` | `RANGE_AIMING{SHOT\|LAUNCHER}_{weapon}_00..` - ranged aim poses. |
@@ -905,3 +947,68 @@ stay within `[0,1]`. No visual/rendered confirmation yet (that needs the
   might suggest) silently finds nothing for 4 of 5 races - the walk/run
   clip just never left the unarmed one, no error, no warning. See "Weapon
   combat clips" above.
+- **Rigid weapon retargeting (`getCorrectedRigidBindInverse`,
+  `character.ts`) must compare the wielder's own attach bone directly
+  against Accretia's same bone - not go up one level to the attach bone's
+  *parent* and reconstruct from there.** A weapon's `objectMatrix` is
+  authored against Accretia's bind pose, so retargeting it onto another
+  race's own attach bone (e.g. "Bip01 R Finger0") needs a rotation
+  correction for however that race's bind-pose arm differs from
+  Accretia's - real and large (confirmed by parsing every race's `.bn`:
+  20-40° at Finger0's *accumulated world* rotation vs Accretia's, though
+  each race's *local* Finger0-relative-to-its-own-hand rotation is much
+  closer, only 2-7° apart). The first fix version used that near-agreement
+  to justify correcting via the attach bone's parent (the hand) and
+  reusing Accretia's own Finger0-relative-to-hand local rotation on top -
+  reducing the error a lot, but not to zero, and the *leftover* 2-7°
+  residual varied by race (worse for Cora than Bell). That residual is
+  what broke a from-then-derived empirical weapon-shape correction (see
+  "Empirical weapon placement fixups" below): measured on one race, it
+  silently absorbed that race's own leftover retargeting error along with
+  the weapon's genuine authoring quirk, and came out wrong when reapplied
+  to a race with a different leftover error. Comparing the attach bone
+  itself directly - "substitute the wielder's own bind-pose rotation for
+  this exact bone in place of Accretia's, position/scale otherwise
+  unchanged" - eliminates the retarget rotation error entirely rather than
+  merely reducing it: verified numerically at ~0.003° (floating-point
+  noise) across Bell/Cora Male/Female, down from the 2-7° the
+  parent-based version left. Simpler code, too - no grandparent bone
+  lookup needed at all.
+- **The `%wpedit` gizmo (`ViewerScene.syncWeaponEditTarget`) must
+  re-attach every frame, not just once when `%wpedit 1` is sent** -
+  equipping a *different* weapon while the gizmo is already attached to
+  the previous one disposes that previous mesh object out from under it
+  (see `equipWeapon`'s dispose call on the old `equippedObjects[Weapon]`).
+  Without a per-frame re-check, the gizmo (and `WeaponEditPanel`'s
+  readout) kept pointing at the disposed object - silently showing the
+  *previous* weapon's name/token/transform while a completely different
+  weapon was actually equipped and visible, which read as "the fixup
+  isn't working" when the panel was actually just never looking at the
+  weapon on screen. Fixed by comparing
+  `characterController.getEquippedWeaponObject()` against the
+  currently-attached target once per frame (cheap - a reference
+  comparison, no-op unless the equipped weapon actually changed) and
+  re-attaching (with a fresh "Original" capture) whenever it differs,
+  rather than only on the `%wpedit 1` transition.
+
+## Empirical weapon placement fixups
+
+`character.ts`'s `WEAPON_PLACEMENT_FIXUPS` is a per-`weaponToken` local
+position/rotation correction layered on top of
+`getCorrectedRigidBindInverse`'s computed placement, for weapons whose
+`.msh` data just doesn't line up with the generic retargeting math even
+once that math is as exact as it can be (a genuine per-mesh authoring
+quirk, not a bug this project's code can derive from first principles).
+Found via the in-app `%wpedit 1` gizmo (`ViewerScene`/`WeaponEditPanel`,
+Blender-style move/rotate handles on the equipped weapon): drag to the
+visually-correct placement, read the panel's "Original"/"Edited"
+Euler-degree transforms, and convert to a *quaternion* delta -
+`fixupQuat = originalQuat⁻¹ · editedQuat` - not a bare per-axis degree
+subtraction, which stops being accurate once the correction is more than
+a few degrees.
+
+Keyed by `weaponToken` alone, not by race - a correction found this way is
+expected to hold across every race now that the underlying retargeting
+leaves no race-dependent residual for it to accidentally absorb (see the
+bug entry above for the incident that first suggested otherwise, and the
+actual root cause it turned out to trace back to).

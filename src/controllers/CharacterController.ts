@@ -1,8 +1,16 @@
 import { Box3, Matrix4, Object3D, Quaternion, SkeletonHelper, Vector3 } from 'three';
 import type { AnimationAction, Bone, Group, Scene } from 'three';
 import { ANI_FPS } from '../rf/animation';
-import { RaceGender, buildMeshPartObjects, getRaceAssets, getWeaponClip, loadWeaponMeshObjects, weaponClipKey } from '../rf/character';
-import type { RfCharacter } from '../rf/character';
+import {
+  LOCOMOTION_DIRECTIONS,
+  RaceGender,
+  buildMeshPartObjects,
+  getRaceAssets,
+  getWeaponClip,
+  loadWeaponMeshObjects,
+  weaponClipKey,
+} from '../rf/character';
+import type { LocomotionDirection, RfCharacter } from '../rf/character';
 import { ALL_MODEL_TYPES, MODEL_TYPE_TO_PART_TOKEN, ModelType } from '../rf/items';
 import type { ItemDefinition } from '../rf/items';
 import { resolveItemMeshStem, resolveWeaponMesh } from '../rf/resource';
@@ -48,11 +56,17 @@ const GLOW_SPEED_BASE_BYTE = 0x40;
 /** UV units/second a scrolling glow texture moves at the baseline speed byte - tuned by eye, the source data has no literal units for this. */
 const GLOW_SCROLL_UV_PER_SEC = 0.6;
 
-/** Fetches (and caches onto character.clips) every combat clip a weapon token needs - walk/run/stand - in parallel. Best-effort: a race/token combination missing one just means resolveClipName() falls back to the unarmed equivalent for that clip. */
+/** Fetches (and caches onto character.clips) every combat clip a weapon token needs - walk/run/stand, plus walk/run's directional (backward/strafe) variants - in parallel. Best-effort: a race/token/direction combination missing one just means resolveClipName() falls back down the chain (directional armed -> plain armed -> directional unarmed -> plain unarmed). */
 async function prewarmWeaponClips(raceGender: RaceGender, character: RfCharacter, weaponToken: string): Promise<void> {
-  await Promise.all(
-    (['walk', 'run', 'stand'] as const).map((kind) => getWeaponClip(raceGender, character, kind, weaponToken).catch(() => null)),
+  const tasks: Promise<unknown>[] = (['walk', 'run', 'stand'] as const).map((kind) =>
+    getWeaponClip(raceGender, character, kind, weaponToken).catch(() => null),
   );
+  for (const kind of ['walk', 'run'] as const) {
+    for (const direction of LOCOMOTION_DIRECTIONS) {
+      tasks.push(getWeaponClip(raceGender, character, kind, weaponToken, direction).catch(() => null));
+    }
+  }
+  await Promise.all(tasks);
 }
 
 function disposeObject3D(root: Object3D): void {
@@ -109,12 +123,20 @@ export class CharacterController {
 
   /** The currently-wielded weapon's animation-set token (see resolveWeaponMesh), or null when unarmed - consulted by update() to pick the armed vs. unarmed walk/run clip. */
   private currentWeaponToken: string | null = null;
+  /** The currently-equipped weapon item itself (id/name/model), or null when unarmed - kept alongside currentWeaponToken purely for debug display (StatsPanel), not consulted by animation/placement logic. */
+  private currentWeaponItem: ItemDefinition | null = null;
+  /** The resolved weapon mesh stem (see resolveWeaponMesh) actually loaded for the current weapon - the .msh whose parentName/objectMatrix drive placement, useful for debugging a specific item's rigid-attach math. Debug display only, same as currentWeaponItem. */
+  private currentWeaponStem: string | null = null;
   /** Peace/War toggle - see BattleMode. Only War shows the weapon mesh and plays combat walk/run; Peace always plays the unarmed clips regardless of what's equipped. */
   private battleMode: BattleMode = 'peace';
 
   private moveTarget: Vector3 | null = null;
-  /** Continuous move input (e.g. from a mobile joystick), world-space XZ - magnitude 0-1 scales speed, direction sets facing. Takes priority over moveTarget; see setMoveDirection. */
+  /** Continuous move input (e.g. from a mobile joystick or WASD), world-space XZ - magnitude 0-1 scales speed. Takes priority over moveTarget; see setMoveDirection. */
   private moveDirection: Vector3 | null = null;
+  /** Which way to face while moveDirection is active - usually moveDirection itself, but a pure sideways input (see ViewerScene) passes just the forward component here instead, so strafing doesn't spin the character 90° to face directly sideways. */
+  private faceDirection: Vector3 | null = null;
+  /** Which real backward/strafe clip to play instead of plain walk/run while moveDirection is active - see LocomotionDirection and resolveClipName. Null means "mostly forward" (plain walk/run, face the way you're moving - unchanged default behavior). */
+  private moveLocomotionDirection: LocomotionDirection | null = null;
   private walkSpeed = 1;
   private arriveThreshold = 0.05;
   /** Walk vs run - see MoveMode. Only affects click-to-move (moveTo()); a manual setClip('run') from a debug button is unaffected. */
@@ -156,6 +178,21 @@ export class CharacterController {
 
   isMoving(): boolean {
     return this.moveTarget !== null || this.moveDirection !== null;
+  }
+
+  /** The resolved animation clip key actually playing right now (e.g. "walk:TCROSSBOW:rt", "stand"), or null before the first frame resolves one - see resolveClipName. Debug display only (StatsPanel). */
+  getCurrentClipKey(): string | null {
+    return this.currentClipKey;
+  }
+
+  /** The currently-equipped weapon (item + resolved animation token + mesh stem), or null when unarmed. Debug display only (StatsPanel) - see currentWeaponItem/currentWeaponToken/currentWeaponStem. */
+  getCurrentWeapon(): { item: ItemDefinition; token: string | null; stem: string | null } | null {
+    return this.currentWeaponItem ? { item: this.currentWeaponItem, token: this.currentWeaponToken, stem: this.currentWeaponStem } : null;
+  }
+
+  /** The currently-equipped weapon's rendered rigid part (e.g. "W00" - see buildObjectsFromParsedMesh), or null when unarmed. Every real weapon checked so far resolves to exactly one non-empty sub-object, so the first is returned; a weapon with more than one visible part would only expose the first here. Debug-only (the %wpedit gizmo attaches to this directly - its .position/.quaternion already ARE the local offset from the bone it's rigidly parented to, the same values the placement math in character.ts computes). */
+  getEquippedWeaponObject(): Object3D | null {
+    return this.equippedObjects[ModelType.Weapon]?.[0] ?? null;
   }
 
   /** Only fires onClipChange when the resolved desired clip actually changes, so continuous per-frame callers (the joystick) don't spam it every frame. */
@@ -292,6 +329,7 @@ export class CharacterController {
   setClip(name: string): void {
     this.moveTarget = null;
     this.moveDirection = null;
+    this.moveLocomotionDirection = null;
     this.setDesiredClip(name);
   }
 
@@ -312,24 +350,37 @@ export class CharacterController {
       previousClip: this.desiredClip,
     });
     this.moveDirection = null;
+    this.moveLocomotionDirection = null;
     this.moveTarget = point.clone();
     this.setDesiredClip(this.moveMode);
   }
 
   /**
-   * Continuous move input for the mobile joystick (or any future analog
-   * input): a world-space XZ vector whose direction sets facing/heading and
-   * whose magnitude (0-1) scales speed, applied fresh every frame by
-   * update(). Pass null (or a ~zero vector) to release - drops back to
-   * "stand" unless a click-to-move target is still pending. Overrides (and
-   * clears) any active click-to-move target the moment it's engaged.
+   * Continuous move input for the mobile joystick/WASD (or any future analog
+   * input): a world-space XZ vector whose magnitude (0-1) scales speed,
+   * applied fresh every frame by update(). `faceDirection` sets which way to
+   * turn while moving - defaults to `direction` itself (face the way you're
+   * walking) when omitted or too small to matter; pass a different vector
+   * (e.g. just the forward component) for a pure-strafe input so the
+   * character keeps facing forward instead of snapping to face sideways.
+   * `locomotionDirection` picks a real backward/strafe clip (see
+   * LocomotionDirection) instead of plain walk/run for that same case -
+   * null means "mostly forward," which keeps the existing plain-clip,
+   * face-the-way-you're-moving behavior. Pass `direction` as null (or a
+   * ~zero vector) to release - drops back to "stand" unless a click-to-move
+   * target is still pending. Overrides (and clears) any active click-to-move
+   * target the moment it's engaged.
    */
-  setMoveDirection(direction: Vector3 | null): void {
+  setMoveDirection(direction: Vector3 | null, faceDirection?: Vector3 | null, locomotionDirection?: LocomotionDirection | null): void {
     if (direction && direction.lengthSq() > 1e-6) {
       this.moveDirection = direction.clone();
+      this.faceDirection = faceDirection && faceDirection.lengthSq() > 1e-6 ? faceDirection.clone() : this.moveDirection;
+      this.moveLocomotionDirection = locomotionDirection ?? null;
       this.moveTarget = null;
     } else {
       this.moveDirection = null;
+      this.faceDirection = null;
+      this.moveLocomotionDirection = null;
       if (!this.moveTarget) this.setDesiredClip('stand');
     }
   }
@@ -442,6 +493,8 @@ export class CharacterController {
       }
       this.disposeGlowOverlayFor(ModelType.Weapon);
       this.currentWeaponToken = null;
+      this.currentWeaponItem = null;
+      this.currentWeaponStem = null;
       return 'default';
     }
 
@@ -449,7 +502,7 @@ export class CharacterController {
     if (this.character !== character) return 'no-character'; // superseded mid-await
     if (!weaponMesh) return 'unavailable';
 
-    const newObjects = await loadWeaponMeshObjects(weaponMesh.stem, character.builtSkeleton);
+    const newObjects = await loadWeaponMeshObjects(weaponMesh.stem, character.builtSkeleton, weaponMesh.weaponToken);
     if (this.character !== character) return 'no-character'; // superseded mid-await
     if (newObjects.length === 0) return 'unavailable';
 
@@ -473,6 +526,8 @@ export class CharacterController {
     }
     this.equippedObjects[ModelType.Weapon] = newObjects;
     this.currentWeaponToken = weaponMesh.weaponToken;
+    this.currentWeaponItem = item;
+    this.currentWeaponStem = weaponMesh.stem;
     void this.applyGlowOverlay(ModelType.Weapon, item, character, newObjects);
     void this.applySurfaceShineFor(item, newObjects);
 
@@ -571,7 +626,9 @@ export class CharacterController {
       const speed = (this.moveMode === 'run' ? this.walkSpeed * RUN_SPEED_MULTIPLIER : this.walkSpeed) * intensity;
       character.group.position.addScaledVector(dirNorm, speed * delta);
 
-      const facePoint = character.group.position.clone().add(dirNorm);
+      const faceSource = this.faceDirection ?? direction;
+      const faceNorm = faceSource === direction ? dirNorm : faceSource.clone().normalize();
+      const facePoint = character.group.position.clone().add(faceNorm);
       this.lookMatrix.lookAt(facePoint, character.group.position, character.group.up);
       this.lookTargetQuat.setFromRotationMatrix(this.lookMatrix).multiply(FACING_CORRECTION);
       character.group.quaternion.rotateTowards(this.lookTargetQuat, TURN_SPEED_RAD_PER_SEC * delta);
@@ -641,22 +698,50 @@ export class CharacterController {
 
   /**
    * Maps an abstract desired clip ("walk"/"run"/"stand"/"sit") to the
-   * actual clips key to play. Only in War mode, and only walk/run/stand:
-   * the combat variant for whatever's currently wielded (or the
-   * empty-handed "NONE" token variant, if nothing is - War still changes
-   * how an unarmed character moves and idles) when it's cached, otherwise
-   * falls through to the plain unarmed clip. Peace mode always plays the
-   * unarmed clip regardless of what's equipped - matching the weapon mesh
-   * itself only being visible in War (see applyWeaponVisibility). There's
-   * no combat "sit" clip in this data set, so that always plays the
-   * unarmed clip in either mode.
+   * actual clips key to play, in priority order:
+   *
+   * 1. War + directional (moveLocomotionDirection set, walk/run only): the
+   *    combat clip for the wielded weapon token AND that exact backward/
+   *    strafe direction - only ever cached for Accretia (see getWeaponClip).
+   * 2. Directional, unarmed: the real backward/strafe clip every race has
+   *    in Peace's ETA archive (see LocomotionDirection) - tried *before*
+   *    the direction-blind combat clip below, armed or not, because a real
+   *    backward/strafing leg animation (just missing the weapon-drawn arm
+   *    pose) reads far better than a forward-facing combat walk/run playing
+   *    while the character is visibly moving backward or sideways. This is
+   *    what makes backward/strafe movement look right while armed on every
+   *    race but Accretia, which is the only one with step 1's clips.
+   * 3. War, plain: the combat variant for whatever's currently wielded (or
+   *    the empty-handed "NONE" token, if nothing is - War still changes how
+   *    an unarmed character moves and idles) - forward-only fallback, same
+   *    as before directional locomotion existed.
+   * 4. Plain desiredClip itself - always present, the ultimate fallback.
+   *
+   * Peace mode never shows the weapon mesh or plays its combat clips (see
+   * applyWeaponVisibility), so it only ever reaches steps 2/4. There's no
+   * combat or directional "sit" clip in this data set, so sitting always
+   * plays the plain unarmed clip regardless of mode or movement.
    */
   private resolveClipName(desiredClip: string): string {
-    if (this.battleMode === 'war' && this.character && (desiredClip === 'walk' || desiredClip === 'run' || desiredClip === 'stand')) {
+    const isLocomotion = desiredClip === 'walk' || desiredClip === 'run';
+    const direction = isLocomotion ? this.moveLocomotionDirection : null;
+    const directionalUnarmedKey = direction ? `${desiredClip}:${direction}` : null;
+
+    if (this.battleMode === 'war' && this.character && (isLocomotion || desiredClip === 'stand')) {
       const token = this.currentWeaponToken ?? UNARMED_WEAPON_TOKEN;
+
+      if (direction) {
+        const directionalArmedKey = weaponClipKey(desiredClip, token, direction);
+        if (this.character.clips[directionalArmedKey]) return directionalArmedKey;
+        if (directionalUnarmedKey && this.character.clips[directionalUnarmedKey]) return directionalUnarmedKey;
+      }
+
       const armedKey = weaponClipKey(desiredClip, token);
       if (this.character.clips[armedKey]) return armedKey;
     }
+
+    if (directionalUnarmedKey && this.character?.clips[directionalUnarmedKey]) return directionalUnarmedKey;
+
     return desiredClip;
   }
 

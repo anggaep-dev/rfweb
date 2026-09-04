@@ -9,7 +9,9 @@ import {
   Mesh,
   MeshStandardMaterial,
   Object3D,
+  Quaternion,
   SkinnedMesh,
+  Vector3,
 } from 'three';
 import type { Texture } from 'three';
 import { buildAnimationClip, parseAnimation } from './animation';
@@ -72,6 +74,39 @@ function animationFileNames(nameToken: string): Record<(typeof CLIP_NAMES)[numbe
     run: `${nameToken}_PEACE_RUN_NONE_NONE_01_00.ANI`,
     sit: `${nameToken}_COMMON_SIT_NONE_NONE_01_00.ANI`,
   };
+}
+
+/**
+ * Real backward/strafe locomotion, not a facing hack: RF's own Ani archives
+ * carry dedicated BW(alk)/RT(walk)/LF(walk) - and the RUN equivalents -
+ * clips where the character visibly walks backward or sideways while still
+ * facing forward, confirmed present for every race in the unarmed (ETA)
+ * archive (see directionalAnimationFileNames). "fw" isn't a real direction
+ * here - moving mostly-forward (with or without a slight strafe) just uses
+ * the plain walk/run clip and faces the way it's moving, same as always.
+ */
+export type LocomotionDirection = 'bw' | 'lf' | 'rt';
+
+const DIRECTION_SEGMENT_PREFIX: Record<LocomotionDirection, string> = { bw: 'BW', lf: 'LF', rt: 'RT' };
+const DIRECTIONAL_LOCOMOTION_KINDS = ['walk', 'run'] as const;
+export const LOCOMOTION_DIRECTIONS: LocomotionDirection[] = ['bw', 'lf', 'rt'];
+
+/** Cache key (also the character.clips key) for an unarmed directional walk/run clip - see LocomotionDirection. */
+function directionalClipKey(kind: 'walk' | 'run', direction: LocomotionDirection): string {
+  return `${kind}:${direction}`;
+}
+
+function directionalAnimationFileNames(nameToken: string): { key: string; fileName: string }[] {
+  const entries: { key: string; fileName: string }[] = [];
+  for (const kind of DIRECTIONAL_LOCOMOTION_KINDS) {
+    for (const direction of LOCOMOTION_DIRECTIONS) {
+      entries.push({
+        key: directionalClipKey(kind, direction),
+        fileName: `${nameToken}_PEACE_${DIRECTION_SEGMENT_PREFIX[direction]}${kind.toUpperCase()}_NONE_NONE_01_00.ANI`,
+      });
+    }
+  }
+  return entries;
 }
 
 export interface RfCharacter {
@@ -149,6 +184,28 @@ async function fetchBuffer(url: string): Promise<ArrayBuffer> {
   return res.arrayBuffer();
 }
 
+/** Fetches+parses+builds each named clip from an Ani archive into `clips`, keyed by `key` - shared by loadCharacter()'s base and directional clip passes. A missing/unparsable entry just skips that one key (warned, not thrown) - callers fall back to a base clip when a specific key isn't present. */
+function loadClipsInto(
+  clips: Record<string, AnimationClip>,
+  aniArchive: RfsArchive,
+  entries: { key: string; fileName: string }[],
+  bindPoseByBone: Map<string, BindPose>,
+): void {
+  for (const { key, fileName } of entries) {
+    const aniEntry = findRfsEntry(aniArchive, fileName);
+    if (!aniEntry) {
+      console.warn(`Skipping animation ${key}: no "${fileName}" entry in the Ani archive`);
+      continue;
+    }
+    try {
+      const buffer = readRfsEntry(aniArchive, aniEntry);
+      clips[key] = buildAnimationClip(key, parseAnimation(buffer), bindPoseByBone);
+    } catch (err) {
+      console.warn(`Skipping animation ${key}:`, err);
+    }
+  }
+}
+
 function buildSkinAttributes(meshObj: RfMeshObject, nameToIndex: Map<string, number>) {
   const vertexCount = meshObj.vertices.length / 3;
   const skinIndices = new Uint16Array(vertexCount * 4);
@@ -188,6 +245,153 @@ export interface RaceAssets {
   aniArchive: RfsArchive;
   /** Per-weapon-category combat walk/run/stand clips (character/player/Ani/{race}COA.RFS) - see getWeaponClip(). */
   weaponAniArchive: RfsArchive;
+  /**
+   * Directional (backward/strafe) combat walk/run clips (character/player/
+   * Ani/{race}MOA.RFS) - see getWeaponClip(). COA's own BW/LF/RT/FW-
+   * prefixed entries only exist for Accretia (confirmed by direct count:
+   * zero across Bell/Cora's COA archives); MOA carries the same directional
+   * set - full token-for-token coverage matching COA's plain-form tokens,
+   * confirmed by comparison - for every race, but has no COMBAT_STAND at
+   * all, so it's only ever consulted for walk/run direction lookups, never
+   * as a general COA substitute.
+   */
+  weaponMoaArchive: RfsArchive;
+}
+
+const scratchWielderPos = new Vector3();
+const scratchWielderRot = new Quaternion();
+const scratchWielderScale = new Vector3();
+const scratchRefPos = new Vector3();
+const scratchRefRot = new Quaternion();
+const scratchRefScale = new Vector3();
+
+/**
+ * Empirical per-weapon-token corrections applied on top of the computed
+ * rigid placement (see getCorrectedRigidBindInverse), found via the
+ * %wpedit gizmo: equip the token, drag the gizmo to where it actually
+ * looks right, read the panel's "Original"/"Edited" Euler-degree transforms
+ * back off, and convert to this local-space quaternion delta (NOT a plain
+ * per-axis degree subtraction, which isn't exact for a rotation this size -
+ * see the reconstruction below). This exists for whatever residual is left
+ * once getCorrectedRigidBindInverse's own retargeting is as good as it can
+ * be - a genuine per-weapon-mesh authoring quirk this project has no way to
+ * derive from first principles, so it's captured by hand instead.
+ *
+ * Keyed by weaponToken only (not race) - a correction measured here should
+ * hold across every race, since it's layered on top of placement math that
+ * itself now retargets rotation essentially exactly (~0.003° residual,
+ * verified across every race) rather than leaving a race-dependent
+ * leftover error for a token-only fixup to accidentally absorb. (History:
+ * a fixup for TCROSSBOW measured against an earlier, less-exact version of
+ * getCorrectedRigidBindInverse worked on Cora but made Accretia/Bell worse
+ * - not because the correction genuinely varies by race, but because that
+ * older math left a real 2-7° residual that varied by race, and the Cora
+ * measurement silently baked that race's own leftover error in alongside
+ * the weapon's real quirk. Fixed at the source (see
+ * getCorrectedRigidBindInverse's doc comment) rather than by keying this
+ * table on race too - that entry is cleared below pending a fresh
+ * measurement against the corrected math.)
+ */
+interface WeaponPlacementFixup {
+  /** Added directly to the computed local position (same units/space, i.e. relative to the attach bone). */
+  positionDelta: [number, number, number];
+  /**
+   * Local-space rotation delta as a quaternion [x, y, z, w] - reconstructed
+   * from %wpedit's reported Euler-degree "Original"/"Edited" transforms via
+   * `fixupQuat = originalQuat^-1 * editedQuat` (so that
+   * `computedQuat.multiply(fixupQuat)` reproduces the edited transform
+   * exactly for the race it was measured on) - never store this as a bare
+   * Euler-degree delta, composing those linearly is only exact for
+   * infinitesimal rotations, not one this large.
+   */
+  rotationDelta: [number, number, number, number];
+}
+
+const WEAPON_PLACEMENT_FIXUPS: Record<string, WeaponPlacementFixup> = {
+  // Re-measured against the fixed getCorrectedRigidBindInverse - Original
+  // pos=[-0.1568,-0.0214,0.4768] rotDeg=[88.9,2.3,-62.8], Edited
+  // pos=[-0.1568,-0.0214,0.4768] rotDeg=[88.7,2.3,-68.6] - a small ~5.7°
+  // single-axis twist, no position change, vs. the ~35° + 1.4-unit
+  // correction the old (buggy-retargeting) measurement needed. That drop
+  // alone is strong confirmation the retargeting fix actually worked - see
+  // the "Rigid weapon retargeting" entry in rf-format-notes.md's "Known
+  // bugs" section.
+  TCROSSBOW: {
+    positionDelta: [0, 0, 0],
+    rotationDelta: [-0.000718, -0.001589, -0.050663, 0.998714],
+  },
+};
+
+const fixupQuatScratch = new Quaternion();
+const fixupPosScratch = new Vector3();
+
+/** Applies a weapon token's placement fixup (if any) to an already-placed rigid part's local transform - see WEAPON_PLACEMENT_FIXUPS. No-op when the token has no registered fixup. */
+function applyWeaponPlacementFixup(object: Object3D, weaponToken: string | null | undefined): void {
+  if (!weaponToken) return;
+  const fixup = WEAPON_PLACEMENT_FIXUPS[weaponToken];
+  if (!fixup) return;
+  object.position.add(fixupPosScratch.set(...fixup.positionDelta));
+  object.quaternion.multiply(fixupQuatScratch.set(...fixup.rotationDelta));
+}
+
+/**
+ * Computes the bind-pose inverse used to place a rigid part on the wielder's
+ * own attach bone (`built`'s bone at `parentIndex`), keeping `rigidReference`
+ * (Accretia)'s authored position/scale but substituting the WIELDER's own
+ * bind-pose rotation for that exact same bone, in place of Accretia's.
+ *
+ * Weapons are authored in `rigidReference`'s bind-pose world space, so
+ * naively retargeting via `rigidReference`'s raw bone-inverse assumes
+ * `rigidReference`'s and `built`'s arm bind poses point the same way. They
+ * don't - by up to 20-40° at "Bip01 R Finger0" for a non-Accretia race,
+ * confirmed by parsing every race's real .bn skeleton. A 20-40° error at
+ * the wrist is invisible on a ~15cm knife blade but swings a ~1m
+ * two-handed weapon's muzzle wildly off - the cause of the "long weapons
+ * visibly misplaced, short ones fine" pattern this was built to fix.
+ *
+ * An earlier version of this function corrected via the attach bone's
+ * *parent* (e.g. hand, for a Finger0 attach point) instead of the attach
+ * bone itself, preserving what was assumed to be a race-invariant
+ * "Finger0-relative-to-hand" local offset from Accretia. That assumption
+ * was wrong: comparing the SAME bone (Finger0) directly, as done here,
+ * measurably eliminates the retarget rotation error entirely (down to
+ * ~0.003°, i.e. floating-point noise, verified on Bell/Cora Male/Female)
+ * where the parent-relative version left a real 2-7° residual that varied
+ * *by race* - larger for Cora than Bell. That residual is exactly what
+ * made an empirical per-weapon correction (see WEAPON_PLACEMENT_FIXUPS)
+ * measured on one race come out wrong on the others: it silently baked in
+ * that race's own leftover retargeting error along with the weapon's real
+ * quirk, and reapplying it elsewhere reintroduced the wrong race's error
+ * instead of correcting it. Comparing the attach bone directly leaves no
+ * such residual to contaminate a fixup measured on any one race.
+ *
+ * Position and scale are left exactly as Accretia authored them - already
+ * validated as correct (the position residual against Accretia's own hand
+ * position is the genuine grip offset, not an error - see the .bn section
+ * of rf-format-notes.md); only rotation is substituted. Everything here
+ * comes from `boneInverses` (fixed at skeleton construction, i.e. true
+ * bind pose) - never a bone's live `matrixWorld` - so this stays correct
+ * regardless of what pose the character happens to be animating through
+ * when a weapon is equipped (see the "must use skeleton.boneInverses, not
+ * live matrixWorld" bug this project already fixed once for the same
+ * reason).
+ *
+ * Falls back to `rigidReference`'s raw inverse when this exact bone isn't
+ * present in `built` (shouldn't happen for a real attach point, but safer
+ * than throwing).
+ */
+function getCorrectedRigidBindInverse(built: BuiltSkeleton, rigidReference: BuiltSkeleton, parentIndex: number, referenceIndex: number): Matrix4 {
+  const referenceBindInverse = rigidReference.skeleton.boneInverses[referenceIndex];
+  const wielderBindInverse = built.skeleton.boneInverses[parentIndex];
+  if (!wielderBindInverse) return referenceBindInverse;
+
+  const referenceBindWorld = referenceBindInverse.clone().invert();
+  referenceBindWorld.decompose(scratchRefPos, scratchRefRot, scratchRefScale);
+
+  wielderBindInverse.clone().invert().decompose(scratchWielderPos, scratchWielderRot, scratchWielderScale);
+
+  const correctedReferenceBindWorld = new Matrix4().compose(scratchRefPos, scratchWielderRot, scratchRefScale);
+  return correctedReferenceBindWorld.invert();
 }
 
 /**
@@ -215,6 +419,11 @@ function buildObjectsFromParsedMesh(
   // Only matters for rigid (unweighted) objects; skinned meshes always
   // bind to `built` itself.
   rigidReference: BuiltSkeleton = built,
+  // Only set for a weapon equip (see loadWeaponMeshObjects) - looks up an
+  // empirical WEAPON_PLACEMENT_FIXUPS correction for each rigid part, on
+  // top of the computed placement. Undefined for body parts (no such table
+  // for them) and for skinned parts (fixups only apply to rigid attaches).
+  weaponToken?: string | null,
 ): Object3D[] {
   const built3d: Object3D[] = [];
   // Some multi-part meshes chain a piece's parentName to *another
@@ -276,25 +485,24 @@ function buildObjectsFromParsedMesh(
       const referenceIndex = rigidReference.nameToIndex.get(obj.parentName);
       const parentSibling = siblingsByName.get(obj.parentName);
 
-      if (parentBone && referenceIndex !== undefined) {
-        // Use the reference skeleton's precomputed bind-pose inverse, not
-        // the (possibly different) attach target bone's *current*
-        // matrixWorld - this can run well after the initial load (equipping
-        // an item mid-animation), by which point the bone has moved from
-        // its bind pose. objectMatrix is always bind-pose (baked into the
-        // .msh at export time, relative to whatever skeleton it was
-        // authored against), so mixing it with a live, posed bone matrix
-        // computes a bogus static offset that then gets carried along as
-        // the bone keeps animating - the part appears to fly around.
-        // boneInverses is fixed at skeleton construction time (true bind
-        // pose), so this is correct however the *target* pose has moved -
-        // and using the reference skeleton's own inverse (rather than the
-        // target's) is what makes this correct even when the two skeletons
-        // differ, as they do for a wielding character mounting a weapon
-        // authored against a different one.
-        const bindInverse = rigidReference.skeleton.boneInverses[referenceIndex];
+      if (parentIndex !== undefined && parentBone && referenceIndex !== undefined) {
+        // Use a bind-pose inverse, not the (possibly different) attach
+        // target bone's *current* matrixWorld - this can run well after the
+        // initial load (equipping an item mid-animation), by which point
+        // the bone has moved from its bind pose. objectMatrix is always
+        // bind-pose (baked into the .msh at export time, relative to
+        // whatever skeleton it was authored against), so mixing it with a
+        // live, posed bone matrix computes a bogus static offset that then
+        // gets carried along as the bone keeps animating - the part appears
+        // to fly around. See getCorrectedRigidBindInverse's own doc comment
+        // for why this isn't simply rigidReference's raw bind inverse - a
+        // wielding race's arm bind pose doesn't orient the same way
+        // Accretia's does, which barely matters for a short weapon but
+        // swings a long one's far end wildly off.
+        const bindInverse = getCorrectedRigidBindInverse(built, rigidReference, parentIndex, referenceIndex);
         const localMatrix = bindInverse.clone().multiply(obj.objectMatrix);
         localMatrix.decompose(mesh.position, mesh.quaternion, mesh.scale);
+        applyWeaponPlacementFixup(mesh, weaponToken);
         parentBone.add(mesh);
       } else if (parentSibling) {
         // Chained to another sub-object in this file rather than a bone -
@@ -531,13 +739,17 @@ function loadParsedWeaponMesh(stem: string): Promise<ParsedWeaponMesh | null> {
  * callers should treat that as "no visual mesh available," not an error.
  * The actual fetch+parse is pooled by stem (see loadParsedWeaponMesh) and
  * normally already warm by the time this runs - see preloadWeaponMeshes.
+ * `weaponToken` (see resolveWeaponMesh) is only used to look up a
+ * WEAPON_PLACEMENT_FIXUPS entry - pass it whenever known (it always is at
+ * the one real call site, CharacterController.equipWeapon) so a weapon
+ * with a registered correction actually gets it.
  */
-export async function loadWeaponMeshObjects(stem: string, built: BuiltSkeleton): Promise<Object3D[]> {
+export async function loadWeaponMeshObjects(stem: string, built: BuiltSkeleton, weaponToken?: string | null): Promise<Object3D[]> {
   const parsed = await loadParsedWeaponMesh(stem);
   if (!parsed) return [];
 
   const referenceSkeleton = await loadWeaponReferenceSkeleton();
-  return buildObjectsFromParsedMesh(parsed.objects, parsed.texture, built, stem, referenceSkeleton);
+  return buildObjectsFromParsedMesh(parsed.objects, parsed.texture, built, stem, referenceSkeleton, weaponToken);
 }
 
 const WEAPON_PRELOAD_CONCURRENCY = 8;
@@ -618,17 +830,25 @@ function loadRaceAssets(raceGender: RaceGender, onFileLoaded?: () => void): Prom
     trackedFetchRfsArchive(`${ASSET_BASE}/Mesh/DEFAULT${race.meshTexCode}.RFS`),
     trackedFetchRfsArchive(`${ASSET_BASE}/Tex/DEFAULT${race.meshTexCode}.RFS`),
     trackedFetchRfsArchive(`${ASSET_BASE}/Ani/${race.aniCode}ETA.RFS`),
-    // COA, not MOA: COA turns out to be a near-superset of MOA (every
-    // BW/FW/LF/RT walk/run entry MOA has, minus 8 redundant PEACE_* ones
-    // already covered by the ETA archive) plus the per-weapon-token
-    // COMBAT_STAND clip that MOA doesn't carry at all.
+    // COA carries the per-weapon-token COMBAT_STAND clip MOA doesn't have
+    // at all, plus the plain (non-directional) combat walk/run every race
+    // needs - so it's still the primary weapon-ani archive. But COA's own
+    // BW/FW/LF/RT-directional walk/run entries turn out to be Accretia-only
+    // (confirmed by direct count: zero across Bell/Cora's COA archives,
+    // despite this comment previously claiming otherwise) - MOA is what
+    // actually carries that directional set for every *other* race, with
+    // full token-for-token coverage matching COA's plain tokens. So both
+    // archives are fetched; see getWeaponClip's COA-then-MOA fallback for
+    // directional walk/run lookups.
     trackedFetchRfsArchive(`${ASSET_BASE}/Ani/${race.aniCode}COA.RFS`),
-  ]).then(([skeletonBuffer, meshArchive, texArchive, aniArchive, weaponAniArchive]) => ({
+    trackedFetchRfsArchive(`${ASSET_BASE}/Ani/${race.aniCode}MOA.RFS`),
+  ]).then(([skeletonBuffer, meshArchive, texArchive, aniArchive, weaponAniArchive, weaponMoaArchive]) => ({
     skeletonBuffer,
     meshArchive,
     texArchive,
     aniArchive,
     weaponAniArchive,
+    weaponMoaArchive,
   }));
   // Cache the promise up front (not after it resolves) so concurrent callers
   // join it instead of starting their own fetch; a failed load is evicted so
@@ -639,13 +859,13 @@ function loadRaceAssets(raceGender: RaceGender, onFileLoaded?: () => void): Prom
 }
 
 const ALL_RACES = Object.values(RaceGender).filter((v): v is RaceGender => typeof v === 'number');
-const FILES_PER_RACE = 5;
+const FILES_PER_RACE = 6;
 
 /**
  * Fetches and caches every race's assets up front, so switching races later
  * never blocks on the network. Reports progress in units of "files fetched"
- * (5 per race: bone, mesh, tex, ani, weapon-ani), not races, for a smoother
- * readout.
+ * (6 per race: bone, mesh, tex, ani, weapon-ani, weapon-moa), not races, for
+ * a smoother readout.
  */
 export async function preloadAllRaces(onProgress?: (loaded: number, total: number) => void): Promise<void> {
   const total = ALL_RACES.length * FILES_PER_RACE;
@@ -686,19 +906,14 @@ export async function loadCharacter(raceGender: RaceGender = RaceGender.Bell_Fem
 
   const mixer = new AnimationMixer(group);
   const clips: Record<string, AnimationClip> = {};
-  for (const [clipName, fileName] of Object.entries(animationFileNames(race.nameToken))) {
-    const aniEntry = findRfsEntry(aniArchive, fileName);
-    if (!aniEntry) {
-      console.warn(`Skipping animation ${clipName}: no "${fileName}" entry in the Ani archive`);
-      continue;
-    }
-    try {
-      const buffer = readRfsEntry(aniArchive, aniEntry);
-      clips[clipName] = buildAnimationClip(clipName, parseAnimation(buffer), bindPoseByBone);
-    } catch (err) {
-      console.warn(`Skipping animation ${clipName}:`, err);
-    }
-  }
+  const baseEntries = Object.entries(animationFileNames(race.nameToken)).map(([key, fileName]) => ({ key, fileName }));
+  loadClipsInto(clips, aniArchive, baseEntries, bindPoseByBone);
+  // Directional backward/strafe walk/run - see LocomotionDirection. Loaded
+  // eagerly alongside the base clips (same already-fetched ETA archive, six
+  // small extra entries) rather than lazily like weapon clips, since every
+  // race always has these and CharacterController needs them the instant
+  // WASD/joystick strafing starts, not after an await.
+  loadClipsInto(clips, aniArchive, directionalAnimationFileNames(race.nameToken), bindPoseByBone);
 
   return { group, builtSkeleton: built, mixer, clips };
 }
@@ -733,9 +948,9 @@ async function getBindPoseByBoneAsync(raceGender: RaceGender): Promise<Map<strin
   return getCachedBindPose(raceGender, parseSkeleton(skeletonBuffer));
 }
 
-/** Cache key (also the character.clips key) for a weapon-conditional walk/run/stand clip. */
-export function weaponClipKey(kind: 'walk' | 'run' | 'stand', weaponToken: string): string {
-  return `${kind}:${weaponToken}`;
+/** Cache key (also the character.clips key) for a weapon-conditional walk/run/stand clip - optionally further keyed by LocomotionDirection (walk/run only; STAND has no directional variant anywhere, see getWeaponClip). */
+export function weaponClipKey(kind: 'walk' | 'run' | 'stand', weaponToken: string, direction?: LocomotionDirection): string {
+  return direction ? `${kind}:${weaponToken}:${direction}` : `${kind}:${weaponToken}`;
 }
 
 // Accretia's COA archive names walk/run with a directional FW prefix
@@ -758,35 +973,53 @@ const WEAPON_CLIP_SEGMENTS: Record<'walk' | 'run' | 'stand', string[]> = {
 /**
  * Lazily builds (and caches onto `character.clips`) the combat walk/run/
  * stand clip for a given weapon category token (see resolveWeaponMesh's
- * weaponToken, e.g. "RKNIFE"/"TSWORD"/"DAXE"). Not every race has a combat
- * animation for every weapon token (some heavy weapons are Accretia-only,
- * for instance), so this commonly resolves to null; callers should fall
- * back to the unarmed clip, not treat it as an error.
+ * weaponToken, e.g. "RKNIFE"/"TSWORD"/"DAXE"), optionally the directional
+ * (backward/strafe - see LocomotionDirection) variant of walk/run. A
+ * directional lookup tries COA first, then MOA: COA's own BW/LF/RT/FW
+ * entries are Accretia-only (verified: zero across Bell/Cora's COA
+ * archives), but MOA carries the same directional set - full token-for-
+ * token coverage matching COA's plain tokens, confirmed by comparison - for
+ * every other race, just under COA's plain (non-directional) walk/run and
+ * MOA doesn't have STAND at all, so MOA is never consulted for those. Not
+ * every race/token/direction combination exists even so (some heavy
+ * weapons are Accretia-only full stop), so this can still resolve to null;
+ * callers should fall back through the plain armed clip to the unarmed
+ * directional one, not treat it as an error (see
+ * CharacterController.resolveClipName).
  */
 export async function getWeaponClip(
   raceGender: RaceGender,
   character: RfCharacter,
   kind: 'walk' | 'run' | 'stand',
   weaponToken: string,
+  direction?: LocomotionDirection,
 ): Promise<AnimationClip | null> {
-  const key = weaponClipKey(kind, weaponToken);
+  const key = weaponClipKey(kind, weaponToken, direction);
   const cached = character.clips[key];
   if (cached) return cached;
 
   const race = RACE_CONFIGS[raceGender];
-  const { weaponAniArchive } = await getRaceAssets(raceGender);
+  const { weaponAniArchive, weaponMoaArchive } = await getRaceAssets(raceGender);
+  const archives = direction ? [weaponAniArchive, weaponMoaArchive] : [weaponAniArchive];
+  const segments = direction ? [`${DIRECTION_SEGMENT_PREFIX[direction]}${kind.toUpperCase()}`] : WEAPON_CLIP_SEGMENTS[kind];
 
   let aniEntry: RfsEntry | null = null;
   let fileName = '';
-  for (const segment of WEAPON_CLIP_SEGMENTS[kind]) {
-    fileName = `${race.nameToken}_COMBAT_${segment}_${weaponToken}_NONE_01_00.ANI`;
-    aniEntry = findRfsEntry(weaponAniArchive, fileName);
-    if (aniEntry) break;
+  let sourceArchive = weaponAniArchive;
+  search: for (const archive of archives) {
+    for (const segment of segments) {
+      fileName = `${race.nameToken}_COMBAT_${segment}_${weaponToken}_NONE_01_00.ANI`;
+      aniEntry = findRfsEntry(archive, fileName);
+      if (aniEntry) {
+        sourceArchive = archive;
+        break search;
+      }
+    }
   }
   if (!aniEntry) return null;
 
   try {
-    const buffer = readRfsEntry(weaponAniArchive, aniEntry);
+    const buffer = readRfsEntry(sourceArchive, aniEntry);
     const bindPoseByBone = await getBindPoseByBoneAsync(raceGender);
     const clip = buildAnimationClip(key, parseAnimation(buffer), bindPoseByBone);
     character.clips[key] = clip;

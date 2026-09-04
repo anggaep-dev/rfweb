@@ -4,13 +4,15 @@ import DebugPanel from '../debug/DebugPanel';
 import EquipPanel from '../debug/EquipPanel';
 import MobileControls from '../hud/MobileControls';
 import StatsPanel from '../debug/StatsPanel';
+import WeaponEditPanel from '../debug/WeaponEditPanel';
 import type { CamMode } from '../../controllers/CameraController';
 import type { BattleMode, MoveMode } from '../../controllers/CharacterController';
+import { useKeyboardMove } from '../../hooks/useKeyboardMove';
 import { RaceGender } from '../../rf/character';
 import { ALL_EQUIP_SLOTS, SLOT_LABELS, loadUsableSlotItems } from '../../rf/items';
 import type { ModelType, ItemDefinition } from '../../rf/items';
 import type { SceneManager } from '../../scenes/SceneManager';
-import type { ViewerDebugStats } from '../../scenes/ViewerScene';
+import type { ViewerDebugStats, WeaponEditState } from '../../scenes/ViewerScene';
 import { ViewerScene } from '../../scenes/ViewerScene';
 import './RfViewer.css';
 
@@ -29,7 +31,14 @@ export default function RfViewer({ sceneManager, initialRaceGender, onExit }: Rf
   const [camMode, setCamMode] = useState<CamMode>('third');
   const [debugPaused, setDebugPaused] = useState(false);
   const [frameLabel, setFrameLabel] = useState('');
-  const [debugStats, setDebugStats] = useState<ViewerDebugStats>({ fps: 0, heapMB: null, geometries: 0, textures: 0 });
+  const [debugStats, setDebugStats] = useState<ViewerDebugStats>({
+    fps: 0,
+    heapMB: null,
+    geometries: 0,
+    textures: 0,
+    clipKey: null,
+    weapon: null,
+  });
 
   // The original client's Peace/War battle toggle - War shows the wielded
   // weapon and switches walk/run to their combat variant, Peace hides it
@@ -53,6 +62,13 @@ export default function RfViewer({ sceneManager, initialRaceGender, onExit }: Rf
   // button is a shortcut that flips both together.
   const [showStats, setShowStats] = useState(false);
   const [showEquip, setShowEquip] = useState(false);
+
+  // %wpedit 1/0 - a Blender-style move/rotate gizmo on the equipped weapon,
+  // for hand-tuning its placement against what CharacterController computed
+  // (see ViewerScene.setWeaponEditEnabled). weaponEditState mirrors the
+  // gizmo's live transform for WeaponEditPanel's readout.
+  const [showWeaponEdit, setShowWeaponEdit] = useState(false);
+  const [weaponEditState, setWeaponEditState] = useState<WeaponEditState | null>(null);
 
   const [raceGender, setRaceGender] = useState<RaceGender>(initialRaceGender);
   const raceGenderRef = useRef<RaceGender>(initialRaceGender);
@@ -93,6 +109,9 @@ export default function RfViewer({ sceneManager, initialRaceGender, onExit }: Rf
       onStatsUpdate: (stats) => {
         if (!disposed) setDebugStats(stats);
       },
+      onWeaponEditChange: (state) => {
+        if (!disposed) setWeaponEditState(state);
+      },
     });
     viewerSceneRef.current = viewerScene;
     // Resource disposal is SceneManager's job once this scene is superseded
@@ -126,6 +145,10 @@ export default function RfViewer({ sceneManager, initialRaceGender, onExit }: Rf
   useEffect(() => {
     viewerSceneRef.current?.characterController.setMoveMode(moveMode);
   }, [moveMode]);
+
+  useEffect(() => {
+    viewerSceneRef.current?.setWeaponEditEnabled(showWeaponEdit);
+  }, [showWeaponEdit]);
 
   useEffect(() => {
     raceGenderRef.current = raceGender;
@@ -199,11 +222,21 @@ export default function RfViewer({ sceneManager, initialRaceGender, onExit }: Rf
   // onClipChange above) fired that cleanup spuriously, repeatedly zeroing
   // the joystick input mid-hold. Fixed on both ends (see MobileControls'
   // onMoveRef), but keeping this stable is still the right call regardless.
-  const handleJoystickMove = useCallback((input: { x: number; y: number } | null) => {
-    viewerSceneRef.current?.setJoystickInput(input);
+  // Shared by the mobile joystick and WASD/arrow keys (useKeyboardMove
+  // below) - both drive the same ViewerScene.setMoveInput() channel.
+  const handleMoveInput = useCallback((input: { x: number; y: number } | null) => {
+    viewerSceneRef.current?.setMoveInput(input);
   }, []);
 
+  useKeyboardMove(handleMoveInput);
+
   const handleEquipClose = useCallback(() => setShowEquip(false), []);
+
+  const handleWeaponEditModeChange = useCallback((mode: 'translate' | 'rotate') => {
+    viewerSceneRef.current?.setWeaponEditMode(mode);
+  }, []);
+  const handleWeaponEditReset = useCallback(() => viewerSceneRef.current?.resetWeaponEditTransform(), []);
+  const handleWeaponEditClose = useCallback(() => setShowWeaponEdit(false), []);
 
   // Depends only on slotItems (needed to resolve the picked id back to an
   // ItemDefinition) - that only changes on an actual item-load/race-switch
@@ -272,6 +305,14 @@ export default function RfViewer({ sceneManager, initialRaceGender, onExit }: Rf
       return;
     }
 
+    const wpeditMatch = /^%wpedit\s+([01])$/.exec(trimmed);
+    if (wpeditMatch) {
+      const show = wpeditMatch[1] === '1';
+      setShowWeaponEdit(show);
+      setCommandFeedback(`Weapon edit gizmo ${show ? 'shown' : 'hidden'}.`);
+      return;
+    }
+
     viewerSceneRef.current
       ?.runCommand(trimmed)
       .then((result) => setCommandFeedback(result))
@@ -317,7 +358,7 @@ export default function RfViewer({ sceneManager, initialRaceGender, onExit }: Rf
         </button>
       </div>
 
-      {status === 'ready' && <MobileControls onMove={handleJoystickMove} />}
+      {status === 'ready' && <MobileControls onMove={handleMoveInput} />}
 
       {/* Always rendered (not gated by showDebugPanel) - it's the only way to send "%debug 1" and bring the panel back once hidden. */}
       {status === 'ready' && (
@@ -337,6 +378,15 @@ export default function RfViewer({ sceneManager, initialRaceGender, onExit }: Rf
           slotItems={slotItems}
           onEquipChange={handleEquipChange}
           onClose={handleEquipClose}
+        />
+      )}
+
+      {status === 'ready' && showWeaponEdit && (
+        <WeaponEditPanel
+          state={weaponEditState}
+          onModeChange={handleWeaponEditModeChange}
+          onReset={handleWeaponEditReset}
+          onClose={handleWeaponEditClose}
         />
       )}
 

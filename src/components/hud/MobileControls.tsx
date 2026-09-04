@@ -116,7 +116,7 @@ export default function MobileControls({ onMove, onAttack, onSkill }: MobileCont
   // caller shouldn't be able to make this component treat "the callback
   // changed" as "the component unmounted" (that coupling is exactly what
   // caused the joystick to randomly zero out mid-hold - see RfViewer's
-  // handleJoystickMove comment).
+  // handleMoveInput comment).
   const onMoveRef = useRef(onMove);
   useEffect(() => {
     onMoveRef.current = onMove;
