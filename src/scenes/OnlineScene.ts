@@ -27,8 +27,23 @@ const SERVER_WALK_UNITS_PER_TICK = 1;
 const ASSUMED_SERVER_TICK_HZ = 30;
 const SERVER_WALK_UNITS_PER_SEC = SERVER_WALK_UNITS_PER_TICK * ASSUMED_SERVER_TICK_HZ;
 
-/** Default game server WebSocket endpoint; override with VITE_WS_URL for other environments. */
-const DEFAULT_WS_URL = 'ws://localhost:8080/ws';
+const DEFAULT_WS_PORT = 8080;
+
+/**
+ * Default game server WebSocket endpoint - derived from whatever
+ * host/scheme the page itself was loaded from, not hardcoded to
+ * "localhost". "localhost" only ever means "this device" - fine when
+ * testing on the same laptop running both the dev server and the backend,
+ * but broken on a phone reached via `vite --host` over LAN (or any other
+ * device), where it resolves to the phone itself instead of the backend
+ * host, so the connection fails instantly. Override with VITE_WS_URL when
+ * the backend lives on a different host/port than the page (e.g. a real
+ * deployment).
+ */
+function defaultWsUrl(): string {
+  const wsScheme = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  return `${wsScheme}//${window.location.hostname}:${DEFAULT_WS_PORT}/ws`;
+}
 
 /** World-space (not camera-relative) movement axes - dir_x/dir_z are a fixed compass direction, matching what MovementInput means to the server. */
 const MOVE_KEYS: Record<string, [dx: number, dz: number]> = {
@@ -101,7 +116,7 @@ export class OnlineScene implements AppScene {
     this.connection.onPacket = (payload) => this.handlePacket(payload);
     this.connection.onPingChange = (pingMs) => this.callbacks.onPingChange?.(pingMs);
 
-    const wsUrl = (import.meta.env.VITE_WS_URL as string | undefined) ?? DEFAULT_WS_URL;
+    const wsUrl = (import.meta.env.VITE_WS_URL as string | undefined) ?? defaultWsUrl();
     this.connection.connect(wsUrl);
 
     window.addEventListener('keydown', this.handleKeyDown);

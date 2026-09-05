@@ -1,3 +1,4 @@
+import { useOrientation } from '../../hooks/useOrientation';
 import type { ViewerDebugStats } from '../../scenes/ViewerScene';
 import './DebugPanel.css';
 
@@ -7,6 +8,8 @@ export interface StatsPanelProps {
 
 /** Top-right FPS/memory/renderer/animation/weapon readout, refreshed twice a second by ViewerScene - see STATS_UPDATE_INTERVAL_SEC. */
 export default function StatsPanel({ stats }: StatsPanelProps) {
+  const orientation = useOrientation();
+
   return (
     <div className="debug-panel-stats">
       <div>
@@ -21,6 +24,9 @@ export default function StatsPanel({ stats }: StatsPanelProps) {
         {stats.weapon
           ? `${stats.weapon.name} (${stats.weapon.id})${stats.weapon.token ? ` token=${stats.weapon.token}` : ''}${stats.weapon.stem ? ` stem=${stats.weapon.stem}` : ''}`
           : 'unarmed'}
+      </div>
+      <div>
+        Viewport: {orientation} ({window.innerWidth}×{window.innerHeight})
       </div>
     </div>
   );

@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import type { PointerEvent as ReactPointerEvent } from 'react';
+import { useIsMobile } from '../../hooks/useIsMobile';
 import './MobileControls.css';
 
 /** Max distance (px) the stick can travel from center before clamping - also the divisor that turns that travel into a [-1, 1] input magnitude. */
@@ -11,21 +12,6 @@ export interface MobileControlsProps {
   /** Attack/skill buttons render now so the joystick's layout is final, but have no gameplay behind them yet - wired up once combat exists. */
   onAttack?: () => void;
   onSkill?: () => void;
-}
-
-/** True on touch-primary devices (phones/tablets) - re-evaluated live so e.g. rotating a foldable or docking a tablet updates it, not just the initial load. */
-function useIsMobile(): boolean {
-  const [isMobile, setIsMobile] = useState(() => window.matchMedia('(pointer: coarse)').matches);
-
-  useEffect(() => {
-    const mql = window.matchMedia('(pointer: coarse)');
-    const update = () => setIsMobile(mql.matches);
-    update();
-    mql.addEventListener('change', update);
-    return () => mql.removeEventListener('change', update);
-  }, []);
-
-  return isMobile;
 }
 
 export default function MobileControls({ onMove, onAttack, onSkill }: MobileControlsProps) {

@@ -18,8 +18,6 @@ import { buildAnimationClip, parseAnimation } from './animation';
 import type { BindPose } from './animation';
 import { parseMesh } from './mesh';
 import type { RfMeshObject } from './mesh';
-import { resolveWeaponMesh } from './resource';
-import type { WeaponMeshInfo } from './resource';
 import { findRfsEntry, parseRfs, readRfsEntry } from './rfs';
 import type { RfsArchive, RfsEntry } from './rfs';
 import { buildThreeSkeleton, parseSkeleton } from './skeleton';
@@ -241,22 +239,9 @@ async function fetchRfsArchive(url: string): Promise<RfsArchive> {
 
 export interface RaceAssets {
   skeletonBuffer: ArrayBuffer;
+  /** The DEFAULT{code}.RFS body - always sufficient for the default/base-appearance stem (see CharacterController.equipHelmet/equipItem's null branch); a real armor item may need getRaceArmorArchives() instead. */
   meshArchive: RfsArchive;
   texArchive: RfsArchive;
-  /**
-   * The real armor-tier archives (character/player/{Mesh,Tex}/{code}{R,W,F}
-   * {00,10,20,30,40}.RFS - 15 each) - meshArchive/texArchive above only hold
-   * the DEFAULT_* starter body, everything resolveItemMeshStem() resolves
-   * for a real armor item lives in one of these instead. Searched in order
-   * (see buildMeshPartObjects) since there's no cheap way to know which of
-   * the 15 holds a given entry ahead of time. Individual entries are `null`
-   * when that specific tier's archive doesn't actually exist for this race
-   * (confirmed real gap: Accretia is missing its Face tier-1/tier-2
-   * textures) - loadRaceAssets() fetches each independently and tolerates
-   * one missing/failing without failing the whole race's preload.
-   */
-  armorMeshArchives: (RfsArchive | null)[];
-  armorTexArchives: (RfsArchive | null)[];
   aniArchive: RfsArchive;
   /** Per-weapon-category combat walk/run/stand clips (character/player/Ani/{race}COA.RFS) - see getWeaponClip(). */
   weaponAniArchive: RfsArchive;
@@ -575,25 +560,37 @@ function findEntryInArchives(
   return null;
 }
 
-/**
- * Builds the ready-to-attach three.js object(s) for one named mesh entry
- * (a body part, or an equipped item's mesh) inside a race's Mesh/Tex RFS
- * archives. Shared by the initial default-body build and by equipping a
- * specific body-part item onto a slot later, so both go through identical
- * mesh-building logic. Each parameter is searched in order (default archive
- * first, then the per-race armor archives) since a resolved stem doesn't
- * say which specific archive actually holds it - see RaceAssets.armorMeshArchives.
- */
-export function buildMeshPartObjects(
+interface ParsedBodyMesh {
+  objects: RfMeshObject[];
+  /** Tagged with userData.pooled = true below - same reasoning as ParsedWeaponMesh.texture: shared across every equip of this stem, so disposeObject3D() must skip disposing it on an individual unequip. */
+  texture: Texture | null;
+}
+
+// Keyed by stem alone (globally, not per-race) - a resolved stem is already
+// a unique, self-describing name ("BELFEMALE_ARMOR_UPPER_084",
+// "ACCRETIA_DEFAULT_HELMET_000", ...), so re-equipping the same item (on
+// the same character, or switching back after wearing something else)
+// never re-fetches the archive entry or re-parses/re-decodes it - only the
+// (per-equip, per-skeleton) three.js objects in buildObjectsFromParsedMesh
+// below are ever rebuilt. Same pooling shape as weaponMeshPoolCache, and
+// for the same reason: on-demand loading (see getRaceArmorArchives) must
+// not mean "re-parse from scratch" every time something already seen once
+// gets equipped again.
+const bodyMeshParseCache = new Map<string, ParsedBodyMesh | null>();
+
+function parseBodyMeshEntry(
   stem: string,
   meshArchives: (RfsArchive | null)[],
   texArchives: (RfsArchive | null)[],
-  built: BuiltSkeleton,
-): Object3D[] {
+): ParsedBodyMesh | null {
+  const cached = bodyMeshParseCache.get(stem);
+  if (cached !== undefined) return cached;
+
   const meshHit = findEntryInArchives(meshArchives, `${stem}.msh`);
   if (!meshHit) {
     console.warn(`No "${stem}.msh" entry in any Mesh archive`);
-    return [];
+    bodyMeshParseCache.set(stem, null);
+    return null;
   }
   const meshBuffer = readRfsEntry(meshHit.archive, meshHit.entry);
 
@@ -602,20 +599,48 @@ export function buildMeshPartObjects(
   if (texHit) {
     try {
       texture = decodeRftTexture(readRfsEntry(texHit.archive, texHit.entry));
+      texture.userData.pooled = true;
     } catch (err) {
       console.warn(`Texture decode failed for ${stem}:`, err);
     }
   }
 
-  let objects;
+  let objects: RfMeshObject[];
   try {
     objects = parseMesh(meshBuffer);
   } catch (err) {
     console.warn(`Failed to parse "${stem}.msh" (entry size ${meshHit.entry.size} bytes):`, err);
-    return [];
+    bodyMeshParseCache.set(stem, null);
+    return null;
   }
 
-  return buildObjectsFromParsedMesh(objects, texture, built, stem);
+  const parsed: ParsedBodyMesh = { objects, texture };
+  bodyMeshParseCache.set(stem, parsed);
+  return parsed;
+}
+
+/**
+ * Builds the ready-to-attach three.js object(s) for one named mesh entry
+ * (a body part, or an equipped item's mesh) inside a race's Mesh/Tex RFS
+ * archives. Shared by the initial default-body build and by equipping a
+ * specific body-part item onto a slot later, so both go through identical
+ * mesh-building logic. Each parameter is searched in order (default archive
+ * first, then the per-race armor archives, when the caller passes those -
+ * see getRaceArmorArchives) since a resolved stem doesn't say which
+ * specific archive actually holds it. The actual fetch+parse is pooled by
+ * stem (see parseBodyMeshEntry above) - only the per-call, per-skeleton
+ * three.js build below ever redoes work for an already-seen stem.
+ */
+export function buildMeshPartObjects(
+  stem: string,
+  meshArchives: (RfsArchive | null)[],
+  texArchives: (RfsArchive | null)[],
+  built: BuiltSkeleton,
+): Object3D[] {
+  const parsed = parseBodyMeshEntry(stem, meshArchives, texArchives);
+  if (!parsed) return [];
+
+  return buildObjectsFromParsedMesh(parsed.objects, parsed.texture, built, stem);
 }
 
 const WEAPON_MESH_BASE = '/game-assets/item/Weapon/Mesh';
@@ -644,10 +669,9 @@ const WEAPON_TEX_ARCHIVE_NAMES = [
 
 // Lazily fetched and cached per archive name (not just per race like
 // raceAssetCache) - equipping one weapon only needs the one or two archives
-// that actually hold that item, not this whole ~150MB set. preloadWeaponMeshes
-// below does eventually touch every archive at least one currently-existing
-// item resolves into, but each individual lookup still only awaits as many
-// as it takes to find its own hit - see findInNamedArchives. Promises are
+// that actually hold that item, not this whole ~150MB set; each individual
+// lookup only awaits as many archives as it takes to find its own hit - see
+// findInNamedArchives. Promises are
 // cached up front (same reasoning as raceAssetCache above), so two
 // concurrent lookups that need the same archive share one fetch instead of
 // racing separate ones; a failed load resolves to null (not a rejection) so
@@ -771,8 +795,8 @@ interface ParsedWeaponMesh {
 // equip (cheap: a BufferGeometry alloc + bone attach, no network/parsing),
 // so re-equipping the same weapon later (on any character) never re-fetches
 // or re-parses. In-flight promises are cached too, not just settled
-// results, same reasoning as raceAssetCache below. See preloadWeaponMeshes
-// for warming this up front instead of relying purely on first-equip.
+// results, same reasoning as raceAssetCache below - loaded purely on
+// demand, on whichever equip first needs a given stem (no eager warm-up).
 const weaponMeshPoolCache = new Map<string, Promise<ParsedWeaponMesh | null>>();
 
 function loadParsedWeaponMesh(stem: string): Promise<ParsedWeaponMesh | null> {
@@ -821,8 +845,10 @@ function loadParsedWeaponMesh(stem: string): Promise<ParsedWeaponMesh | null> {
  * weapon items reference a model variant not present in this asset drop,
  * so an empty result (mesh not found in any weapon archive) is common -
  * callers should treat that as "no visual mesh available," not an error.
- * The actual fetch+parse is pooled by stem (see loadParsedWeaponMesh) and
- * normally already warm by the time this runs - see preloadWeaponMeshes.
+ * The actual fetch+parse is pooled by stem (see loadParsedWeaponMesh) -
+ * loaded on demand here, not warmed ahead of time, so the first equip of a
+ * given weapon has a real (background, non-blocking) load delay; every
+ * later equip of the same stem is then instant, on any character.
  * `weaponToken` (see resolveWeaponMesh) is only used to look up a
  * WEAPON_PLACEMENT_FIXUPS entry - pass it whenever known (it always is at
  * the one real call site, CharacterController.equipWeapon) so a weapon
@@ -834,51 +860,6 @@ export async function loadWeaponMeshObjects(stem: string, built: BuiltSkeleton, 
 
   const referenceSkeleton = await loadWeaponReferenceSkeleton();
   return buildObjectsFromParsedMesh(parsed.objects, parsed.texture, built, stem, referenceSkeleton, weaponToken);
-}
-
-const WEAPON_PRELOAD_CONCURRENCY = 8;
-
-/**
- * Warms the weapon mesh pool (see loadParsedWeaponMesh) for every given
- * item Model id, so a later equip of any of them is instant - no network
- * fetch or binary parse left to do. Call with every *currently existing*
- * weapon item's Model id (see items.ts's IsExist filtering) - most won't
- * resolve to an actual mesh in this asset drop (see resolveWeaponMesh) and
- * are skipped for free; the rest de-duplicate down to a much smaller set of
- * distinct mesh stems (many item variants - different upgrade levels, mostly -
- * share one underlying mesh) before anything is fetched.
- *
- * Mirrors Unity's own recommended pattern for pooled prefabs: warm the pool
- * once up front (typically at a loading screen) rather than instantiating
- * cold on first use, so runtime hitches never happen - see preloadAllRaces
- * for this project's equivalent for player body assets, which this is
- * meant to run alongside.
- *
- * Runs with bounded concurrency (WEAPON_PRELOAD_CONCURRENCY at a time)
- * rather than firing every stem's load at once - there can be a couple
- * thousand distinct stems, and letting them all queue through fetch()
- * simultaneously doesn't finish any faster (the browser serializes/queues
- * connections per origin regardless) while making the progress readout
- * jump in one huge burst near the end instead of advancing steadily.
- */
-export async function preloadWeaponMeshes(modelIds: string[], onProgress?: (loaded: number, total: number) => void): Promise<void> {
-  const resolved = await Promise.all(modelIds.map((modelId) => resolveWeaponMesh(modelId)));
-  const stems = [...new Set(resolved.filter((r): r is WeaponMeshInfo => r !== null).map((r) => r.stem))];
-
-  const total = stems.length;
-  let loaded = 0;
-  onProgress?.(loaded, total);
-
-  let nextIndex = 0;
-  async function worker(): Promise<void> {
-    while (nextIndex < stems.length) {
-      const stem = stems[nextIndex++];
-      await loadParsedWeaponMesh(stem);
-      loaded += 1;
-      onProgress?.(loaded, total);
-    }
-  }
-  await Promise.all(Array.from({ length: Math.min(WEAPON_PRELOAD_CONCURRENCY, stems.length) }, worker));
 }
 
 // Keyed by race so a preload (or a repeat visit to an already-loaded race)
@@ -920,25 +901,12 @@ function loadRaceAssets(raceGender: RaceGender, onFileLoaded?: () => void): Prom
       onFileLoaded?.();
       return archive;
     });
-  // Armor archives specifically: a tier that's absent for a given race
-  // (confirmed real gap - Accretia has no Face tier-1/tier-2 textures) is
-  // expected, not a preload-breaking error - warn and resolve null so
-  // Promise.all doesn't take the whole race down over one missing tier
-  // (findEntryInArchives skips nulls). onFileLoaded fires either way so
-  // progress still reaches its reported total.
-  const trackedFetchOptionalRfsArchive = (url: string) =>
-    fetchRfsArchive(url)
-      .catch((err: unknown) => {
-        console.warn(`Armor archive "${url}" unavailable, skipping:`, err);
-        return null;
-      })
-      .then((archive) => {
-        onFileLoaded?.();
-        return archive;
-      });
 
-  const armorNames = armorArchiveNames(race.meshTexCode);
-
+  // Only the character's own default body - small (~6MB/race) and needed
+  // the instant a character mounts, so this is the one thing worth staying
+  // eager for. Real armor-tier archives (~90MB/race) are loaded lazily
+  // instead, on whichever race's first actual equip needs them - see
+  // getRaceArmorArchives.
   const promise = Promise.all([
     trackedFetchBuffer(`${ASSET_BASE}/Bone/${race.boneFile}.bn`),
     trackedFetchRfsArchive(`${ASSET_BASE}/Mesh/DEFAULT${race.meshTexCode}.RFS`),
@@ -956,29 +924,14 @@ function loadRaceAssets(raceGender: RaceGender, onFileLoaded?: () => void): Prom
     // directional walk/run lookups.
     trackedFetchRfsArchive(`${ASSET_BASE}/Ani/${race.aniCode}COA.RFS`),
     trackedFetchRfsArchive(`${ASSET_BASE}/Ani/${race.aniCode}MOA.RFS`),
-    Promise.all(armorNames.map((name) => trackedFetchOptionalRfsArchive(`${ASSET_BASE}/Mesh/${name}.RFS`))),
-    Promise.all(armorNames.map((name) => trackedFetchOptionalRfsArchive(`${ASSET_BASE}/Tex/${name}.RFS`))),
-  ]).then(
-    ([
-      skeletonBuffer,
-      meshArchive,
-      texArchive,
-      aniArchive,
-      weaponAniArchive,
-      weaponMoaArchive,
-      armorMeshArchives,
-      armorTexArchives,
-    ]) => ({
-      skeletonBuffer,
-      meshArchive,
-      texArchive,
-      armorMeshArchives,
-      armorTexArchives,
-      aniArchive,
-      weaponAniArchive,
-      weaponMoaArchive,
-    }),
-  );
+  ]).then(([skeletonBuffer, meshArchive, texArchive, aniArchive, weaponAniArchive, weaponMoaArchive]) => ({
+    skeletonBuffer,
+    meshArchive,
+    texArchive,
+    aniArchive,
+    weaponAniArchive,
+    weaponMoaArchive,
+  }));
   // Cache the promise up front (not after it resolves) so concurrent callers
   // join it instead of starting their own fetch; a failed load is evicted so
   // a later retry can actually try again rather than replaying the same rejection.
@@ -987,16 +940,61 @@ function loadRaceAssets(raceGender: RaceGender, onFileLoaded?: () => void): Prom
   return promise;
 }
 
-const ALL_RACES = Object.values(RaceGender).filter((v): v is RaceGender => typeof v === 'number');
-/** bone, mesh, tex, ani, weapon-ani, weapon-moa (6) + 15 armor mesh archives + 15 armor tex archives. */
-const FILES_PER_RACE = 6 + ARMOR_CATEGORIES.length * ARMOR_TIERS.length * 2;
+interface RaceArmorArchives {
+  meshArchives: (RfsArchive | null)[];
+  texArchives: (RfsArchive | null)[];
+}
+
+const raceArmorArchiveCache = new Map<RaceGender, Promise<RaceArmorArchives>>();
 
 /**
- * Fetches and caches every race's assets up front, so switching races later
- * never blocks on the network. Reports progress in units of "files fetched"
- * (36 per race: bone, mesh, tex, ani, weapon-ani, weapon-moa, plus the 15
- * armor mesh + 15 armor tex archives - see armorArchiveNames), not races,
- * for a smoother readout.
+ * Lazily fetches (once per race, cached forever after - same reasoning as
+ * raceAssetCache) the real armor-tier archives (character/player/{Mesh,Tex}/
+ * {code}{R,W,F}{00,10,20,30,40}.RFS - 15 each, ~90MB/race) - everything
+ * resolveItemMeshStem() resolves for a real armor item lives in one of
+ * these, never in getRaceAssets()'s DEFAULT_* archive. Not part of
+ * loadRaceAssets/preloadAllRaces any more - eagerly fetching this for
+ * every race up front was most of the slow startup (~450MB before anyone
+ * even reached the login screen); on-demand per race, triggered by
+ * CharacterController's equip methods only when an item actually needs it,
+ * fixes that without changing what's ultimately available.
+ *
+ * Individual archives resolve to `null` on failure/absence (confirmed real
+ * gap: Accretia has no Face tier-1/tier-2 textures) rather than rejecting
+ * the whole race - findEntryInArchives skips nulls.
+ */
+export function getRaceArmorArchives(raceGender: RaceGender): Promise<RaceArmorArchives> {
+  let cached = raceArmorArchiveCache.get(raceGender);
+  if (!cached) {
+    const race = RACE_CONFIGS[raceGender];
+    const armorNames = armorArchiveNames(race.meshTexCode);
+    const fetchOptional = (url: string) =>
+      fetchRfsArchive(url).catch((err: unknown) => {
+        console.warn(`Armor archive "${url}" unavailable, skipping:`, err);
+        return null;
+      });
+    cached = Promise.all([
+      Promise.all(armorNames.map((name) => fetchOptional(`${ASSET_BASE}/Mesh/${name}.RFS`))),
+      Promise.all(armorNames.map((name) => fetchOptional(`${ASSET_BASE}/Tex/${name}.RFS`))),
+    ]).then(([meshArchives, texArchives]) => ({ meshArchives, texArchives }));
+    raceArmorArchiveCache.set(raceGender, cached);
+    cached.catch(() => raceArmorArchiveCache.delete(raceGender));
+  }
+  return cached;
+}
+
+const ALL_RACES = Object.values(RaceGender).filter((v): v is RaceGender => typeof v === 'number');
+/** bone, mesh, tex, ani, weapon-ani, weapon-moa - the small default-body set. Armor tiers/weapons are no longer eagerly preloaded, see getRaceArmorArchives/loadParsedWeaponMesh. */
+const FILES_PER_RACE = 6;
+
+/**
+ * Fetches and caches every race's default-body assets up front, so
+ * switching races later never blocks on the network. Reports progress in
+ * units of "files fetched" (6 per race: bone, mesh, tex, ani, weapon-ani,
+ * weapon-moa), not races, for a smoother readout. Deliberately excludes
+ * armor-tier archives and weapon meshes - those are loaded on demand
+ * instead (see getRaceArmorArchives, loadParsedWeaponMesh), so this stays
+ * fast regardless of how much equipment data exists.
  */
 export async function preloadAllRaces(onProgress?: (loaded: number, total: number) => void): Promise<void> {
   const total = ALL_RACES.length * FILES_PER_RACE;

@@ -6,6 +6,19 @@
     <!-- user-scalable=no so a two-finger pinch on the game canvas drives in-scene camera zoom (CameraController's OrbitControls) instead of the browser's own page zoom stealing the gesture. -->
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
     <title>rfweb</title>
+
+    <!-- PWA: lets "Add to Home Screen" launch without browser chrome (see
+         FullscreenButton's doc comment - this is the one workaround for
+         iPhone Safari having no in-page Fullscreen API at all). The manifest
+         alone isn't enough on iOS - Safari mostly ignores it for this
+         purpose and needs its own apple-* tags instead; both are included so
+         Android/desktop PWA install and iOS's home-screen path both work. -->
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <meta name="theme-color" content="#14161a" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="RF Web" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
   </head>
   <body>
     <div id="root"></div>

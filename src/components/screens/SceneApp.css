@@ -11,6 +11,16 @@
 
 .scene-app-canvas canvas {
   display: block;
+  /* Without this, a two-finger pinch on the canvas still triggers the
+     browser's native page-zoom on mobile (iOS Safari ignores the viewport
+     meta tag's user-scalable=no/maximum-scale=1 for accessibility reasons,
+     so that alone isn't enough) instead of reaching CameraController's
+     OrbitControls (TOUCH.DOLLY_PAN), which is what should handle it -
+     same fix MobileControls' own elements already needed for the
+     equivalent iOS touch-callout issue. */
+  touch-action: none;
+  -webkit-touch-callout: none;
+  user-select: none;
 }
 
 .scene-app-overlay {

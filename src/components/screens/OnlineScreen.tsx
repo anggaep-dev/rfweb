@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import FullscreenButton from '../hud/FullscreenButton';
 import PingIndicator from '../hud/PingIndicator';
 import type { RaceGender } from '../../rf/character';
 import type { ConnectionStatus } from '../../net/WorldConnection';
@@ -37,6 +38,7 @@ export default function OnlineScreen({ sceneManager, initialRaceGender, onExit }
   return (
     <div className="online-screen">
       {status === 'ready' && <PingIndicator pingMs={pingMs} />}
+      {status === 'ready' && <FullscreenButton />}
 
       {status === 'loading' && <div className="online-screen-overlay">Loading character…</div>}
       {status === 'error' && (

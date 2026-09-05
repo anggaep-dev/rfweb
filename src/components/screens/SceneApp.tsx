@@ -1,8 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import OnlineScreen from './OnlineScreen';
 import RfViewer from './RfViewer';
-import { preloadAllRaces, preloadWeaponMeshes, RaceGender } from '../../rf/character';
-import { loadSlotItems, ModelType } from '../../rf/items';
+import { preloadAllRaces, RaceGender } from '../../rf/character';
 import CharacterSelectScreen from './CharacterSelectScreen';
 import LoginScreen from './LoginScreen';
 import { SceneManager } from '../../scenes/SceneManager';
@@ -40,40 +39,15 @@ export default function SceneApp() {
     const sceneManager = new SceneManager(container);
     setSceneManagerState(sceneManager);
 
-    // Blocks entry past the login screen until every race's assets AND
-    // every currently-existing weapon's mesh are cached, so nothing past
-    // this screen - character-select, equipping any item, switching races -
-    // ever hits the network again. The two run concurrently and report into
-    // one combined counter; weapon preloading's own total isn't known until
-    // its item list + stem resolution finishes (a moment after race
-    // preloading's, which is a compile-time constant - see preloadAllRaces),
-    // so the combined total briefly under-reports right at the start.
-    let raceProgress = { loaded: 0, total: 0 };
-    let weaponProgress = { loaded: 0, total: 0 };
-    const reportCombinedProgress = () => {
-      if (!disposed) {
-        setPreloadProgress({
-          loaded: raceProgress.loaded + weaponProgress.loaded,
-          total: raceProgress.total + weaponProgress.total,
-        });
-      }
-    };
-
-    Promise.all([
-      preloadAllRaces((loaded, total) => {
-        raceProgress = { loaded, total };
-        reportCombinedProgress();
-      }),
-      loadSlotItems(ModelType.Weapon).then((items) =>
-        preloadWeaponMeshes(
-          items.map((item) => item.model),
-          (loaded, total) => {
-            weaponProgress = { loaded, total };
-            reportCombinedProgress();
-          },
-        ),
-      ),
-    ])
+    // Blocks entry past the login screen only until every race's small
+    // default-body assets are cached (~6MB/race) - real armor/weapon/cloak
+    // meshes are loaded on demand instead, the first time an equip actually
+    // needs one (see getRaceArmorArchives/loadParsedWeaponMesh/
+    // loadCloakArchives), so this stays fast regardless of how much
+    // equipment data exists rather than blocking on ~600MB of it upfront.
+    preloadAllRaces((loaded, total) => {
+      if (!disposed) setPreloadProgress({ loaded, total });
+    })
       .then(() => {
         if (disposed) return;
         if (isDebugRoute) {

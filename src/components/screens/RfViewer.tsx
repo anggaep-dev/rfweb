@@ -3,6 +3,7 @@ import BasePartPanel from '../debug/BasePartPanel';
 import CommandConsole from '../debug/CommandConsole';
 import DebugPanel from '../debug/DebugPanel';
 import EquipPanel from '../debug/EquipPanel';
+import FullscreenButton from '../hud/FullscreenButton';
 import MobileControls from '../hud/MobileControls';
 import StatsPanel from '../debug/StatsPanel';
 import WeaponEditPanel from '../debug/WeaponEditPanel';
@@ -393,6 +394,7 @@ export default function RfViewer({ sceneManager, initialRaceGender, onExit }: Rf
       </div>
 
       {status === 'ready' && <MobileControls onMove={handleMoveInput} />}
+      {status === 'ready' && <FullscreenButton />}
 
       {/* Always rendered (not gated by showDebugPanel) - it's the only way to send "%debug 1" and bring the panel back once hidden. */}
       {status === 'ready' && (
