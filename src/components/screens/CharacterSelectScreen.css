@@ -4,58 +4,288 @@
   pointer-events: none;
 }
 
-.character-select-hint {
+.character-select-overlay {
+  pointer-events: auto;
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.8rem;
+  color: #eee;
+  font: 500 0.95rem system-ui, sans-serif;
+  background: rgba(20, 22, 26, 0.75);
+  border: 1px solid #333;
+  border-radius: 10px;
+  padding: 1.2rem 1.6rem;
+  text-align: center;
+}
+
+.character-select-overlay-error {
+  color: #ff8080;
+}
+
+.character-select-overlay button {
+  padding: 0.5rem 1rem;
+  border-radius: 6px;
+  border: 1px solid #4a7dff;
+  background: #4a7dff;
+  color: #fff;
+  font: 600 0.85rem system-ui, sans-serif;
+  cursor: pointer;
+}
+
+.character-select-title {
   position: absolute;
   top: 1rem;
   left: 50%;
   transform: translateX(-50%);
-  color: #ccc;
-  font: 500 0.85rem system-ui, sans-serif;
-  background: rgba(20, 22, 26, 0.6);
-  padding: 0.4rem 0.9rem;
+  color: #eee;
+  font: 700 1.2rem/1 system-ui, sans-serif;
+  letter-spacing: 0.04em;
+  text-shadow: 0 2px 6px rgba(0, 0, 0, 0.8);
+  background: rgba(20, 22, 26, 0.55);
+  padding: 0.6rem 1.4rem;
   border-radius: 999px;
+  border: 1px solid #443;
   pointer-events: none;
 }
 
-.character-select-panel {
-  pointer-events: auto;
+.character-select-row {
+  pointer-events: none;
   position: absolute;
   left: 50%;
   bottom: 2rem;
   transform: translateX(-50%);
   display: flex;
+  gap: 1.2rem;
+}
+
+.character-select-card {
+  pointer-events: auto;
+  position: relative;
+  width: 11rem;
+  display: flex;
+  flex-direction: column;
   align-items: center;
-  gap: 1rem;
+  gap: 0.4rem;
   background: rgba(20, 22, 26, 0.75);
   border: 1px solid #333;
   border-radius: 10px;
-  padding: 0.9rem 1.2rem;
+  padding: 0.8rem 0.7rem 0.9rem;
+  cursor: pointer;
 }
 
-.character-select-name {
-  min-width: 10rem;
+.character-select-card-active {
+  border-color: #d9a441;
+  box-shadow: 0 0 0 1px #d9a441, 0 0 14px rgba(217, 164, 65, 0.35);
+}
+
+.character-select-card-portrait {
+  width: 100%;
+  height: 3.2rem;
+}
+
+.character-select-card-name {
   color: #eee;
-  font: 600 1rem system-ui, sans-serif;
-  text-align: center;
+  font: 700 0.95rem system-ui, sans-serif;
 }
 
-.character-select-panel button {
-  padding: 0.6rem 1.2rem;
+.character-select-card-meta {
+  color: #9aa4b2;
+  font: 500 0.75rem system-ui, sans-serif;
+}
+
+.character-select-card-select {
+  width: 100%;
+  margin-top: 0.2rem;
+  padding: 0.45rem;
   border-radius: 6px;
   border: 1px solid #4a7dff;
   background: #4a7dff;
   color: #fff;
+  font: 600 0.85rem system-ui, sans-serif;
+  cursor: pointer;
+}
+
+.character-select-card-select:hover {
+  background: #3a6ae8;
+}
+
+.character-select-card-links {
+  display: flex;
+  gap: 0.8rem;
+}
+
+.character-select-card-link {
+  padding: 0;
+  border: none;
+  background: none;
+  color: #9aa4b2;
+  font: 500 0.75rem system-ui, sans-serif;
+  cursor: pointer;
+}
+
+.character-select-card-link:hover {
+  color: #eee;
+  text-decoration: underline;
+}
+
+.character-select-card-link-danger:hover {
+  color: #ff8080;
+}
+
+.character-select-card-empty {
+  align-items: stretch;
+  justify-content: center;
+  min-height: 8.4rem;
+  border-style: dashed;
+}
+
+.character-select-card-create {
+  height: 100%;
+  border: none;
+  background: none;
+  color: #9aa4b2;
   font: 600 0.9rem system-ui, sans-serif;
   cursor: pointer;
 }
 
-.character-select-panel button:hover {
-  background: #3a6ae8;
+.character-select-card-create:hover {
+  color: #eee;
 }
 
-.character-select-panel button:disabled {
-  background: #2c3038;
+.character-select-confirm {
+  pointer-events: auto;
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  background: rgba(20, 22, 26, 0.95);
+  border-radius: 10px;
+  padding: 0.8rem;
+  color: #eee;
+  font: 500 0.8rem system-ui, sans-serif;
+  text-align: center;
+}
+
+.character-select-confirm button {
+  padding: 0.4rem 0.9rem;
+  border-radius: 6px;
+  border: 1px solid #4a7dff;
+  background: #4a7dff;
+  color: #fff;
+  font: 600 0.8rem system-ui, sans-serif;
+  cursor: pointer;
+}
+
+.character-select-confirm button:last-child {
+  background: none;
   border-color: #444;
-  color: #777;
-  cursor: default;
+  color: #9aa4b2;
+}
+
+.character-select-info {
+  pointer-events: auto;
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.5);
+}
+
+.character-select-info-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+  width: 20rem;
+  max-width: calc(100vw - 2rem);
+  padding: 1.5rem;
+  background: rgba(20, 22, 26, 0.95);
+  border: 1px solid #333;
+  border-radius: 10px;
+  color: #eee;
+  font: 500 0.9rem system-ui, sans-serif;
+}
+
+.character-select-info-panel h2 {
+  margin: 0 0 0.3rem;
+  font-size: 1.1rem;
+  text-align: center;
+}
+
+.character-select-info-panel dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.3rem 0.8rem;
+  margin: 0;
+}
+
+.character-select-info-panel dt {
+  color: #9aa4b2;
+  font-size: 0.8rem;
+}
+
+.character-select-info-panel dd {
+  margin: 0;
+  text-align: right;
+  font-weight: 600;
+}
+
+.character-select-info-panel button {
+  margin-top: 0.4rem;
+  padding: 0.55rem;
+  border-radius: 6px;
+  border: 1px solid #4a7dff;
+  background: #4a7dff;
+  color: #fff;
+  font: 600 0.85rem system-ui, sans-serif;
+  cursor: pointer;
+}
+
+.character-select-create-label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  font-size: 0.8rem;
+  color: #9aa4b2;
+}
+
+.character-select-create-label input,
+.character-select-create-label select {
+  padding: 0.5rem 0.6rem;
+  border-radius: 6px;
+  border: 1px solid #444;
+  background: #22252b;
+  color: #eee;
+  font: 500 0.9rem system-ui, sans-serif;
+}
+
+.character-select-create-actions {
+  display: flex;
+  gap: 0.6rem;
+  margin-top: 0.3rem;
+}
+
+.character-select-create-actions button {
+  flex: 1;
+  padding: 0.55rem;
+  border-radius: 6px;
+  border: 1px solid #4a7dff;
+  background: #4a7dff;
+  color: #fff;
+  font: 600 0.85rem system-ui, sans-serif;
+  cursor: pointer;
+}
+
+.character-select-create-actions button[type='button'] {
+  background: none;
+  border-color: #444;
+  color: #9aa4b2;
 }

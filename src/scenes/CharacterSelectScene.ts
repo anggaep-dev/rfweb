@@ -2,35 +2,33 @@ import { PerspectiveCamera, Raycaster, Vector2 } from 'three';
 import type { Scene } from 'three';
 import { CharacterController } from '../controllers/CharacterController';
 import { SceneController } from '../controllers/SceneController';
-import { RaceGender, loadCharacter } from '../rf/character';
+import { loadCharacter } from '../rf/character';
+import type { CharacterSummary } from '../rf/characterProfile';
+import { BASE_MODEL_TYPES, MAX_CHARACTERS_PER_ACCOUNT } from '../rf/characterProfile';
 import type { AppScene } from './AppScene';
 
 const CLICK_DRAG_TOLERANCE_PX = 12;
 /** How far apart each stage slot sits, as a multiple of the tallest character's bounding radius. */
 const SLOT_SPACING_RADIUS_FACTOR = 2.6;
 
-export const SELECTABLE_RACES: { race: RaceGender; label: string }[] = [
-  { race: RaceGender.Bell_Male, label: 'Bell Male' },
-  { race: RaceGender.Bell_Female, label: 'Bell Female' },
-  { race: RaceGender.Cora_Male, label: 'Cora Male' },
-  { race: RaceGender.Cora_Female, label: 'Cora Female' },
-  { race: RaceGender.Accretia, label: 'Accretia' },
-];
-
 interface Slot {
-  race: RaceGender;
-  label: string;
+  characterId: string;
   controller: CharacterController;
 }
 
 export interface CharacterSelectCallbacks {
   /** Fired when a stage slot is clicked. Purely informational - the scene doesn't track "which is currently picked" itself, the React overlay does, same as it decides when to actually enter the world. */
-  onPick?: (race: RaceGender, label: string) => void;
+  onPick?: (characterId: string) => void;
 }
 
 /**
- * The character-select screen: every playable race/gender standing side by
- * side on a stage, idling in place. Clicking one reports it via onPick().
+ * The character-select screen: each of the account's saved characters (up to
+ * MAX_CHARACTERS_PER_ACCOUNT) stands on stage at its own saved
+ * baseAppearance, in a fixed slot position - always exactly
+ * MAX_CHARACTERS_PER_ACCOUNT slot positions regardless of how many
+ * characters actually exist, so CharacterSelectScreen's 2D card row (one
+ * column per slot, including empty "Create Character" ones) lines up
+ * underneath them. Clicking a mounted character reports it via onPick().
  */
 export class CharacterSelectScene implements AppScene {
   private readonly sceneController = new SceneController();
@@ -39,13 +37,15 @@ export class CharacterSelectScene implements AppScene {
   private readonly pointerNdc = new Vector2();
   private readonly domElement: HTMLElement;
   private readonly callbacks: CharacterSelectCallbacks;
+  private readonly characters: CharacterSummary[];
 
   private slots: Slot[] = [];
   private pointerDownPos: { x: number; y: number } | null = null;
   private disposed = false;
 
-  constructor(domElement: HTMLElement, aspect: number, callbacks: CharacterSelectCallbacks = {}) {
+  constructor(domElement: HTMLElement, aspect: number, characters: CharacterSummary[], callbacks: CharacterSelectCallbacks = {}) {
     this.domElement = domElement;
+    this.characters = characters;
     this.callbacks = callbacks;
     this.camera = new PerspectiveCamera(45, aspect, 0.01, 1000);
   }
@@ -60,15 +60,18 @@ export class CharacterSelectScene implements AppScene {
 
   async mount(): Promise<void> {
     const loaded = await Promise.all(
-      SELECTABLE_RACES.map(async ({ race, label }) => ({ race, label, character: await loadCharacter(race) })),
+      this.characters.map(async (character) => ({ character, rfCharacter: await loadCharacter(character.race) })),
     );
     if (this.disposed) return;
 
     const mounted = await Promise.all(
-      loaded.map(async ({ race, label, character }) => {
+      loaded.map(async ({ character, rfCharacter }) => {
         const controller = new CharacterController(this.sceneController.scene);
-        const bounds = await controller.mount(character, race);
-        return { race, label, controller, bounds };
+        const bounds = await controller.mount(rfCharacter, character.race);
+        for (const modelType of BASE_MODEL_TYPES) {
+          await controller.setBaseAppearance(modelType, character.baseAppearance[modelType] ?? 0);
+        }
+        return { character, controller, bounds };
       }),
     );
     if (this.disposed) {
@@ -78,20 +81,20 @@ export class CharacterSelectScene implements AppScene {
 
     const maxRadius = Math.max(1, ...mounted.map((m) => m.bounds.radius));
     const spacing = maxRadius * SLOT_SPACING_RADIUS_FACTOR;
-    const startX = -((mounted.length - 1) * spacing) / 2;
-    mounted.forEach((m, i) => {
+    const startX = -((MAX_CHARACTERS_PER_ACCOUNT - 1) * spacing) / 2;
+    mounted.forEach((m) => {
       const group = m.controller.group;
-      if (group) group.position.x += startX + i * spacing;
+      if (group) group.position.x += startX + m.character.slotIndex * spacing;
     });
 
-    this.slots = mounted.map((m) => ({ race: m.race, label: m.label, controller: m.controller }));
+    this.slots = mounted.map((m) => ({ characterId: m.character.id, controller: m.controller }));
 
     const feetY = mounted[0]?.bounds.box.min.y ?? 0;
     this.sceneController.grid.position.y = feetY;
-    this.sceneController.grid.scale.setScalar(Math.max(spacing * mounted.length, maxRadius * 5));
+    this.sceneController.grid.scale.setScalar(Math.max(spacing * MAX_CHARACTERS_PER_ACCOUNT, maxRadius * 5));
     this.sceneController.groundPlane.constant = -feetY;
 
-    this.camera.position.set(0, feetY + maxRadius * 1.6, maxRadius * (mounted.length + 2));
+    this.camera.position.set(0, feetY + maxRadius * 1.6, maxRadius * (MAX_CHARACTERS_PER_ACCOUNT + 2));
     this.camera.lookAt(0, feetY + maxRadius * 0.9, 0);
     this.camera.near = maxRadius / 50;
     this.camera.far = maxRadius * 200;
@@ -130,7 +133,7 @@ export class CharacterSelectScene implements AppScene {
       const group = slot.controller.group;
       if (!group) continue;
       if (this.raycaster.intersectObject(group, true).length > 0) {
-        this.callbacks.onPick?.(slot.race, slot.label);
+        this.callbacks.onPick?.(slot.characterId);
         return;
       }
     }

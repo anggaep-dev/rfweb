@@ -5,6 +5,7 @@ import { CharacterController, WALK_SPEED_RADIUS_PER_SEC } from '../controllers/C
 import { RemoteEntityController } from '../controllers/RemoteEntityController';
 import { SceneController } from '../controllers/SceneController';
 import type { ServerPacket } from '../net/generated/protocol';
+import { SERVER_PORT, isSecurePage, pageHostname } from '../net/serverHost';
 import type { ConnectionStatus } from '../net/WorldConnection';
 import { WorldConnection } from '../net/WorldConnection';
 import { loadCharacter } from '../rf/character';
@@ -27,22 +28,15 @@ const SERVER_WALK_UNITS_PER_TICK = 1;
 const ASSUMED_SERVER_TICK_HZ = 30;
 const SERVER_WALK_UNITS_PER_SEC = SERVER_WALK_UNITS_PER_TICK * ASSUMED_SERVER_TICK_HZ;
 
-const DEFAULT_WS_PORT = 8080;
-
 /**
  * Default game server WebSocket endpoint - derived from whatever
- * host/scheme the page itself was loaded from, not hardcoded to
- * "localhost". "localhost" only ever means "this device" - fine when
- * testing on the same laptop running both the dev server and the backend,
- * but broken on a phone reached via `vite --host` over LAN (or any other
- * device), where it resolves to the phone itself instead of the backend
- * host, so the connection fails instantly. Override with VITE_WS_URL when
- * the backend lives on a different host/port than the page (e.g. a real
+ * host/scheme the page itself was loaded from (see serverHost.ts for why
+ * "localhost" can't be hardcoded here). Override with VITE_WS_URL when the
+ * backend lives on a different host/port than the page (e.g. a real
  * deployment).
  */
 function defaultWsUrl(): string {
-  const wsScheme = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  return `${wsScheme}//${window.location.hostname}:${DEFAULT_WS_PORT}/ws`;
+  return `${isSecurePage() ? 'wss:' : 'ws:'}//${pageHostname()}:${SERVER_PORT}/ws`;
 }
 
 /** World-space (not camera-relative) movement axes - dir_x/dir_z are a fixed compass direction, matching what MovementInput means to the server. */
@@ -71,6 +65,16 @@ const MOVE_KEYS: Record<string, [dx: number, dz: number]> = {
  * server once combat/collision is involved. Other players are rendered as
  * plain server-authoritative entities (see RemoteEntityController) with no
  * prediction at all, just smoothing between the positions the server sends.
+ *
+ * `sessionToken` (from LoginScreen's real login() call - see
+ * net/AuthClient.ts) and `characterId` (which of the account's characters,
+ * from CharacterSelectScreen - see net/CharacterClient.ts) are both appended
+ * to the WS connect URL as `?token=...&character=...`, so the server can
+ * authenticate the connection and know which character to load without a
+ * separate WS/proto handshake for either. Note the browser's WebSocket API
+ * never exposes *why* a connection failed (e.g. an invalid/expired token vs.
+ * the server being unreachable both just look like "it closed") - see
+ * ConnectionStatus.
  */
 export class OnlineScene implements AppScene {
   private readonly sceneController = new SceneController();
@@ -80,6 +84,8 @@ export class OnlineScene implements AppScene {
   private readonly connection = new WorldConnection();
   private readonly callbacks: OnlineSceneCallbacks;
   private readonly raceGender: RaceGender;
+  private readonly sessionToken: string;
+  private readonly characterId: string;
 
   private readonly heldKeys = new Set<string>();
   private readonly moveDirection = new Vector3();
@@ -90,8 +96,16 @@ export class OnlineScene implements AppScene {
   private readonly handleKeyDown = (event: KeyboardEvent) => this.handleKeyChange(event, true);
   private readonly handleKeyUp = (event: KeyboardEvent) => this.handleKeyChange(event, false);
 
-  constructor(renderer: WebGLRenderer, raceGender: RaceGender, callbacks: OnlineSceneCallbacks = {}) {
+  constructor(
+    renderer: WebGLRenderer,
+    raceGender: RaceGender,
+    sessionToken: string,
+    characterId: string,
+    callbacks: OnlineSceneCallbacks = {},
+  ) {
     this.raceGender = raceGender;
+    this.sessionToken = sessionToken;
+    this.characterId = characterId;
     this.callbacks = callbacks;
 
     this.cameraController = new CameraController(
@@ -117,7 +131,10 @@ export class OnlineScene implements AppScene {
     this.connection.onPingChange = (pingMs) => this.callbacks.onPingChange?.(pingMs);
 
     const wsUrl = (import.meta.env.VITE_WS_URL as string | undefined) ?? defaultWsUrl();
-    this.connection.connect(wsUrl);
+    const separator = wsUrl.includes('?') ? '&' : '?';
+    this.connection.connect(
+      `${wsUrl}${separator}token=${encodeURIComponent(this.sessionToken)}&character=${encodeURIComponent(this.characterId)}`,
+    );
 
     window.addEventListener('keydown', this.handleKeyDown);
     window.addEventListener('keyup', this.handleKeyUp);

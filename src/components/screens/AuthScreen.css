@@ -1,4 +1,6 @@
-.login-screen {
+/* Shared by LoginScreen and RegisterScreen - same panel-over-3D-background look for both. */
+
+.auth-screen {
   position: fixed;
   inset: 0;
   display: flex;
@@ -7,7 +9,7 @@
   pointer-events: none;
 }
 
-.login-screen-panel {
+.auth-screen-panel {
   pointer-events: auto;
   display: flex;
   flex-direction: column;
@@ -21,13 +23,13 @@
   font: 500 0.9rem system-ui, sans-serif;
 }
 
-.login-screen-panel h1 {
+.auth-screen-panel h1 {
   margin: 0 0 0.5rem;
   font-size: 1.3rem;
   text-align: center;
 }
 
-.login-screen-panel label {
+.auth-screen-panel label {
   display: flex;
   flex-direction: column;
   gap: 0.3rem;
@@ -35,7 +37,7 @@
   color: #9aa4b2;
 }
 
-.login-screen-panel input {
+.auth-screen-panel input {
   padding: 0.5rem 0.6rem;
   border-radius: 6px;
   border: 1px solid #444;
@@ -44,7 +46,7 @@
   font: 500 0.9rem system-ui, sans-serif;
 }
 
-.login-screen-panel button {
+.auth-screen-panel button {
   margin-top: 0.4rem;
   padding: 0.6rem 1rem;
   border-radius: 6px;
@@ -55,11 +57,40 @@
   cursor: pointer;
 }
 
-.login-screen-panel button:hover {
+.auth-screen-panel button:hover {
   background: #3a6ae8;
 }
 
-.login-screen-hint {
+.auth-screen-panel button:disabled {
+  background: #2c3038;
+  border-color: #444;
+  color: #777;
+  cursor: default;
+}
+
+.auth-screen-switch {
+  margin-top: 0.2rem;
+  padding: 0;
+  border: none;
+  background: none;
+  color: #4a7dff;
+  font: 500 0.8rem system-ui, sans-serif;
+  text-align: center;
+  cursor: pointer;
+}
+
+.auth-screen-switch:hover {
+  text-decoration: underline;
+}
+
+.auth-screen-error {
+  margin: 0;
+  text-align: center;
+  color: #ff8080;
+  font-size: 0.8rem;
+}
+
+.auth-screen-hint {
   margin: 0;
   text-align: center;
   color: #666;

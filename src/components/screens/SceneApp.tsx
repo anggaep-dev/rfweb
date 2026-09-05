@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import OnlineScreen from './OnlineScreen';
+import RegisterScreen from './RegisterScreen';
 import RfViewer from './RfViewer';
 import { preloadAllRaces, RaceGender } from '../../rf/character';
 import CharacterSelectScreen from './CharacterSelectScreen';
@@ -7,7 +8,7 @@ import LoginScreen from './LoginScreen';
 import { SceneManager } from '../../scenes/SceneManager';
 import './SceneApp.css';
 
-type Screen = 'preloading' | 'login' | 'characterSelect' | 'viewer';
+type Screen = 'preloading' | 'login' | 'register' | 'characterSelect' | 'viewer';
 
 /** "/debug" reaches the old offline/debug viewer (ViewerScene); every other path is online play (OnlineScene). */
 const isDebugRoute = window.location.pathname.replace(/\/+$/, '') === '/debug';
@@ -30,6 +31,13 @@ export default function SceneApp() {
   const [preloadProgress, setPreloadProgress] = useState({ loaded: 0, total: 1 });
   const [preloadError, setPreloadError] = useState('');
   const [selectedRace, setSelectedRace] = useState<RaceGender | null>(null);
+  const [selectedCharacterId, setSelectedCharacterId] = useState<string | null>(null);
+  // Issued by LoginScreen's real login() call (see net/AuthClient.ts) - the
+  // WS connection authenticates with this, not with credentials again. Only
+  // ever needed on the online (non-debug) route, which is the only one
+  // that goes through LoginScreen for real - /debug skips straight to the
+  // viewer.
+  const [sessionToken, setSessionToken] = useState<string | null>(null);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -92,12 +100,31 @@ export default function SceneApp() {
       )}
 
       {sceneManager && screen === 'login' && (
-        <LoginScreen sceneManager={sceneManager} onLoggedIn={() => setScreen('characterSelect')} />
+        <LoginScreen
+          sceneManager={sceneManager}
+          onLoggedIn={(token) => {
+            setSessionToken(token);
+            setScreen('characterSelect');
+          }}
+          onSwitchToRegister={() => setScreen('register')}
+        />
       )}
-      {sceneManager && screen === 'characterSelect' && (
+      {sceneManager && screen === 'register' && (
+        <RegisterScreen
+          sceneManager={sceneManager}
+          onRegistered={(token) => {
+            setSessionToken(token);
+            setScreen('characterSelect');
+          }}
+          onSwitchToLogin={() => setScreen('login')}
+        />
+      )}
+      {sceneManager && screen === 'characterSelect' && sessionToken !== null && (
         <CharacterSelectScreen
           sceneManager={sceneManager}
-          onEnterWorld={(race) => {
+          sessionToken={sessionToken}
+          onEnterWorld={(characterId, race) => {
+            setSelectedCharacterId(characterId);
             setSelectedRace(race);
             setScreen('viewer');
           }}
@@ -108,10 +135,12 @@ export default function SceneApp() {
         selectedRace !== null &&
         (isDebugRoute ? (
           <RfViewer sceneManager={sceneManager} initialRaceGender={selectedRace} />
-        ) : (
+        ) : sessionToken === null || selectedCharacterId === null ? null : (
           <OnlineScreen
             sceneManager={sceneManager}
             initialRaceGender={selectedRace}
+            sessionToken={sessionToken}
+            characterId={selectedCharacterId}
             onExit={() => setScreen('characterSelect')}
           />
         ))}

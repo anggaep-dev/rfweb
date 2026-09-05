@@ -47,6 +47,15 @@ export enum RaceGender {
   Accretia = 4,
 }
 
+/** Human-readable label per race/gender - used by the character-creation race picker and character-info display. */
+export const RACE_LABELS: Record<RaceGender, string> = {
+  [RaceGender.Bell_Male]: 'Bellato (Male)',
+  [RaceGender.Bell_Female]: 'Bellato (Female)',
+  [RaceGender.Cora_Male]: 'Cora (Male)',
+  [RaceGender.Cora_Female]: 'Cora (Female)',
+  [RaceGender.Accretia]: 'Accretia',
+};
+
 interface RaceConfig {
   /** Filename prefix used throughout mesh/animation entries, e.g. "BELFEMALE". */
   nameToken: string;
