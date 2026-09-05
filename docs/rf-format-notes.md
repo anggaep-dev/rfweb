@@ -350,6 +350,50 @@ tables, picked by item category:
   keyed directly by model id string, same field shape minus the array
   wrapper.
 
+**Body-armor tiers live in a per-race block, not a flat lookup.** An
+item's `Model` id is not always a literal `playerResource.json` `Mesh.ID` -
+only simple/legacy items (mostly the true `"Default ..."` starter gear)
+resolve that way. Real armor tiers (the `character/player/Mesh/{AA,BF,BM,
+CF,CM}{R,W,F}{00,10,20,30,40}.RFS` archives - present on disk, never loaded
+by `loadRaceAssets()` before this was found) need a **race-block
+correction**: `playerResource.json` gives every race its own contiguous
+`0x100000`-wide `Mesh.ID` block - `[0x000000, 0x0FFFFF)` = Bell_Male,
+`[0x100000, 0x1FFFFF)` = Bell_Female, `[0x200000, 0x2FFFFF)` = Cora_Male,
+`[0x300000, 0x3FFFFF)` = Cora_Female, `[0x400000, 0x4FFFFF)` = Accretia -
+i.e. block index == `RaceGender`'s own enum value, verified with zero
+cross-race collisions across every body slot (helmet/upper/lower/gauntlet/
+shoes). An item's `Model`, read as **hex**, carries the actual part+tier
+info in its low 20 bits (`& 0xFFFFF`) - e.g. `Model=0x700200` (a
+Bellato-flavored item row) and `Model=0x400200` (the Accretia-flavored
+equivalent row) share the same low bits `0x00200` ("upper, tier 0"), just
+recorded under whichever race happened to be listed for that particular
+item. So resolving for the race actually equipping the item means:
+`targetId = raceGender * 0x100000 + (parseInt(model, 16) & 0xFFFFF)`,
+looked up numerically (not by string - real `Mesh.ID` padding is
+inconsistent, 5 hex digits for the Bell_Male block, 6 once a higher block
+needs the extra digit). See `resolveItemMeshStem()` in `resource.ts`,
+which tries a direct `Mesh.ID` match first and falls back to this
+correction. Coverage jumped from ~30% to ~88-97% of real items per slot
+once this was found (`faceItem.json` is the one exception, still ~31% -
+whatever encodes those hasn't been found yet). `itemResource.json`
+(weapons) doesn't need this - those meshes are shared loose files, not
+per-race body parts, so a flat lookup was already correct there.
+
+**Cloak is a shared loose file too, not a per-race body part - it uses
+`itemResource.json`, not `playerResource.json`.** Easy to get backwards
+since `Model` (e.g. `0x7006C8`) is the same 6-hex-digit shape the
+race-block-corrected body-armor ids use, and `playerResource.json` even
+has a handful of plausible-looking `"*_ARMOR_CLOAK_*"` entries (9 of them) -
+but none of those are backed by a real archive file (verified: zero
+`_CLOAK_` entries across every `character/player/Mesh/*.RFS` archive this
+project loads), and only 12 of `cloakItem.json`'s 1572 rows even match one
+of those 9 ids. The real cloak meshes live under `item/Armor/Mesh/`
+(`AKM00`/`NewCloakM`/`PHBP01`/`XMC.RFS`, textures in `item/Armor/Tex/`
+(`AKT00`/`NewCloakT.RFS`) - direct `itemResource.json` id lookup (exactly
+like `resolveWeaponMesh`, no arithmetic) gets 425/1572 (~27%) real hits.
+See `resolveCloakMeshStem()` in `resource.ts` and `loadCloakArchives()` in
+`character.ts`.
+
 Neither table's `PathName`/`TexutrePath` reliably names which archive
 actually holds the mesh - most `itemResource.json` weapon entries just say
 the bare `.\ITEM\WEAPON\MESH\` directory with no archive hint at all. So

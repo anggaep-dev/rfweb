@@ -7,13 +7,14 @@ import {
   buildMeshPartObjects,
   getRaceAssets,
   getWeaponClip,
+  loadCloakArchives,
   loadWeaponMeshObjects,
   weaponClipKey,
 } from '../rf/character';
 import type { LocomotionDirection, RfCharacter } from '../rf/character';
 import { ALL_MODEL_TYPES, MODEL_TYPE_TO_PART_TOKEN, ModelType } from '../rf/items';
 import type { ItemDefinition } from '../rf/items';
-import { resolveItemMeshStem, resolveWeaponMesh } from '../rf/resource';
+import { resolveCloakMeshStem, resolveItemMeshStem, resolveWeaponMesh } from '../rf/resource';
 
 const ARRIVE_FRACTION_OF_RADIUS = 0.04;
 /** Exported for OnlineScene - it derives a server-units-to-scene-units scale by matching the server's own walk speed constant against this one. */
@@ -121,6 +122,30 @@ export class CharacterController {
    * explicitly wherever equippedObjects[slot] is replaced.
    */
   private equippedGlowOverlays: Partial<Record<ModelType, GlowOverlay>> = {};
+
+  /**
+   * Which of the 5 pre-made DEFAULT_{PART}_00{0-4} variants each base slot
+   * (see ALL_MODEL_TYPES) uses when nothing's equipped there - the
+   * character-creation-time customization (hair for Bell/Cora's Helmet
+   * slot, face, body shape, ...). Unset means variant 0, matching this
+   * project's original hardcoded "_000" behavior. See setBaseAppearance.
+   */
+  private baseAppearance: Partial<Record<ModelType, number>> = {};
+  /** Which real item (if any) currently covers each body slot - lets setBaseAppearance know whether changing the base variant should visually apply immediately or just be remembered for later. Weapon tracks its own equivalent (currentWeaponItem) instead, since it goes through equipWeapon, not this. */
+  private currentBodyItem: Partial<Record<ModelType, ItemDefinition | null>> = {};
+
+  /**
+   * The Helmet slot's base-appearance objects (hair, on Bell/Cora) - kept
+   * alive (and visible) for as long as the character exists, rather than
+   * disposed/rebuilt every time a real Helmet item is equipped or removed
+   * like every other base slot's default mesh. Both this and
+   * equippedObjects[Helmet] (the real item, if any) exist and render
+   * simultaneously - a helmet overlays on top of hair, it doesn't hide it
+   * (matches the real client). See equipHelmet.
+   */
+  private helmetBaseObjects: Object3D[] = [];
+  /** Which variant helmetBaseObjects was actually built for, so equipHelmet only rebuilds it when baseAppearance[Helmet] has genuinely changed since (not on every equip/unequip). Null before the first build. */
+  private helmetBaseVariant: number | null = null;
 
   /** The currently-wielded weapon's animation-set token (see resolveWeaponMesh), or null when unarmed - consulted by update() to pick the armed vs. unarmed walk/run clip. */
   private currentWeaponToken: string | null = null;
@@ -428,26 +453,38 @@ export class CharacterController {
    */
   async equipItem(modelType: ModelType, item: ItemDefinition | null): Promise<EquipResult> {
     if (modelType === ModelType.Weapon) return this.equipWeapon(item);
+    if (modelType === ModelType.Cloak) return this.equipCloak(item);
+    if (modelType === ModelType.Helmet) return this.equipHelmet(item);
 
     const character = this.character;
     const raceGender = this.raceGender;
     if (!character || raceGender === null) return 'no-character';
 
+    this.currentBodyItem[modelType] = item;
+
     let stem: string;
     if (item) {
-      const resolvedStem = await resolveItemMeshStem(item.model);
+      const resolvedStem = await resolveItemMeshStem(item.model, raceGender);
       if (!resolvedStem) return 'unavailable';
       stem = resolvedStem;
     } else {
-      stem = `${character.group.name}_DEFAULT_${MODEL_TYPE_TO_PART_TOKEN[modelType]}_000`;
+      // See baseAppearance's doc comment - this is the character's own
+      // chosen variant for this slot, not always "_000".
+      const variant = this.baseAppearance[modelType] ?? 0;
+      stem = `${character.group.name}_DEFAULT_${MODEL_TYPE_TO_PART_TOKEN[modelType]}_${String(variant).padStart(3, '0')}`;
     }
 
-    const { meshArchive, texArchive } = await getRaceAssets(raceGender);
+    const { meshArchive, texArchive, armorMeshArchives, armorTexArchives } = await getRaceAssets(raceGender);
     // A newer mount()/equipItem() may have replaced the character while the
     // above awaits were in flight - bail rather than mutate a stale/disposed group.
     if (this.character !== character) return 'no-character';
 
-    const newObjects = buildMeshPartObjects(stem, meshArchive, texArchive, character.builtSkeleton);
+    const newObjects = buildMeshPartObjects(
+      stem,
+      [meshArchive, ...armorMeshArchives],
+      [texArchive, ...armorTexArchives],
+      character.builtSkeleton,
+    );
     if (newObjects.length === 0) return 'unavailable';
 
     const previous = this.equippedObjects[modelType];
@@ -467,6 +504,21 @@ export class CharacterController {
     void this.applySurfaceShineFor(item, newObjects);
 
     return item ? 'equipped' : 'default';
+  }
+
+  /**
+   * Sets which of the 5 pre-made variants a base slot's default mesh uses -
+   * the character-creation-time customization (hair for Bell/Cora's Helmet
+   * slot, face, body shape, ...) that shows whenever nothing's equipped in
+   * that slot. Applies immediately if the slot currently has no item
+   * equipped; otherwise it's only remembered for whenever the item is
+   * later removed - changing your hairstyle shouldn't visibly do anything
+   * while a helmet is covering it.
+   */
+  async setBaseAppearance(modelType: ModelType, variantIndex: number): Promise<EquipResult> {
+    this.baseAppearance[modelType] = variantIndex;
+    if (this.currentBodyItem[modelType]) return 'equipped'; // covered by a real item right now - preference stored, nothing to re-render
+    return this.equipItem(modelType, null);
   }
 
   /**
@@ -542,6 +594,152 @@ export class CharacterController {
   }
 
   /**
+   * Cloak-slot equip: like Weapon, has no default appearance (an unequipped
+   * character just shows nothing there) - but unlike a weapon, a cloak is a
+   * skinned mesh that drapes over the body (not a rigid single-bone attach),
+   * so it goes through the same buildMeshPartObjects path as a body-part
+   * item, just resolved via resolveCloakMeshStem/loadCloakArchives (the
+   * race-agnostic item/Armor/ archives) instead of resolveItemMeshStem/
+   * getRaceAssets (the per-race character/player/Mesh armor archives) -
+   * verified cloak meshes actually live in the former, not the latter.
+   */
+  private async equipCloak(item: ItemDefinition | null): Promise<EquipResult> {
+    const character = this.character;
+    if (!character) return 'no-character';
+
+    this.currentBodyItem[ModelType.Cloak] = item;
+    const previous = this.equippedObjects[ModelType.Cloak];
+
+    if (!item) {
+      if (previous) {
+        for (const obj of previous) {
+          obj.parent?.remove(obj);
+          disposeObject3D(obj);
+        }
+        delete this.equippedObjects[ModelType.Cloak];
+      }
+      this.disposeGlowOverlayFor(ModelType.Cloak);
+      return 'default';
+    }
+
+    const stem = await resolveCloakMeshStem(item.model);
+    if (this.character !== character) return 'no-character'; // superseded mid-await
+    if (!stem) return 'unavailable';
+
+    const { meshArchives, texArchives } = await loadCloakArchives();
+    if (this.character !== character) return 'no-character'; // superseded mid-await
+
+    const newObjects = buildMeshPartObjects(stem, meshArchives, texArchives, character.builtSkeleton);
+    if (newObjects.length === 0) return 'unavailable';
+
+    if (previous) {
+      for (const obj of previous) {
+        obj.parent?.remove(obj);
+        disposeObject3D(obj);
+      }
+    }
+    this.disposeGlowOverlayFor(ModelType.Cloak);
+
+    for (const obj of newObjects) {
+      if (!obj.parent) character.group.add(obj);
+    }
+    this.equippedObjects[ModelType.Cloak] = newObjects;
+    void this.applyGlowOverlay(ModelType.Cloak, item, character, newObjects);
+    void this.applySurfaceShineFor(item, newObjects);
+
+    return 'equipped';
+  }
+
+  /**
+   * Helmet-slot equip: on Bell/Cora, the base-appearance mesh here is the
+   * character's hairstyle, not armor - a real Helmet item doesn't replace
+   * it, it overlays on top of it, the same way the real client renders
+   * hair alongside a worn helmet rather than hiding it. So unlike every
+   * other body slot, the base appearance and an equipped item aren't
+   * mutually exclusive builds of one slot - helmetBaseObjects (hair) and
+   * equippedObjects[Helmet] (the item) both stay in the scene and both
+   * stay visible at once. Hair is built once per chosen variant and
+   * reused - equipping/removing a helmet never touches it at all.
+   */
+  private async equipHelmet(item: ItemDefinition | null): Promise<EquipResult> {
+    const character = this.character;
+    const raceGender = this.raceGender;
+    if (!character || raceGender === null) return 'no-character';
+
+    this.currentBodyItem[ModelType.Helmet] = item;
+
+    const desiredVariant = this.baseAppearance[ModelType.Helmet] ?? 0;
+    if (this.helmetBaseVariant !== desiredVariant) {
+      for (const obj of this.helmetBaseObjects) {
+        obj.parent?.remove(obj);
+        disposeObject3D(obj);
+      }
+      this.helmetBaseObjects = [];
+
+      const stem = `${character.group.name}_DEFAULT_${MODEL_TYPE_TO_PART_TOKEN[ModelType.Helmet]}_${String(desiredVariant).padStart(3, '0')}`;
+      const { meshArchive, texArchive, armorMeshArchives, armorTexArchives } = await getRaceAssets(raceGender);
+      if (this.character !== character) return 'no-character'; // superseded mid-await
+
+      this.helmetBaseObjects = buildMeshPartObjects(
+        stem,
+        [meshArchive, ...armorMeshArchives],
+        [texArchive, ...armorTexArchives],
+        character.builtSkeleton,
+      );
+      for (const obj of this.helmetBaseObjects) {
+        if (!obj.parent) character.group.add(obj);
+      }
+      this.helmetBaseVariant = desiredVariant;
+    }
+
+    const previousItemObjects = this.equippedObjects[ModelType.Helmet];
+
+    if (!item) {
+      if (previousItemObjects) {
+        for (const obj of previousItemObjects) {
+          obj.parent?.remove(obj);
+          disposeObject3D(obj);
+        }
+        delete this.equippedObjects[ModelType.Helmet];
+      }
+      this.disposeGlowOverlayFor(ModelType.Helmet);
+      return 'default';
+    }
+
+    const resolvedStem = await resolveItemMeshStem(item.model, raceGender);
+    if (this.character !== character) return 'no-character'; // superseded mid-await
+    if (!resolvedStem) return 'unavailable';
+
+    const { meshArchive, texArchive, armorMeshArchives, armorTexArchives } = await getRaceAssets(raceGender);
+    if (this.character !== character) return 'no-character'; // superseded mid-await
+
+    const newObjects = buildMeshPartObjects(
+      resolvedStem,
+      [meshArchive, ...armorMeshArchives],
+      [texArchive, ...armorTexArchives],
+      character.builtSkeleton,
+    );
+    if (newObjects.length === 0) return 'unavailable';
+
+    if (previousItemObjects) {
+      for (const obj of previousItemObjects) {
+        obj.parent?.remove(obj);
+        disposeObject3D(obj);
+      }
+    }
+    this.disposeGlowOverlayFor(ModelType.Helmet);
+
+    for (const obj of newObjects) {
+      if (!obj.parent) character.group.add(obj);
+    }
+    this.equippedObjects[ModelType.Helmet] = newObjects;
+    void this.applyGlowOverlay(ModelType.Helmet, item, character, newObjects);
+    void this.applySurfaceShineFor(item, newObjects);
+
+    return 'equipped';
+  }
+
+  /**
    * Swaps in a freshly loaded (bodiless) character: disposes the previous
    * one (group + skeleton helper), resets all movement/animation state,
    * equips every slot's default body part, and returns the resulting
@@ -562,6 +760,14 @@ export class CharacterController {
     this.character = character;
     this.raceGender = raceGender;
     this.equippedObjects = {};
+    this.baseAppearance = {};
+    this.currentBodyItem = {};
+    // Already disposed by the disposeObject3D(prevGroup) traversal above if
+    // this is a real character swap - these are stale references at this
+    // point either way, so drop them rather than let equipHelmet think
+    // they're still valid for the new character.
+    this.helmetBaseObjects = [];
+    this.helmetBaseVariant = null;
     // Not individually disposed here - every glow overlay mesh is a
     // descendant of prevGroup (parented to either the group itself or one
     // of its bones), so the disposeObject3D(prevGroup) traversal above
@@ -790,5 +996,7 @@ export class CharacterController {
     this.character = null;
     this.skeletonHelper = null;
     this.equippedGlowOverlays = {};
+    this.helmetBaseObjects = [];
+    this.helmetBaseVariant = null;
   }
 }

@@ -1,3 +1,5 @@
+import type { RaceGender } from './character';
+
 const PLAYER_RESOURCE_URL = '/game-assets/data/resource/playerResource.json';
 
 interface PlayerResourceMeshEntry {
@@ -13,40 +15,78 @@ interface PlayerResourceData {
   Mesh: PlayerResourceMeshEntry[];
 }
 
-let meshIndexPromise: Promise<Map<string, PlayerResourceMeshEntry>> | null = null;
+/**
+ * playerResource.json gives every race its own contiguous 0x100000-wide
+ * block of Mesh ids for real armor tiers (verified empirically: every id in
+ * [race*0x100000, race*0x100000 + 0xFFFFF) is that race's own
+ * "{RACE}_ARMOR_..." file, zero cross-race collisions, across every body
+ * slot) - and RaceGender's own enum values (Bell_Male=0 .. Accretia=4)
+ * happen to already match that block index, so no separate lookup table is
+ * needed. An item's Model id encodes which part/tier via its low 20 bits
+ * (0xFFFFF) - e.g. Model 0x700200 for a Bellato-flavored item and Model
+ * 0x400200 for the Accretia-flavored equivalent both carry the same low
+ * bits (0x00200, "UPPER tier 0"), just written under whichever race
+ * happened to be listed for that particular item row. So resolving for the
+ * *currently equipping* race just means swapping in that race's own block
+ * over those low bits - see resolveItemMeshStem.
+ */
+const RACE_MESH_BLOCK_SIZE = 0x100000;
 
-function loadPlayerResourceMeshIndex(): Promise<Map<string, PlayerResourceMeshEntry>> {
-  if (!meshIndexPromise) {
-    meshIndexPromise = fetch(PLAYER_RESOURCE_URL)
+interface PlayerResourceMeshIndexes {
+  /** Exact-string-keyed, matching the raw (inconsistently 5-or-6-digit-padded) ID field verbatim. */
+  byId: Map<string, PlayerResourceMeshEntry>;
+  /** Same entries, keyed by parsed integer value - a computed candidate id (see resolveItemMeshStem) can't rely on the source data's inconsistent padding, so it's looked up numerically instead. */
+  byValue: Map<number, PlayerResourceMeshEntry>;
+}
+
+let meshIndexesPromise: Promise<PlayerResourceMeshIndexes> | null = null;
+
+function loadPlayerResourceMeshIndexes(): Promise<PlayerResourceMeshIndexes> {
+  if (!meshIndexesPromise) {
+    meshIndexesPromise = fetch(PLAYER_RESOURCE_URL)
       .then((res) => {
         if (!res.ok) throw new Error(`Failed to fetch ${PLAYER_RESOURCE_URL}: ${res.status}`);
         return res.json() as Promise<PlayerResourceData>;
       })
       .then((data) => {
-        const index = new Map<string, PlayerResourceMeshEntry>();
-        for (const entry of data.Mesh) index.set(entry.ID, entry);
-        return index;
+        const byId = new Map<string, PlayerResourceMeshEntry>();
+        const byValue = new Map<number, PlayerResourceMeshEntry>();
+        for (const entry of data.Mesh) {
+          byId.set(entry.ID, entry);
+          const value = Number.parseInt(entry.ID, 16);
+          if (!Number.isNaN(value)) byValue.set(value, entry);
+        }
+        return { byId, byValue };
       });
-    meshIndexPromise.catch(() => {
-      meshIndexPromise = null;
+    meshIndexesPromise.catch(() => {
+      meshIndexesPromise = null;
     });
   }
-  return meshIndexPromise;
+  return meshIndexesPromise;
 }
 
 /**
- * Resolves an item's numeric Model id to its mesh filename stem (no
- * extension), via playerResource.json's Mesh table - the only resource
- * table that currently maps arbitrary item ids to actual mesh files. Most
- * real (non-"Default ...") equipment items aren't in it yet, so this
- * commonly resolves to null; callers should treat that as "no visual mesh
- * available for this item," not an error.
+ * Resolves an item's Model id to its mesh filename stem (no extension) for
+ * a specific race, via playerResource.json's Mesh table. Tries an exact
+ * match first (covers simple/legacy items whose Model already IS a literal
+ * resource id), then falls back to the per-race block correction described
+ * above (covers real armor tiers). Returns null if neither resolves -
+ * callers should treat that as "no visual mesh available for this item,"
+ * not an error.
  */
-export async function resolveItemMeshStem(modelId: string): Promise<string | null> {
-  const index = await loadPlayerResourceMeshIndex();
-  const entry = index.get(modelId);
-  if (!entry) return null;
-  return entry.FileName.replace(/\.msh$/i, '');
+export async function resolveItemMeshStem(modelId: string, raceGender: RaceGender): Promise<string | null> {
+  const { byId, byValue } = await loadPlayerResourceMeshIndexes();
+
+  const direct = byId.get(modelId);
+  if (direct) return direct.FileName.replace(/\.msh$/i, '');
+
+  if (!/^[0-9a-fA-F]+$/.test(modelId)) return null;
+  const low = Number.parseInt(modelId, 16) & 0xfffff;
+  const candidateValue = raceGender * RACE_MESH_BLOCK_SIZE + low;
+
+  const candidate = byValue.get(candidateValue);
+  if (!candidate) return null;
+  return candidate.FileName.replace(/\.msh$/i, '');
 }
 
 const ITEM_RESOURCE_URL = '/game-assets/data/resource/itemResource.json';
@@ -120,4 +160,23 @@ export async function resolveWeaponMesh(modelId: string): Promise<WeaponMeshInfo
   const stem = entry.FileName.replace(/\.msh$/i, '');
   const match = WEAPON_TOKEN_PATTERN.exec(stem.toUpperCase());
   return { stem, weaponToken: match ? match[1] : null };
+}
+
+/**
+ * Resolves a cloak item's Model id to its mesh filename stem, via
+ * itemResource.json - same table as weapons (not playerResource.json's
+ * per-race Mesh blocks, which was the wrong table: verified only 12 of
+ * cloakItem.json's 1572 rows have a matching entry there at all, none
+ * backed by a real archive file). Direct id match here gets ~27% (425/1572)
+ * instead - a real, if partial, hit rate, since cloak meshes turn out to
+ * live under item/Armor/Mesh/ (see loadCloakArchives in character.ts), a
+ * race-agnostic shared archive set the same way weapon meshes are, not a
+ * per-race body-part swap. No weapon-token parsing needed (a cloak isn't
+ * combat-clip-relevant), unlike resolveWeaponMesh above.
+ */
+export async function resolveCloakMeshStem(modelId: string): Promise<string | null> {
+  const index = await loadItemResourceIndex();
+  const entry = index.get(modelId);
+  if (!entry) return null;
+  return entry.FileName.replace(/\.msh$/i, '');
 }

@@ -30,6 +30,22 @@ export function parseRfs(buffer: ArrayBuffer): RfsArchive {
   const r = new BinaryReader(buffer);
   const entryCount = r.u32();
 
+  // A dev/preview server's SPA fallback serves index.html (200 OK, so
+  // fetchBuffer's res.ok check doesn't catch it) for any URL that doesn't
+  // match a real static file - including a mistyped or genuinely-missing
+  // archive path. That HTML, read as this header's leading uint32, produces
+  // some huge garbage entryCount that would otherwise crash with a
+  // confusing mid-loop RangeError several lines down - catch it here with a
+  // clear message instead.
+  const expectedIndexBytes = 4 + entryCount * RECORD_SIZE;
+  if (entryCount < 0 || expectedIndexBytes > buffer.byteLength) {
+    throw new Error(
+      `RFS archive header looks invalid (entryCount=${entryCount} would need ${expectedIndexBytes} bytes just for ` +
+        `the index, but the fetched response is only ${buffer.byteLength} bytes) - likely fetched a non-archive ` +
+        `response (e.g. a dev-server fallback page for a missing/mistyped file) rather than the real archive.`,
+    );
+  }
+
   const entries: RfsEntry[] = [];
   for (let i = 0; i < entryCount; i++) {
     const name = r.fixedString(NAME_SIZE, 'ascii');

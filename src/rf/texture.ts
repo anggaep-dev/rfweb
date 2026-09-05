@@ -265,24 +265,88 @@ function decompressBlockTexture(data: Uint8Array, width: number, height: number,
 
 type DdsMipmap = { data: Uint8Array; width: number; height: number };
 
-function applyCommonTextureSettings(texture: Texture): void {
+/**
+ * Which rendering mode a decoded texture's alpha channel calls for -
+ * stashed on `Texture.userData` (see TextureAlphaInfo) so material
+ * construction (buildObjectsFromParsedMesh in character.ts) can react to it
+ * without this module needing to know about MeshStandardMaterial at all.
+ * `opaque` (no material change needed) is the three.js default, which is
+ * why a material that never reads this still renders correctly for
+ * anything that turns out opaque - only mask/blend textures were silently
+ * losing their alpha before this existed.
+ */
+export type TextureAlphaMode = 'opaque' | 'mask' | 'blend';
+
+export interface TextureAlphaInfo {
+  alphaMode: TextureAlphaMode;
+  /** Only meaningful for 'mask' - the MeshStandardMaterial.alphaTest cutoff to use. */
+  alphaTest: number | null;
+}
+
+/**
+ * Classifies a decoded RGBA buffer's alpha channel the same way the
+ * reference Blender addon's analyze_dds_alpha does (cbb_rf_online_addon/
+ * texture_utils.py): almost-entirely-opaque textures need no blending at
+ * all; almost-entirely-binary (0 or 255) alpha is a hard cutout (hair
+ * strands, helmet grating/visor holes) best rendered via alphaTest, not
+ * real blending, to avoid transparency sort artifacts between overlapping
+ * body-part meshes; anything with a genuine spread of intermediate values
+ * needs real alpha blending. Verified against this project's own face/
+ * helmet textures - they're exactly the "mostly binary cutout" case the
+ * MASK branch targets, which is what was going wrong: every mesh's
+ * material unconditionally omitted both `transparent` and `alphaTest`
+ * (see the MeshStandardMaterial construction in character.ts), which
+ * three.js/WebGL takes to mean "ignore alpha, this is opaque" - textures
+ * that already had alpha=255 everywhere were unaffected (nothing to
+ * ignore), but any texture actually relying on its alpha channel silently
+ * rendered as if it had none.
+ */
+function classifyAlpha(rgba: Uint8Array | Uint8ClampedArray): TextureAlphaInfo {
+  const pixelCount = rgba.length / 4;
+  let opaqueCount = 0;
+  let transparentCount = 0;
+  let minNonBinary = 255;
+  let hasNonBinary = false;
+  for (let i = 3; i < rgba.length; i += 4) {
+    const a = rgba[i];
+    if (a === 255) opaqueCount++;
+    else if (a === 0) transparentCount++;
+    else {
+      hasNonBinary = true;
+      if (a < minNonBinary) minNonBinary = a;
+    }
+  }
+  if (opaqueCount === pixelCount) return { alphaMode: 'opaque', alphaTest: null };
+
+  const binaryPercentage = ((opaqueCount + transparentCount) / pixelCount) * 100;
+  if (binaryPercentage > 98) {
+    return { alphaMode: 'mask', alphaTest: hasNonBinary ? minNonBinary / 255 : 0.5 };
+  }
+  if (binaryPercentage > 90) {
+    return { alphaMode: 'mask', alphaTest: 0.1 };
+  }
+  return { alphaMode: 'blend', alphaTest: null };
+}
+
+function applyCommonTextureSettings(texture: Texture, alphaInfo: TextureAlphaInfo): void {
   texture.wrapS = RepeatWrapping;
   texture.wrapT = RepeatWrapping;
   texture.colorSpace = SRGBColorSpace;
   texture.needsUpdate = true;
+  (texture.userData as { rfAlpha?: TextureAlphaInfo }).rfAlpha = alphaInfo;
 }
 
 /** Uploads a mip level's data as-is: works on any GPU, used both for genuinely uncompressed DDS data and for this module's own CPU-decompressed BC1/2/3 fallback output. */
-function buildDataTexture(base: DdsMipmap): DataTexture {
+function buildDataTexture(base: DdsMipmap, alphaInfo: TextureAlphaInfo): DataTexture {
   const texture = new DataTexture(base.data, base.width, base.height, RGBAFormat);
   texture.generateMipmaps = true;
   texture.minFilter = LinearMipmapLinearFilter;
   texture.magFilter = LinearFilter;
-  applyCommonTextureSettings(texture);
+  applyCommonTextureSettings(texture, alphaInfo);
   return texture;
 }
 
-/** Decodes an already-in-memory .RFT buffer (e.g. sliced out of a parsed .RFS archive), or any other already-DDS buffer (e.g. Chef/'s glow textures - see glowEffect.ts). */
+/** Decodes an already-in-memory .RFT buffer (e.g. sliced out of a parsed .RFS archive), or any other already-DDS buffer (e.g. Chef/'s glow textures - see glowEffect.ts). The returned Texture's userData.rfAlpha (see TextureAlphaInfo) tells a caller building a material from it whether/how to enable transparency - see classifyAlpha's doc comment. */
 export function decodeRftTexture(rawBuffer: ArrayBuffer): Texture {
   const ddsBuffer = decodeRft(rawBuffer);
 
@@ -307,13 +371,26 @@ export function decodeRftTexture(rawBuffer: ArrayBuffer): Texture {
   // below do, silently produces mip objects the GPU-upload path can't
   // handle correctly.
   if (!COMPRESSED_FORMATS.has(format)) {
-    return buildDataTexture(ddsData.mipmaps[0] as DdsMipmap);
+    const base = ddsData.mipmaps[0] as DdsMipmap;
+    return buildDataTexture(base, classifyAlpha(base.data));
   }
 
+  // Alpha is classified from a CPU decode of the base mip regardless of
+  // S3TC support (even though the compressed-upload path below re-uses the
+  // still-compressed bytes rather than this decode) - there's no way to
+  // inspect a DXT block's alpha without decoding it, and this is a one-time
+  // per-texture cost at load/equip time, not a per-frame one.
+  const base = ddsData.mipmaps[0] as DdsMipmap;
+  const rgba = decompressBlockTexture(
+    new Uint8Array(base.data.buffer, base.data.byteOffset, base.data.byteLength),
+    base.width,
+    base.height,
+    format,
+  );
+  const alphaInfo = classifyAlpha(rgba);
+
   if (!isS3TCSupported()) {
-    const base = ddsData.mipmaps[0] as DdsMipmap;
-    const rgba = decompressBlockTexture(new Uint8Array(base.data.buffer, base.data.byteOffset, base.data.byteLength), base.width, base.height, format);
-    return buildDataTexture({ data: rgba as unknown as Uint8Array, width: base.width, height: base.height });
+    return buildDataTexture({ data: rgba as unknown as Uint8Array, width: base.width, height: base.height }, alphaInfo);
   }
 
   const texture = new CompressedTexture(
@@ -324,7 +401,7 @@ export function decodeRftTexture(rawBuffer: ArrayBuffer): Texture {
   );
   texture.minFilter = ddsData.mipmapCount > 1 ? LinearMipmapLinearFilter : LinearFilter;
   texture.magFilter = LinearFilter;
-  applyCommonTextureSettings(texture);
+  applyCommonTextureSettings(texture, alphaInfo);
   return texture;
 }
 

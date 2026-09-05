@@ -1,8 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import OnlineScreen from './OnlineScreen';
 import RfViewer from './RfViewer';
-import { preloadAllRaces, preloadWeaponMeshes } from '../../rf/character';
-import type { RaceGender } from '../../rf/character';
+import { preloadAllRaces, preloadWeaponMeshes, RaceGender } from '../../rf/character';
 import { loadSlotItems, ModelType } from '../../rf/items';
 import CharacterSelectScreen from './CharacterSelectScreen';
 import LoginScreen from './LoginScreen';
@@ -13,6 +12,9 @@ type Screen = 'preloading' | 'login' | 'characterSelect' | 'viewer';
 
 /** "/debug" reaches the old offline/debug viewer (ViewerScene); every other path is online play (OnlineScene). */
 const isDebugRoute = window.location.pathname.replace(/\/+$/, '') === '/debug';
+
+/** /debug skips login/character-select entirely - DebugPanel's own race switcher (top-left, once "%debug 1" is run) covers picking a character. */
+const DEBUG_DEFAULT_RACE = RaceGender.Bell_Male;
 
 /**
  * Owns the single shared SceneManager (renderer/canvas/render loop) and the
@@ -73,7 +75,13 @@ export default function SceneApp() {
       ),
     ])
       .then(() => {
-        if (!disposed) setScreen('login');
+        if (disposed) return;
+        if (isDebugRoute) {
+          setSelectedRace(DEBUG_DEFAULT_RACE);
+          setScreen('viewer');
+        } else {
+          setScreen('login');
+        }
       })
       .catch((err: unknown) => {
         if (disposed) return;
@@ -125,11 +133,7 @@ export default function SceneApp() {
         screen === 'viewer' &&
         selectedRace !== null &&
         (isDebugRoute ? (
-          <RfViewer
-            sceneManager={sceneManager}
-            initialRaceGender={selectedRace}
-            onExit={() => setScreen('characterSelect')}
-          />
+          <RfViewer sceneManager={sceneManager} initialRaceGender={selectedRace} />
         ) : (
           <OnlineScreen
             sceneManager={sceneManager}

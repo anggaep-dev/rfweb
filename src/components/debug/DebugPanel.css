@@ -124,6 +124,30 @@
   pointer-events: auto;
 }
 
+/* Same look as .debug-panel-equip-panel, left side instead of right so both can be open together without overlapping. */
+.debug-panel-base-part-panel {
+  position: absolute;
+  top: 3.2rem;
+  left: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  background: rgba(20, 22, 26, 0.6);
+  padding: 0.6rem 0.7rem;
+  border-radius: 6px;
+  pointer-events: auto;
+}
+
+.debug-panel-base-part-select {
+  background: #22252b;
+  color: #eee;
+  border: 1px solid #444;
+  border-radius: 4px;
+  padding: 0.25rem 0.4rem;
+  font: 500 0.8rem system-ui, sans-serif;
+  width: 11rem;
+}
+
 .debug-panel-panel-header {
   display: flex;
   align-items: center;

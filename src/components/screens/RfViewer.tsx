@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import BasePartPanel from '../debug/BasePartPanel';
 import CommandConsole from '../debug/CommandConsole';
 import DebugPanel from '../debug/DebugPanel';
 import EquipPanel from '../debug/EquipPanel';
@@ -62,6 +63,7 @@ export default function RfViewer({ sceneManager, initialRaceGender, onExit }: Rf
   // button is a shortcut that flips both together.
   const [showStats, setShowStats] = useState(false);
   const [showEquip, setShowEquip] = useState(false);
+  const [showBasePart, setShowBasePart] = useState(false);
 
   // %wpedit 1/0 - a Blender-style move/rotate gizmo on the equipped weapon,
   // for hand-tuning its placement against what CharacterController computed
@@ -80,6 +82,12 @@ export default function RfViewer({ sceneManager, initialRaceGender, onExit }: Rf
   // note in the equip panel below.
   const [equippedItemId, setEquippedItemId] = useState<Partial<Record<ModelType, string>>>({});
   const [slotItems, setSlotItems] = useState<Partial<Record<ModelType, ItemDefinition[]>>>({});
+
+  // Character-creation-time appearance (1-of-5 variant per base slot) - see
+  // BasePartPanel/CharacterController.setBaseAppearance. Mirrors the
+  // scene's own state purely for the UI to render selected values; the
+  // scene is the source of truth.
+  const [baseAppearance, setBaseAppearance] = useState<Partial<Record<ModelType, number>>>({});
 
   // GM command console (e.g. "%addbot 5").
   const [commandInput, setCommandInput] = useState('');
@@ -175,6 +183,9 @@ export default function RfViewer({ sceneManager, initialRaceGender, onExit }: Rf
     setEquippedItemId({});
     setBattleMode('peace');
     setMoveMode('walk');
+    // CharacterController.mount() resets baseAppearance to {} (all variant 0)
+    // for the same "fresh character" reason - see its own reset block.
+    setBaseAppearance({});
   }
 
   // Loads each slot's race-eligible item list whenever the character is
@@ -274,6 +285,17 @@ export default function RfViewer({ sceneManager, initialRaceGender, onExit }: Rf
     [slotItems],
   );
 
+  const handleBasePartClose = useCallback(() => setShowBasePart(false), []);
+
+  const handleBaseAppearanceChange = useCallback((modelType: ModelType, variantIndex: number) => {
+    setBaseAppearance((prev) => ({ ...prev, [modelType]: variantIndex }));
+    viewerSceneRef.current?.characterController
+      .setBaseAppearance(modelType, variantIndex)
+      .catch((err: unknown) => {
+        console.error(`Failed to set base appearance for slot ${SLOT_LABELS[modelType]}:`, err);
+      });
+  }, []);
+
   const handleCommandSubmit = () => {
     const trimmed = commandInput.trim();
     if (!trimmed) return;
@@ -301,7 +323,19 @@ export default function RfViewer({ sceneManager, initialRaceGender, onExit }: Rf
     if (equipMatch) {
       const show = equipMatch[1] === '1';
       setShowEquip(show);
+      // Base appearance is closely related to equipping (both change what's
+      // rendered per body slot) - shown/hidden together so %eq is a single
+      // command for "the whole appearance toolset", not two separate ones.
+      setShowBasePart(show);
       setCommandFeedback(`Equip panel ${show ? 'shown' : 'hidden'}.`);
+      return;
+    }
+
+    const baseMatch = /^%base\s+([01])$/.exec(trimmed);
+    if (baseMatch) {
+      const show = baseMatch[1] === '1';
+      setShowBasePart(show);
+      setCommandFeedback(`Base appearance panel ${show ? 'shown' : 'hidden'}.`);
       return;
     }
 
@@ -378,6 +412,15 @@ export default function RfViewer({ sceneManager, initialRaceGender, onExit }: Rf
           slotItems={slotItems}
           onEquipChange={handleEquipChange}
           onClose={handleEquipClose}
+        />
+      )}
+
+      {status === 'ready' && showBasePart && (
+        <BasePartPanel
+          raceGender={raceGender}
+          variantBySlot={baseAppearance}
+          onVariantChange={handleBaseAppearanceChange}
+          onClose={handleBasePartClose}
         />
       )}
 

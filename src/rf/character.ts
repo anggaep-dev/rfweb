@@ -25,6 +25,7 @@ import type { RfsArchive, RfsEntry } from './rfs';
 import { buildThreeSkeleton, parseSkeleton } from './skeleton';
 import type { BuiltSkeleton, RfSkeleton } from './skeleton';
 import { decodeRftTexture } from './texture';
+import type { TextureAlphaInfo } from './texture';
 
 const ASSET_BASE = '/game-assets/character/player';
 // SkinnedMesh.bind() only ever reads from the bindMatrix it's given (copies
@@ -242,6 +243,20 @@ export interface RaceAssets {
   skeletonBuffer: ArrayBuffer;
   meshArchive: RfsArchive;
   texArchive: RfsArchive;
+  /**
+   * The real armor-tier archives (character/player/{Mesh,Tex}/{code}{R,W,F}
+   * {00,10,20,30,40}.RFS - 15 each) - meshArchive/texArchive above only hold
+   * the DEFAULT_* starter body, everything resolveItemMeshStem() resolves
+   * for a real armor item lives in one of these instead. Searched in order
+   * (see buildMeshPartObjects) since there's no cheap way to know which of
+   * the 15 holds a given entry ahead of time. Individual entries are `null`
+   * when that specific tier's archive doesn't actually exist for this race
+   * (confirmed real gap: Accretia is missing its Face tier-1/tier-2
+   * textures) - loadRaceAssets() fetches each independently and tolerates
+   * one missing/failing without failing the whole race's preload.
+   */
+  armorMeshArchives: (RfsArchive | null)[];
+  armorTexArchives: (RfsArchive | null)[];
   aniArchive: RfsArchive;
   /** Per-weapon-category combat walk/run/stand clips (character/player/Ani/{race}COA.RFS) - see getWeaponClip(). */
   weaponAniArchive: RfsArchive;
@@ -395,6 +410,26 @@ function getCorrectedRigidBindInverse(built: BuiltSkeleton, rigidReference: Buil
 }
 
 /**
+ * Reads a decoded texture's alpha classification (see classifyAlpha in
+ * texture.ts) back into MeshStandardMaterial options. `mask` (a hard
+ * cutout - hair strands, helmet grating/visor holes) uses alphaTest rather
+ * than `transparent`, since real alpha blending between several overlapping
+ * body-part meshes on one character has no reliable draw-order and would
+ * show through in the wrong places depending on camera angle; alphaTest
+ * discards below-threshold fragments outright instead, same depth-tested
+ * opaque rendering as everything else. Textures with no meaningful alpha
+ * (the common case) fall through to three.js's own defaults - this is what
+ * was missing before: every material always fell through, even for a
+ * texture that genuinely needed one of the other two modes.
+ */
+function materialAlphaOptions(texture: Texture | null): { transparent: boolean; alphaTest: number } {
+  const alphaInfo = (texture?.userData as { rfAlpha?: TextureAlphaInfo } | undefined)?.rfAlpha;
+  if (alphaInfo?.alphaMode === 'blend') return { transparent: true, alphaTest: 0 };
+  if (alphaInfo?.alphaMode === 'mask') return { transparent: false, alphaTest: alphaInfo.alphaTest ?? 0.5 };
+  return { transparent: false, alphaTest: 0 };
+}
+
+/**
  * Builds the ready-to-attach three.js object(s) from an already-parsed set
  * of mesh sub-objects - geometry, material/texture, and either a skinned
  * mesh bound to the given skeleton or a rigid mesh already parented to its
@@ -449,6 +484,7 @@ function buildObjectsFromParsedMesh(
       map: texture ?? undefined,
       color: texture ? 0xffffff : 0xcccccc,
       side: DoubleSide,
+      ...materialAlphaOptions(texture),
     });
 
     let builtObject: Object3D;
@@ -526,31 +562,46 @@ function buildObjectsFromParsedMesh(
   return built3d;
 }
 
+/** Searches a fixed list of already-loaded archives in order for one named entry - the same archive-list-search shape as findInNamedArchives below, minus the lazy fetch/cache (these are all preloaded up front, see loadRaceAssets). Nulls (a tier archive that failed/doesn't exist for this race) are skipped. */
+function findEntryInArchives(
+  archives: (RfsArchive | null)[],
+  name: string,
+): { archive: RfsArchive; entry: RfsEntry } | null {
+  for (const archive of archives) {
+    if (!archive) continue;
+    const entry = findRfsEntry(archive, name);
+    if (entry) return { archive, entry };
+  }
+  return null;
+}
+
 /**
  * Builds the ready-to-attach three.js object(s) for one named mesh entry
  * (a body part, or an equipped item's mesh) inside a race's Mesh/Tex RFS
  * archives. Shared by the initial default-body build and by equipping a
  * specific body-part item onto a slot later, so both go through identical
- * mesh-building logic.
+ * mesh-building logic. Each parameter is searched in order (default archive
+ * first, then the per-race armor archives) since a resolved stem doesn't
+ * say which specific archive actually holds it - see RaceAssets.armorMeshArchives.
  */
 export function buildMeshPartObjects(
   stem: string,
-  meshArchive: RfsArchive,
-  texArchive: RfsArchive,
+  meshArchives: (RfsArchive | null)[],
+  texArchives: (RfsArchive | null)[],
   built: BuiltSkeleton,
 ): Object3D[] {
-  const meshEntry = findRfsEntry(meshArchive, `${stem}.msh`);
-  if (!meshEntry) {
-    console.warn(`No "${stem}.msh" entry in the Mesh archive`);
+  const meshHit = findEntryInArchives(meshArchives, `${stem}.msh`);
+  if (!meshHit) {
+    console.warn(`No "${stem}.msh" entry in any Mesh archive`);
     return [];
   }
-  const meshBuffer = readRfsEntry(meshArchive, meshEntry);
+  const meshBuffer = readRfsEntry(meshHit.archive, meshHit.entry);
 
-  const texEntry = findRfsEntry(texArchive, `${stem}.RFT`);
+  const texHit = findEntryInArchives(texArchives, `${stem}.RFT`);
   let texture: Texture | null = null;
-  if (texEntry) {
+  if (texHit) {
     try {
-      texture = decodeRftTexture(readRfsEntry(texArchive, texEntry));
+      texture = decodeRftTexture(readRfsEntry(texHit.archive, texHit.entry));
     } catch (err) {
       console.warn(`Texture decode failed for ${stem}:`, err);
     }
@@ -560,7 +611,7 @@ export function buildMeshPartObjects(
   try {
     objects = parseMesh(meshBuffer);
   } catch (err) {
-    console.warn(`Failed to parse "${stem}.msh" (entry size ${meshEntry.size} bytes):`, err);
+    console.warn(`Failed to parse "${stem}.msh" (entry size ${meshHit.entry.size} bytes):`, err);
     return [];
   }
 
@@ -596,15 +647,16 @@ const WEAPON_TEX_ARCHIVE_NAMES = [
 // that actually hold that item, not this whole ~150MB set. preloadWeaponMeshes
 // below does eventually touch every archive at least one currently-existing
 // item resolves into, but each individual lookup still only awaits as many
-// as it takes to find its own hit - see findInWeaponArchives. Promises are
+// as it takes to find its own hit - see findInNamedArchives. Promises are
 // cached up front (same reasoning as raceAssetCache above), so two
 // concurrent lookups that need the same archive share one fetch instead of
 // racing separate ones; a failed load resolves to null (not a rejection) so
-// it's cached as "confirmed absent" rather than retried forever.
+// it's cached as "confirmed absent" rather than retried forever. Shared with
+// cloak archive loading below (own cache instances, same generic helpers).
 const weaponMeshArchiveCache = new Map<string, Promise<RfsArchive | null>>();
 const weaponTexArchiveCache = new Map<string, Promise<RfsArchive | null>>();
 
-function loadWeaponArchive(
+function loadNamedArchive(
   base: string,
   name: string,
   cache: Map<string, Promise<RfsArchive | null>>,
@@ -612,7 +664,7 @@ function loadWeaponArchive(
   let cached = cache.get(name);
   if (!cached) {
     cached = fetchRfsArchive(`${base}/${name}.RFS`).catch((err: unknown) => {
-      console.warn(`Failed to load weapon archive "${name}":`, err);
+      console.warn(`Failed to load archive "${name}":`, err);
       return null;
     });
     cache.set(name, cached);
@@ -621,19 +673,51 @@ function loadWeaponArchive(
 }
 
 /** Searches a fixed list of archives in order for one named entry, fetching (and caching) only as many as it takes to find a hit. */
-async function findInWeaponArchives(
+async function findInNamedArchives(
   archiveNames: string[],
   base: string,
   cache: Map<string, Promise<RfsArchive | null>>,
   entryName: string,
 ): Promise<{ archive: RfsArchive; entry: RfsEntry } | null> {
   for (const name of archiveNames) {
-    const archive = await loadWeaponArchive(base, name, cache);
+    const archive = await loadNamedArchive(base, name, cache);
     if (!archive) continue;
     const entry = findRfsEntry(archive, entryName);
     if (entry) return { archive, entry };
   }
   return null;
+}
+
+const CLOAK_MESH_BASE = '/game-assets/item/Armor/Mesh';
+const CLOAK_TEX_BASE = '/game-assets/item/Armor/Tex';
+// Discovered the same way WEAPON_MESH_ARCHIVE_NAMES was - listing
+// public/game-assets/item/Armor/{Mesh,Tex} directly, no client-side listing
+// API. Only 4 mesh archives but 2 tex archives; buildMeshPartObjects
+// searches whichever archives are actually loaded regardless, so a texture
+// living in a differently-named archive than its mesh isn't a problem.
+const CLOAK_MESH_ARCHIVE_NAMES = ['AKM00', 'NewCloakM', 'PHBP01', 'XMC'];
+const CLOAK_TEX_ARCHIVE_NAMES = ['AKT00', 'NewCloakT'];
+const cloakMeshArchiveCache = new Map<string, Promise<RfsArchive | null>>();
+const cloakTexArchiveCache = new Map<string, Promise<RfsArchive | null>>();
+
+/**
+ * Cloak meshes (see resolveCloakMeshStem in resource.ts) live in this small,
+ * fixed set of race-agnostic archives under item/Armor/ - not the per-race
+ * character/player/Mesh armor archives (RaceAssets.armorMeshArchives),
+ * which was the wrong place: verified zero "_CLOAK_" entries there, for any
+ * race. Small enough (4 mesh + 2 tex) to just fetch every archive up front
+ * rather than search incrementally like loadWeaponMeshObjects does for its
+ * much larger 12+13-archive set - buildMeshPartObjects does its own
+ * per-entry search across whatever's returned here anyway.
+ */
+export function loadCloakArchives(): Promise<{
+  meshArchives: (RfsArchive | null)[];
+  texArchives: (RfsArchive | null)[];
+}> {
+  return Promise.all([
+    Promise.all(CLOAK_MESH_ARCHIVE_NAMES.map((name) => loadNamedArchive(CLOAK_MESH_BASE, name, cloakMeshArchiveCache))),
+    Promise.all(CLOAK_TEX_ARCHIVE_NAMES.map((name) => loadNamedArchive(CLOAK_TEX_BASE, name, cloakTexArchiveCache))),
+  ]).then(([meshArchives, texArchives]) => ({ meshArchives, texArchives }));
 }
 
 // Weapon meshes' rigid sub-objects have a parentName that names a bone
@@ -695,7 +779,7 @@ function loadParsedWeaponMesh(stem: string): Promise<ParsedWeaponMesh | null> {
   let cached = weaponMeshPoolCache.get(stem);
   if (!cached) {
     cached = (async (): Promise<ParsedWeaponMesh | null> => {
-      const meshHit = await findInWeaponArchives(WEAPON_MESH_ARCHIVE_NAMES, WEAPON_MESH_BASE, weaponMeshArchiveCache, `${stem}.msh`);
+      const meshHit = await findInNamedArchives(WEAPON_MESH_ARCHIVE_NAMES, WEAPON_MESH_BASE, weaponMeshArchiveCache, `${stem}.msh`);
       if (!meshHit) {
         console.warn(`No "${stem}.msh" entry in any weapon Mesh archive`);
         return null;
@@ -703,7 +787,7 @@ function loadParsedWeaponMesh(stem: string): Promise<ParsedWeaponMesh | null> {
       const meshBuffer = readRfsEntry(meshHit.archive, meshHit.entry);
 
       let texture: Texture | null = null;
-      const texHit = await findInWeaponArchives(WEAPON_TEX_ARCHIVE_NAMES, WEAPON_TEX_BASE, weaponTexArchiveCache, `${stem}.RFT`);
+      const texHit = await findInNamedArchives(WEAPON_TEX_ARCHIVE_NAMES, WEAPON_TEX_BASE, weaponTexArchiveCache, `${stem}.RFT`);
       if (texHit) {
         try {
           texture = decodeRftTexture(readRfsEntry(texHit.archive, texHit.entry));
@@ -809,6 +893,18 @@ export function getRaceAssets(raceGender: RaceGender): Promise<RaceAssets> {
   return loadRaceAssets(raceGender);
 }
 
+/** The 3 armor categories x 5 tiers RFSInfo.dat lists per race, e.g. "BFR00".."BFR40", "BFW00".."BFW40", "BFF00".."BFF40" for Bell_Female. */
+const ARMOR_CATEGORIES = ['R', 'W', 'F'] as const;
+const ARMOR_TIERS = ['00', '10', '20', '30', '40'] as const;
+
+function armorArchiveNames(meshTexCode: string): string[] {
+  const names: string[] = [];
+  for (const category of ARMOR_CATEGORIES) {
+    for (const tier of ARMOR_TIERS) names.push(`${meshTexCode}${category}${tier}`);
+  }
+  return names;
+}
+
 function loadRaceAssets(raceGender: RaceGender, onFileLoaded?: () => void): Promise<RaceAssets> {
   const cached = raceAssetCache.get(raceGender);
   if (cached) return cached;
@@ -824,6 +920,24 @@ function loadRaceAssets(raceGender: RaceGender, onFileLoaded?: () => void): Prom
       onFileLoaded?.();
       return archive;
     });
+  // Armor archives specifically: a tier that's absent for a given race
+  // (confirmed real gap - Accretia has no Face tier-1/tier-2 textures) is
+  // expected, not a preload-breaking error - warn and resolve null so
+  // Promise.all doesn't take the whole race down over one missing tier
+  // (findEntryInArchives skips nulls). onFileLoaded fires either way so
+  // progress still reaches its reported total.
+  const trackedFetchOptionalRfsArchive = (url: string) =>
+    fetchRfsArchive(url)
+      .catch((err: unknown) => {
+        console.warn(`Armor archive "${url}" unavailable, skipping:`, err);
+        return null;
+      })
+      .then((archive) => {
+        onFileLoaded?.();
+        return archive;
+      });
+
+  const armorNames = armorArchiveNames(race.meshTexCode);
 
   const promise = Promise.all([
     trackedFetchBuffer(`${ASSET_BASE}/Bone/${race.boneFile}.bn`),
@@ -842,14 +956,29 @@ function loadRaceAssets(raceGender: RaceGender, onFileLoaded?: () => void): Prom
     // directional walk/run lookups.
     trackedFetchRfsArchive(`${ASSET_BASE}/Ani/${race.aniCode}COA.RFS`),
     trackedFetchRfsArchive(`${ASSET_BASE}/Ani/${race.aniCode}MOA.RFS`),
-  ]).then(([skeletonBuffer, meshArchive, texArchive, aniArchive, weaponAniArchive, weaponMoaArchive]) => ({
-    skeletonBuffer,
-    meshArchive,
-    texArchive,
-    aniArchive,
-    weaponAniArchive,
-    weaponMoaArchive,
-  }));
+    Promise.all(armorNames.map((name) => trackedFetchOptionalRfsArchive(`${ASSET_BASE}/Mesh/${name}.RFS`))),
+    Promise.all(armorNames.map((name) => trackedFetchOptionalRfsArchive(`${ASSET_BASE}/Tex/${name}.RFS`))),
+  ]).then(
+    ([
+      skeletonBuffer,
+      meshArchive,
+      texArchive,
+      aniArchive,
+      weaponAniArchive,
+      weaponMoaArchive,
+      armorMeshArchives,
+      armorTexArchives,
+    ]) => ({
+      skeletonBuffer,
+      meshArchive,
+      texArchive,
+      armorMeshArchives,
+      armorTexArchives,
+      aniArchive,
+      weaponAniArchive,
+      weaponMoaArchive,
+    }),
+  );
   // Cache the promise up front (not after it resolves) so concurrent callers
   // join it instead of starting their own fetch; a failed load is evicted so
   // a later retry can actually try again rather than replaying the same rejection.
@@ -859,13 +988,15 @@ function loadRaceAssets(raceGender: RaceGender, onFileLoaded?: () => void): Prom
 }
 
 const ALL_RACES = Object.values(RaceGender).filter((v): v is RaceGender => typeof v === 'number');
-const FILES_PER_RACE = 6;
+/** bone, mesh, tex, ani, weapon-ani, weapon-moa (6) + 15 armor mesh archives + 15 armor tex archives. */
+const FILES_PER_RACE = 6 + ARMOR_CATEGORIES.length * ARMOR_TIERS.length * 2;
 
 /**
  * Fetches and caches every race's assets up front, so switching races later
  * never blocks on the network. Reports progress in units of "files fetched"
- * (6 per race: bone, mesh, tex, ani, weapon-ani, weapon-moa), not races, for
- * a smoother readout.
+ * (36 per race: bone, mesh, tex, ani, weapon-ani, weapon-moa, plus the 15
+ * armor mesh + 15 armor tex archives - see armorArchiveNames), not races,
+ * for a smoother readout.
  */
 export async function preloadAllRaces(onProgress?: (loaded: number, total: number) => void): Promise<void> {
   const total = ALL_RACES.length * FILES_PER_RACE;
