@@ -13,86 +13,111 @@
   pointer-events: auto;
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
+  gap: var(--space-3);
   width: 20rem;
-  padding: 1.75rem;
-  background: rgba(20, 22, 26, 0.75);
-  border: 1px solid #333;
-  border-radius: 10px;
-  color: #eee;
-  font: 500 0.9rem system-ui, sans-serif;
+  padding: var(--space-4) var(--space-6);
+  background: var(--elevation-panel-bg);
+  box-shadow: var(--elevation-panel-shadow);
+  border: var(--elevation-panel-border);
+  border-radius: 4px;
+  color: var(--text-primary);
+  font: 500 0.9rem var(--font-display);
 }
 
 .auth-screen-panel h1 {
-  margin: 0 0 0.5rem;
-  font-size: 1.3rem;
+  margin: 0 0 var(--space-2);
+  font-size: 14px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
   text-align: center;
+  color: var(--text-primary);
 }
 
 .auth-screen-panel label {
   display: flex;
   flex-direction: column;
-  gap: 0.3rem;
-  font-size: 0.8rem;
-  color: #9aa4b2;
+  gap: var(--space-1);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
 }
 
 .auth-screen-panel input {
-  padding: 0.5rem 0.6rem;
-  border-radius: 6px;
-  border: 1px solid #444;
-  background: #22252b;
-  color: #eee;
-  font: 500 0.9rem system-ui, sans-serif;
+  padding: var(--space-2) var(--space-3);
+  border-radius: 2px;
+  border: 1px solid var(--border-subtle);
+  background: var(--surface-base);
+  color: var(--text-primary);
+  font: 500 0.85rem var(--font-display);
+  outline: none;
+  transition: border-color 0.2s;
 }
 
-.auth-screen-panel button {
-  margin-top: 0.4rem;
-  padding: 0.6rem 1rem;
-  border-radius: 6px;
-  border: 1px solid #4a7dff;
-  background: #4a7dff;
-  color: #fff;
-  font: 600 0.9rem system-ui, sans-serif;
+.auth-screen-panel input:focus {
+  border-color: var(--accent-primary);
+  box-shadow: 0 0 6px rgba(212, 162, 70, 0.2);
+}
+
+.auth-screen-panel button[type="submit"] {
+  margin-top: var(--space-2);
+  padding: var(--space-2) var(--space-4);
+  border-radius: 2px;
+  border: var(--cta-border);
+  background: var(--cta-bg);
+  box-shadow: var(--cta-shadow);
+  color: var(--cta-text);
+  font: 700 0.85rem var(--font-display);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
   cursor: pointer;
+  transition: filter 0.2s, transform 0.1s;
 }
 
-.auth-screen-panel button:hover {
-  background: #3a6ae8;
+.auth-screen-panel button[type="submit"]:hover {
+  filter: brightness(1.15);
 }
 
-.auth-screen-panel button:disabled {
-  background: #2c3038;
-  border-color: #444;
-  color: #777;
+.auth-screen-panel button[type="submit"]:active {
+  transform: scale(0.98);
+}
+
+.auth-screen-panel button[type="submit"]:disabled {
+  background: var(--surface-panel-alt);
+  border-color: var(--border-subtle);
+  box-shadow: none;
+  color: var(--text-muted);
   cursor: default;
+  filter: none;
 }
 
 .auth-screen-switch {
-  margin-top: 0.2rem;
+  margin-top: var(--space-1);
   padding: 0;
   border: none;
   background: none;
-  color: #4a7dff;
-  font: 500 0.8rem system-ui, sans-serif;
+  color: var(--energy-cyan);
+  font: 500 0.8rem var(--font-display);
   text-align: center;
   cursor: pointer;
 }
 
 .auth-screen-switch:hover {
+  color: var(--text-cyan);
   text-decoration: underline;
 }
 
 .auth-screen-error {
   margin: 0;
   text-align: center;
-  color: #ff8080;
+  color: var(--vital-ruby);
   font-size: 0.8rem;
 }
 
 .auth-screen-hint {
   margin: 0;
   text-align: center;
-  color: #666;
-  font-size: 0.75rem;
+  color: var(--text-muted);
+  font-size: 0.7rem;
 }

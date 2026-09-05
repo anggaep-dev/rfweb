@@ -1,0 +1,140 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+ * Aether Mech HUD — Button
+ * design.md §5.4 — Primary CTA Button
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+.btn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  font-family: var(--font-display);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  border-radius: 2px;
+  transition: filter 0.2s, transform 0.1s, background 0.2s, border-color 0.2s, box-shadow 0.2s;
+  user-select: none;
+  white-space: nowrap;
+  line-height: 1;
+}
+
+.btn:active {
+  transform: scale(0.98);
+}
+
+.btn:disabled {
+  cursor: default;
+  opacity: 0.5;
+  transform: none;
+  filter: none !important;
+}
+
+/* ── Sizes ── */
+.btn-sm {
+  padding: var(--space-1) var(--space-3);
+  font-size: 11px;
+  height: 28px;
+}
+
+.btn-md {
+  padding: var(--space-2) var(--space-4);
+  font-size: 13px;
+  height: 36px;
+}
+
+.btn-lg {
+  padding: var(--space-3) var(--space-6);
+  font-size: 14px;
+  height: 44px;
+}
+
+/* ── Primary (Gold CTA — design.md §5.4) ── */
+.btn-primary {
+  background: linear-gradient(180deg, #e69c24 0%, #c97f10 100%);
+  border: 1px solid #f59e0b;
+  box-shadow: 0 0 14px rgba(212, 162, 70, 0.5);
+  color: #0a0e15;
+}
+
+.btn-primary:hover:not(:disabled) {
+  filter: brightness(1.15);
+}
+
+.btn-primary:active:not(:disabled) {
+  box-shadow: 0 0 8px rgba(212, 162, 70, 0.3);
+}
+
+/* ── Secondary (Chrome tactical) ── */
+.btn-secondary {
+  background: var(--surface-panel);
+  border: 1px solid var(--border-chrome);
+  color: var(--text-secondary);
+  box-shadow: inset 1px 1px 0 var(--border-bevel-light);
+}
+
+.btn-secondary:hover:not(:disabled) {
+  background: var(--surface-elevated);
+  color: var(--text-primary);
+  border-color: var(--surface-highlight);
+}
+
+/* ── Ghost (Minimal) ── */
+.btn-ghost {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-secondary);
+}
+
+.btn-ghost:hover:not(:disabled) {
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+/* ── Danger (Ruby destructive) ── */
+.btn-danger {
+  background: rgba(244, 63, 94, 0.12);
+  border: 1px solid var(--vital-ruby);
+  color: var(--vital-ruby);
+}
+
+.btn-danger:hover:not(:disabled) {
+  background: var(--vital-ruby);
+  color: #fff;
+}
+
+/* ── Icon slot ── */
+.btn-icon {
+  display: inline-flex;
+  align-items: center;
+  font-size: 1.15em;
+  line-height: 0;
+}
+
+.btn-icon > svg {
+  width: 1em;
+  height: 1em;
+}
+
+/* ── Loading spinner ── */
+.btn-spinner {
+  display: inline-block;
+  width: 1em;
+  height: 1em;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: btn-spin 0.6s linear infinite;
+}
+
+@keyframes btn-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.btn-loading .btn-label {
+  opacity: 0.7;
+}

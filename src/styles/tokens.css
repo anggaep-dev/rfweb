@@ -1,0 +1,66 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+ * Aether Mech HUD — Design Tokens
+ * Extracted from design.md — sci-fi/fantasy MMORPG HUD aesthetic
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ── Surface & Containers (Tactical Dark Mode) ─────────────────────────── */
+:root {
+  --surface-base: #0a0e15;
+  --surface-panel: #10131b;
+  --surface-panel-alt: #181c23;
+  --surface-elevated: #202737;
+  --surface-highlight: #353941;
+
+  /* ── Borders & Structural Chrome ── */
+  --border-subtle: #1f2533;
+  --border-chrome: #2d3446;
+  --border-bevel-light: rgba(255, 255, 255, 0.08);
+  --border-bevel-dark: rgba(0, 0, 0, 0.9);
+
+  /* ── Status, Vitals & Energy Accents ── */
+  --accent-primary: #d4a246;
+  --accent-gold-hover: #e8b75c;
+  --energy-cyan: #22d3ee;
+  --vital-ruby: #f43f5e;
+  --vital-emerald: #34d179;
+  --aether-violet: #9c62ea;
+
+  /* ── Text & Readability ── */
+  --text-primary: #f1f5f9;
+  --text-secondary: #94a3b8;
+  --text-muted: #64748b;
+  --text-gold: #fbbf24;
+  --text-cyan: #38bdf8;
+
+  /* ── Typography ── */
+  --font-display: 'Space Grotesk', system-ui, sans-serif;
+  --font-mono: 'Share Tech Mono', 'JetBrains Mono', ui-monospace, Consolas, monospace;
+
+  /* ── Spacing Scale ── */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+
+  /* ── Elevation & Shadows ── */
+  /* Level 0: Recessed slot */
+  --elevation-slot-bg: radial-gradient(circle, #0f1218 0%, #080a0e 100%);
+  --elevation-slot-shadow: inset 1px 1px 3px rgba(0, 0, 0, 0.9);
+  --elevation-slot-border: 1px solid #1f2533;
+
+  /* Level 1: Window substrate */
+  --elevation-panel-bg: linear-gradient(180deg, #181c26 0%, #10131b 100%);
+  --elevation-panel-shadow: 0 8px 24px rgba(0, 0, 0, 0.8), inset 1px 1px 0 rgba(255, 255, 255, 0.08);
+  --elevation-panel-border: 1px solid #2d3446;
+
+  /* Level 2: Active element / glowing aura */
+  --elevation-active-border: #d4a246;
+  --elevation-active-shadow: 0 0 10px rgba(212, 162, 70, 0.4), inset 0 0 4px rgba(212, 162, 70, 0.2);
+
+  /* ── CTA Button ── */
+  --cta-bg: linear-gradient(180deg, #e69c24 0%, #c97f10 100%);
+  --cta-border: 1px solid #f59e0b;
+  --cta-shadow: 0 0 14px rgba(212, 162, 70, 0.5);
+  --cta-text: #0a0e15;
+}

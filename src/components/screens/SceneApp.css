@@ -1,7 +1,7 @@
 .scene-app {
   position: fixed;
   inset: 0;
-  background: #14161a;
+  background: var(--surface-base);
 }
 
 .scene-app-canvas {
@@ -30,12 +30,12 @@
   align-items: center;
   justify-content: center;
   text-align: center;
-  padding: 2rem;
-  color: #eee;
-  font: 500 1rem system-ui, sans-serif;
+  padding: var(--space-6);
+  color: var(--text-secondary);
+  font: 500 1rem var(--font-display);
   pointer-events: none;
 }
 
 .scene-app-overlay-error {
-  color: #ff8080;
+  color: var(--vital-ruby);
 }

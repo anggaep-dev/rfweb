@@ -2,16 +2,20 @@ import { useEffect, useRef, useState } from 'react';
 import OnlineScreen from './OnlineScreen';
 import RegisterScreen from './RegisterScreen';
 import RfViewer from './RfViewer';
+import UiTestPage from './UiTestPage';
 import { preloadAllRaces, RaceGender } from '../../rf/character';
 import CharacterSelectScreen from './CharacterSelectScreen';
 import LoginScreen from './LoginScreen';
 import { SceneManager } from '../../scenes/SceneManager';
 import './SceneApp.css';
 
-type Screen = 'preloading' | 'login' | 'register' | 'characterSelect' | 'viewer';
+type Screen = 'preloading' | 'login' | 'register' | 'characterSelect' | 'viewer' | 'uitest';
 
 /** "/debug" reaches the old offline/debug viewer (ViewerScene); every other path is online play (OnlineScene). */
 const isDebugRoute = window.location.pathname.replace(/\/+$/, '') === '/debug';
+
+/** "/uitest" renders the UI component showcase page (no 3D scene needed). */
+const isUiTestRoute = window.location.pathname.replace(/\/+$/, '') === '/uitest';
 
 /** /debug skips login/character-select entirely - DebugPanel's own race switcher (top-left, once "%debug 1" is run) covers picking a character. */
 const DEBUG_DEFAULT_RACE = RaceGender.Bell_Male;
@@ -61,6 +65,8 @@ export default function SceneApp() {
         if (isDebugRoute) {
           setSelectedRace(DEBUG_DEFAULT_RACE);
           setScreen('viewer');
+        } else if (isUiTestRoute) {
+          setScreen('uitest');
         } else {
           setScreen('login');
         }
@@ -144,6 +150,8 @@ export default function SceneApp() {
             onExit={() => setScreen('characterSelect')}
           />
         ))}
+
+      {screen === 'uitest' && <UiTestPage />}
     </div>
   );
 }

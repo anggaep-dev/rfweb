@@ -1,0 +1,139 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+ * Aether Mech HUD — Card / Panel
+ * design.md §5.1 — HUD Window Frame
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+.card {
+  display: flex;
+  flex-direction: column;
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+/* Draggable cards use absolute positioning */
+.card-draggable {
+  position: fixed;
+  z-index: 500;
+  cursor: default;
+  min-width: 200px;
+}
+
+.card-draggable .card-header {
+  cursor: grab;
+}
+
+.card-draggable .card-header:active {
+  cursor: grabbing;
+}
+
+/* ── Elevation variants ── */
+
+/* Level 1: Window substrate (default) */
+.card-panel {
+  background: var(--elevation-panel-bg);
+  box-shadow: var(--elevation-panel-shadow);
+  border: var(--elevation-panel-border);
+}
+
+/* Level 2: Active element / glowing aura */
+.card-elevated {
+  background: var(--elevation-panel-bg);
+  border: 1px solid var(--elevation-active-border);
+  box-shadow: var(--elevation-active-shadow);
+}
+
+/* Level 0: Recessed slot */
+.card-recessed {
+  background: var(--elevation-slot-bg);
+  box-shadow: var(--elevation-slot-shadow);
+  border: var(--elevation-slot-border);
+}
+
+/* ── Header (design.md §5.1) ── */
+.card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 32px;
+  padding: 0 var(--space-3);
+  background: #1b212d;
+  border-bottom: 1px solid #2a3244;
+  flex-shrink: 0;
+}
+
+.card-header-left {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.card-header-right {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  flex-shrink: 0;
+}
+
+/* Status LED (design.md §5.1) */
+.card-led {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--energy-cyan);
+  box-shadow: 0 0 8px rgba(34, 211, 238, 0.8);
+  flex-shrink: 0;
+}
+
+/* Title text (Window Header type scale) */
+.card-title {
+  font-family: var(--font-display);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Close button */
+.card-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  border-radius: 2px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s;
+}
+
+.card-close:hover {
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+/* ── Body ── */
+.card-body {
+  padding: var(--space-4);
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* ── Footer (confirm button area) ── */
+.card-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding: var(--space-2) var(--space-3);
+  border-top: 1px solid var(--border-subtle);
+  flex-shrink: 0;
+}

@@ -1,26 +1,27 @@
 .ping-indicator {
   position: absolute;
-  top: 1rem;
-  left: 1rem;
-  padding: 0.3rem 0.6rem;
-  border-radius: 6px;
-  background: rgba(20, 22, 26, 0.6);
-  font: 600 0.75rem system-ui, sans-serif;
+  top: var(--space-4);
+  left: var(--space-4);
+  padding: var(--space-1) var(--space-2);
+  border-radius: 2px;
+  background: rgba(16, 19, 27, 0.7);
+  border: 1px solid var(--border-subtle);
+  font: 700 0.75rem var(--font-mono);
   pointer-events: none;
 }
 
 .ping-indicator-good {
-  color: #6bdc7c;
+  color: var(--vital-emerald);
 }
 
 .ping-indicator-warn {
-  color: #e8c14a;
+  color: var(--accent-primary);
 }
 
 .ping-indicator-bad {
-  color: #ff8080;
+  color: var(--vital-ruby);
 }
 
 .ping-indicator-unknown {
-  color: #9aa4b2;
+  color: var(--text-muted);
 }

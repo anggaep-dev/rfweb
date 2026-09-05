@@ -6,44 +6,49 @@
 
 .debug-panel-hint {
   position: absolute;
-  top: 1rem;
+  top: var(--space-4);
   left: 50%;
   transform: translateX(-50%);
-  color: #ccc;
-  font: 500 0.85rem system-ui, sans-serif;
-  background: rgba(20, 22, 26, 0.6);
-  padding: 0.4rem 0.9rem;
-  border-radius: 999px;
+  color: var(--text-secondary);
+  font: 500 0.85rem var(--font-display);
+  background: rgba(16, 19, 27, 0.7);
+  padding: var(--space-1) var(--space-3);
+  border-radius: 2px;
+  border: 1px solid var(--border-subtle);
   pointer-events: none;
 }
 
 .debug-panel-controls {
   position: absolute;
-  left: 1rem;
-  bottom: 1rem;
+  left: var(--space-4);
+  bottom: var(--space-4);
   display: flex;
-  gap: 0.5rem;
+  gap: var(--space-2);
   pointer-events: auto;
 }
 
 .debug-panel-controls button {
-  padding: 0.5rem 1rem;
-  border-radius: 6px;
-  border: 1px solid #444;
-  background: #22252b;
-  color: #eee;
-  font: 500 0.85rem system-ui, sans-serif;
-  text-transform: capitalize;
+  padding: var(--space-2) var(--space-3);
+  border-radius: 2px;
+  border: 1px solid var(--border-chrome);
+  background: var(--surface-panel);
+  color: var(--text-secondary);
+  font: 500 0.85rem var(--font-display);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
   cursor: pointer;
+  transition: background 0.2s, color 0.2s, border-color 0.2s;
 }
 
 .debug-panel-controls button:hover {
-  background: #2c3038;
+  background: var(--surface-elevated);
+  color: var(--text-primary);
 }
 
 .debug-panel-controls button.active {
-  background: #4a7dff;
-  border-color: #4a7dff;
+  border-color: var(--energy-cyan);
+  color: var(--text-cyan);
+  background: rgba(34, 211, 238, 0.1);
 }
 
 .debug-panel-controls button:disabled {
@@ -57,18 +62,20 @@
 
 .debug-panel-cam-select,
 .debug-panel-race-select select {
-  padding: 0.5rem 1rem;
-  border-radius: 6px;
-  border: 1px solid #444;
-  background: #22252b;
-  color: #eee;
-  font: 500 0.85rem system-ui, sans-serif;
+  padding: var(--space-2) var(--space-3);
+  border-radius: 2px;
+  border: 1px solid var(--border-chrome);
+  background: var(--surface-panel);
+  color: var(--text-secondary);
+  font: 500 0.85rem var(--font-display);
   cursor: pointer;
+  transition: background 0.2s, color 0.2s;
 }
 
 .debug-panel-cam-select:hover,
 .debug-panel-race-select select:hover {
-  background: #2c3038;
+  background: var(--surface-elevated);
+  color: var(--text-primary);
 }
 
 .debug-panel-race-select select:disabled {
@@ -78,29 +85,30 @@
 
 .debug-panel-race-select {
   position: absolute;
-  top: 1rem;
-  left: 1rem;
+  top: var(--space-4);
+  left: var(--space-4);
   pointer-events: auto;
 }
 
 .debug-panel-frame-label {
   display: flex;
   align-items: center;
-  padding: 0 0.4rem;
-  color: #9aa4b2;
-  font: 500 0.8rem ui-monospace, monospace;
+  padding: 0 var(--space-1);
+  color: var(--text-muted);
+  font: 500 0.8rem var(--font-mono);
 }
 
 .debug-panel-stats {
   position: absolute;
-  top: 1rem;
-  right: 1rem;
+  top: var(--space-4);
+  right: var(--space-4);
   max-width: min(26rem, calc(100vw - 2rem));
-  color: #9aa4b2;
-  font: 500 0.8rem ui-monospace, monospace;
-  background: rgba(20, 22, 26, 0.6);
-  padding: 0.4rem 0.7rem;
-  border-radius: 6px;
+  color: var(--text-muted);
+  font: 500 0.8rem var(--font-mono);
+  background: rgba(16, 19, 27, 0.7);
+  border: 1px solid var(--border-subtle);
+  padding: var(--space-1) var(--space-2);
+  border-radius: 2px;
   pointer-events: none;
   display: flex;
   flex-direction: column;
@@ -114,13 +122,14 @@
 .debug-panel-equip-panel {
   position: absolute;
   top: 3.2rem;
-  right: 1rem;
+  right: var(--space-4);
   display: flex;
   flex-direction: column;
-  gap: 0.35rem;
-  background: rgba(20, 22, 26, 0.6);
-  padding: 0.6rem 0.7rem;
-  border-radius: 6px;
+  gap: var(--space-1);
+  background: rgba(16, 19, 27, 0.85);
+  border: 1px solid var(--border-chrome);
+  padding: var(--space-2) var(--space-3);
+  border-radius: 2px;
   pointer-events: auto;
 }
 
@@ -128,23 +137,24 @@
 .debug-panel-base-part-panel {
   position: absolute;
   top: 3.2rem;
-  left: 1rem;
+  left: var(--space-4);
   display: flex;
   flex-direction: column;
-  gap: 0.35rem;
-  background: rgba(20, 22, 26, 0.6);
-  padding: 0.6rem 0.7rem;
-  border-radius: 6px;
+  gap: var(--space-1);
+  background: rgba(16, 19, 27, 0.85);
+  border: 1px solid var(--border-chrome);
+  padding: var(--space-2) var(--space-3);
+  border-radius: 2px;
   pointer-events: auto;
 }
 
 .debug-panel-base-part-select {
-  background: #22252b;
-  color: #eee;
-  border: 1px solid #444;
-  border-radius: 4px;
-  padding: 0.25rem 0.4rem;
-  font: 500 0.8rem system-ui, sans-serif;
+  background: var(--surface-base);
+  color: var(--text-primary);
+  border: 1px solid var(--border-subtle);
+  border-radius: 2px;
+  padding: var(--space-1) var(--space-2);
+  font: 500 0.8rem var(--font-display);
   width: 11rem;
 }
 
@@ -152,50 +162,55 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 1rem;
-  color: #ccc;
-  font: 600 0.8rem system-ui, sans-serif;
-  margin-bottom: 0.15rem;
+  gap: var(--space-4);
+  color: var(--text-primary);
+  font: 600 0.8rem var(--font-display);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: var(--space-1);
 }
 
 .debug-panel-panel-close {
   width: 1.4rem;
   height: 1.4rem;
   padding: 0;
-  border-radius: 4px;
-  border: 1px solid #444;
-  background: #22252b;
-  color: #eee;
-  font: 600 0.9rem system-ui, sans-serif;
+  border-radius: 2px;
+  border: 1px solid var(--border-subtle);
+  background: var(--surface-panel);
+  color: var(--text-secondary);
+  font: 600 0.9rem var(--font-display);
   line-height: 1;
   cursor: pointer;
+  transition: background 0.2s;
 }
 
 .debug-panel-panel-close:hover {
-  background: #2c3038;
+  background: var(--surface-elevated);
+  color: var(--text-primary);
 }
 
 .debug-panel-equip-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 0.6rem;
-  color: #ccc;
-  font: 500 0.8rem system-ui, sans-serif;
+  gap: var(--space-2);
+  color: var(--text-secondary);
+  font: 500 0.8rem var(--font-display);
 }
 
 .debug-panel-weapon-edit {
   position: absolute;
-  left: 1rem;
+  left: var(--space-4);
   top: 5rem;
   width: 20rem;
   max-width: calc(100vw - 2rem);
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
-  background: rgba(20, 22, 26, 0.6);
-  padding: 0.6rem 0.7rem;
-  border-radius: 6px;
+  gap: var(--space-2);
+  background: rgba(16, 19, 27, 0.85);
+  border: 1px solid var(--border-chrome);
+  padding: var(--space-2) var(--space-3);
+  border-radius: 2px;
   pointer-events: auto;
 }
 

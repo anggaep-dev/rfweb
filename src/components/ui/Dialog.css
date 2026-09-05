@@ -1,0 +1,130 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+ * Aether Mech HUD — Dialog / Modal
+ * design.md §5.1 — HUD Window Frame
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ── Backdrop ── */
+.dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(10, 14, 21, 0.75);
+  backdrop-filter: blur(2px);
+  padding: var(--space-6);
+}
+
+/* ── Dialog surface ── */
+.dialog {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: 480px;
+  max-height: min(80vh, 600px);
+  background: var(--elevation-panel-bg);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.9), inset 1px 1px 0 var(--border-bevel-light);
+  border: 1px solid var(--border-chrome);
+  border-radius: 2px;
+  outline: none;
+  animation: dialog-enter 0.2s ease-out;
+}
+
+@keyframes dialog-enter {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* ── Header (design.md §5.1) ── */
+.dialog-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 36px;
+  padding: 0 var(--space-3);
+  background: #1b212d;
+  border-bottom: 1px solid #2a3244;
+  flex-shrink: 0;
+}
+
+.dialog-header-left {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+/* Status LED */
+.dialog-led {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--energy-cyan);
+  box-shadow: 0 0 8px rgba(34, 211, 238, 0.8);
+  flex-shrink: 0;
+}
+
+/* Title */
+.dialog-title {
+  font-family: var(--font-display);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Close button */
+.dialog-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: 2px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s;
+}
+
+.dialog-close:hover {
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+/* ── Body ── */
+.dialog-body {
+  padding: var(--space-4);
+  overflow-y: auto;
+  flex: 1 1 auto;
+  color: var(--text-secondary);
+  font-family: var(--font-display);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+/* ── Footer ── */
+.dialog-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border-top: 1px solid var(--border-subtle);
+  flex-shrink: 0;
+}

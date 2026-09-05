@@ -1,0 +1,165 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+ * Aether Mech HUD — UI Test Page
+ * Renders every component variant for visual inspection.
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+.uitest {
+  position: fixed;
+  inset: 0;
+  overflow-y: auto;
+  background: var(--surface-base);
+  padding: var(--space-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  z-index: 10;
+}
+
+/* ── Header ── */
+.uitest-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-bottom: var(--space-4);
+  border-bottom: 1px solid var(--border-chrome);
+}
+
+.uitest-header h1 {
+  font-family: var(--font-display);
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-primary);
+  margin: 0;
+}
+
+.uitest-badge {
+  font-family: var(--font-display);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--energy-cyan);
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--energy-cyan);
+  border-radius: 2px;
+}
+
+/* ── Section card ── */
+.uitest-section {
+  margin: 0;
+}
+
+/* ── Block ── */
+.uitest-block {
+  margin-bottom: var(--space-4);
+}
+
+.uitest-block:last-child {
+  margin-bottom: 0;
+}
+
+.uitest-block-title {
+  font-family: var(--font-display);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin: 0 0 var(--space-3);
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+/* ── Table ── */
+.uitest-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.uitest-table th,
+.uitest-table td {
+  padding: var(--space-2) var(--space-3);
+  text-align: center;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.uitest-table th {
+  font-family: var(--font-display);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.uitest-label {
+  font-family: var(--font-display);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-align: left !important;
+  text-transform: capitalize;
+}
+
+/* ── Row ── */
+.uitest-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+/* ── Card row ── */
+.uitest-card-row {
+  display: flex;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+}
+
+.uitest-demo-card {
+  width: 200px;
+}
+
+.uitest-demo-card p {
+  margin: 0 0 var(--space-1);
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.uitest-demo-card p:last-child {
+  margin-bottom: 0;
+}
+
+.uitest-demo-card-wide {
+  width: 100%;
+  max-width: 420px;
+}
+
+.uitest-demo-card-wide p {
+  margin: 0 0 var(--space-1);
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+/* ── Mono data ── */
+.uitest-mono {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+/* ── Muted text ── */
+.uitest-muted {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+/* ── Divider ── */
+.uitest-divider {
+  border: none;
+  border-top: 1px solid var(--border-subtle);
+  margin: var(--space-3) 0;
+}
