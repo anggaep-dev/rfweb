@@ -10,6 +10,19 @@ message MovementInput {
     sint32 dir_x = 2;
     sint32 dir_z = 3;
     bool   running = 4;
+    // Which way the character is actually facing - same 0-255/32-step compass
+    // encoding as EntitySnapshot/EntityUpdate's own rotation field (0=North/
+    // -Z, 32=NE, 64=East/+X, ...224=NW; see movement/system.go's
+    // directionToRotation on the backend). NOT necessarily the same as the
+    // dir_x/dir_z being moved in - moving backward or strafing (holding only
+    // S, or only A/D) keeps the character facing whichever way it was
+    // already facing rather than turning to face the movement itself, so
+    // this needs to travel separately instead of the server re-deriving
+    // rotation from dir_x/dir_z alone (which was the old, incorrect
+    // behavior - it made every remote observer see the mover spin to face
+    // straight backward/sideways instead of the correct backward/strafe
+    // pose).
+    uint32 facing = 5;
 }
 
 message ChatAllRequest {
@@ -46,6 +59,16 @@ message EntitySnapshot {
     sint32 z = 4;
     uint32 rotation = 5;
     uint32 state = 6;
+    // Race (matches the client's RaceGender enum: 0=Bell_Male, 1=Bell_Female,
+    // 2=Cora_Male, 3=Cora_Female, 4=Accretia) and character_id (the same id
+    // CharacterSelectScreen/net/CharacterClient.ts use) - together these are
+    // enough for the client to mount the right race's model and fetch that
+    // character's saved appearance (base look + equipped items) to render it
+    // instead of a generic placeholder. Static for the entity's whole
+    // connected session (a character's race/equipment doesn't change
+    // mid-session), so EntityUpdate's per-tick delta doesn't repeat them.
+    uint32 race = 7;
+    string character_id = 8;
 }
 
 message WorldSnapshot {

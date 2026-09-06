@@ -14,6 +14,21 @@ export interface MovementInput {
   dirX: number;
   dirZ: number;
   running: boolean;
+  /**
+   * Which way the character is actually facing - same 0-255/32-step compass
+   * encoding as EntitySnapshot/EntityUpdate's own rotation field (0=North/
+   * -Z, 32=NE, 64=East/+X, ...224=NW; see movement/system.go's
+   * directionToRotation on the backend). NOT necessarily the same as the
+   * dir_x/dir_z being moved in - moving backward or strafing (holding only
+   * S, or only A/D) keeps the character facing whichever way it was
+   * already facing rather than turning to face the movement itself, so
+   * this needs to travel separately instead of the server re-deriving
+   * rotation from dir_x/dir_z alone (which was the old, incorrect
+   * behavior - it made every remote observer see the mover spin to face
+   * straight backward/sideways instead of the correct backward/strafe
+   * pose).
+   */
+  facing: number;
 }
 
 export interface ChatAllRequest {
@@ -50,6 +65,18 @@ export interface EntitySnapshot {
   z: number;
   rotation: number;
   state: number;
+  /**
+   * Race (matches the client's RaceGender enum: 0=Bell_Male, 1=Bell_Female,
+   * 2=Cora_Male, 3=Cora_Female, 4=Accretia) and character_id (the same id
+   * CharacterSelectScreen/net/CharacterClient.ts use) - together these are
+   * enough for the client to mount the right race's model and fetch that
+   * character's saved appearance (base look + equipped items) to render it
+   * instead of a generic placeholder. Static for the entity's whole
+   * connected session (a character's race/equipment doesn't change
+   * mid-session), so EntityUpdate's per-tick delta doesn't repeat them.
+   */
+  race: number;
+  characterId: string;
 }
 
 export interface WorldSnapshot {
@@ -124,7 +151,7 @@ export interface ServerPacket {
 }
 
 function createBaseMovementInput(): MovementInput {
-  return { sequence: 0, dirX: 0, dirZ: 0, running: false };
+  return { sequence: 0, dirX: 0, dirZ: 0, running: false, facing: 0 };
 }
 
 export const MovementInput: MessageFns<MovementInput> = {
@@ -140,6 +167,9 @@ export const MovementInput: MessageFns<MovementInput> = {
     }
     if (message.running !== false) {
       writer.uint32(32).bool(message.running);
+    }
+    if (message.facing !== 0) {
+      writer.uint32(40).uint32(message.facing);
     }
     return writer;
   },
@@ -189,6 +219,14 @@ export const MovementInput: MessageFns<MovementInput> = {
             message.running = reader.bool();
             continue;
           }
+          case 5: {
+            if (tag !== 40) {
+              break;
+            }
+
+            message.facing = reader.uint32();
+            continue;
+          }
         }
         if ((tag & 7) === 4 || tag === 0) {
           break;
@@ -215,6 +253,7 @@ export const MovementInput: MessageFns<MovementInput> = {
         ? globalThis.Number(object.dir_z)
         : 0,
       running: isSet(object.running) ? globalThis.Boolean(object.running) : false,
+      facing: isSet(object.facing) ? globalThis.Number(object.facing) : 0,
     };
   },
 
@@ -232,6 +271,9 @@ export const MovementInput: MessageFns<MovementInput> = {
     if (message.running !== false) {
       obj.running = message.running;
     }
+    if (message.facing !== 0) {
+      obj.facing = Math.round(message.facing);
+    }
     return obj;
   },
 
@@ -244,6 +286,7 @@ export const MovementInput: MessageFns<MovementInput> = {
     message.dirX = object.dirX ?? 0;
     message.dirZ = object.dirZ ?? 0;
     message.running = object.running ?? false;
+    message.facing = object.facing ?? 0;
     return message;
   },
 };
@@ -623,7 +666,7 @@ export const ClientPacket: MessageFns<ClientPacket> = {
 };
 
 function createBaseEntitySnapshot(): EntitySnapshot {
-  return { entityId: 0, x: 0, y: 0, z: 0, rotation: 0, state: 0 };
+  return { entityId: 0, x: 0, y: 0, z: 0, rotation: 0, state: 0, race: 0, characterId: "" };
 }
 
 export const EntitySnapshot: MessageFns<EntitySnapshot> = {
@@ -645,6 +688,12 @@ export const EntitySnapshot: MessageFns<EntitySnapshot> = {
     }
     if (message.state !== 0) {
       writer.uint32(48).uint32(message.state);
+    }
+    if (message.race !== 0) {
+      writer.uint32(56).uint32(message.race);
+    }
+    if (message.characterId !== "") {
+      writer.uint32(66).string(message.characterId);
     }
     return writer;
   },
@@ -710,6 +759,22 @@ export const EntitySnapshot: MessageFns<EntitySnapshot> = {
             message.state = reader.uint32();
             continue;
           }
+          case 7: {
+            if (tag !== 56) {
+              break;
+            }
+
+            message.race = reader.uint32();
+            continue;
+          }
+          case 8: {
+            if (tag !== 66) {
+              break;
+            }
+
+            message.characterId = reader.string();
+            continue;
+          }
         }
         if ((tag & 7) === 4 || tag === 0) {
           break;
@@ -734,6 +799,12 @@ export const EntitySnapshot: MessageFns<EntitySnapshot> = {
       z: isSet(object.z) ? globalThis.Number(object.z) : 0,
       rotation: isSet(object.rotation) ? globalThis.Number(object.rotation) : 0,
       state: isSet(object.state) ? globalThis.Number(object.state) : 0,
+      race: isSet(object.race) ? globalThis.Number(object.race) : 0,
+      characterId: isSet(object.characterId)
+        ? globalThis.String(object.characterId)
+        : isSet(object.character_id)
+        ? globalThis.String(object.character_id)
+        : "",
     };
   },
 
@@ -757,6 +828,12 @@ export const EntitySnapshot: MessageFns<EntitySnapshot> = {
     if (message.state !== 0) {
       obj.state = Math.round(message.state);
     }
+    if (message.race !== 0) {
+      obj.race = Math.round(message.race);
+    }
+    if (message.characterId !== "") {
+      obj.characterId = message.characterId;
+    }
     return obj;
   },
 
@@ -771,6 +848,8 @@ export const EntitySnapshot: MessageFns<EntitySnapshot> = {
     message.z = object.z ?? 0;
     message.rotation = object.rotation ?? 0;
     message.state = object.state ?? 0;
+    message.race = object.race ?? 0;
+    message.characterId = object.characterId ?? "";
     return message;
   },
 };

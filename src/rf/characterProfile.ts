@@ -26,8 +26,8 @@ export function defaultBaseAppearance(): BaseAppearance {
   return Object.fromEntries(BASE_MODEL_TYPES.map((modelType) => [modelType, 0])) as BaseAppearance;
 }
 
-/** Which real item (by modelId) currently covers a body/weapon/cloak slot - absent means that slot is still showing its base appearance (or, for Weapon, nothing). */
-export type EquippedItems = Partial<Record<ModelType, number>>;
+/** Which real item (by its own id, e.g. "iwkna01" - the hash key it's stored under in its item JSON file, see items.ts's ItemDefinition) currently covers a body/weapon/cloak slot - absent means that slot is still showing its base appearance (or, for Weapon, nothing). */
+export type EquippedItems = Partial<Record<ModelType, string>>;
 
 export interface InventorySlot {
   /** Item modelId, or null for an empty slot. */
@@ -73,4 +73,21 @@ export interface CharacterSummary {
 export interface CharacterProfile extends CharacterSummary {
   equipped: EquippedItems;
   inventory: InventorySlot[];
+}
+
+/**
+ * Public, ownership-unrestricted view of a character's look - unlike
+ * CharacterProfile (gold/inventory/location/etc, readable only by the
+ * owning account), any authenticated account can fetch anyone's appearance
+ * (see net/CharacterClient.ts's getCharacterAppearance) since it's needed to
+ * render *other* players for real instead of a generic placeholder (see
+ * RemoteEntityController) - the server broadcasts each entity's race and
+ * characterId (EntitySnapshot in protocol.proto) precisely so the client can
+ * fetch this per remote player.
+ */
+export interface CharacterAppearance {
+  name: string;
+  race: RaceGender;
+  baseAppearance: BaseAppearance;
+  equipped: EquippedItems;
 }

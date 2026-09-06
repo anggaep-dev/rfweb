@@ -6,7 +6,8 @@ import { BotController } from '../controllers/BotController';
 import { CameraController } from '../controllers/CameraController';
 import { CharacterController } from '../controllers/CharacterController';
 import { SceneController } from '../controllers/SceneController';
-import type { LocomotionDirection, RaceGender } from '../rf/character';
+import { classifyLocomotionDirection } from '../rf/character';
+import type { RaceGender } from '../rf/character';
 import type { AppScene } from './AppScene';
 
 const CLICK_DRAG_TOLERANCE_PX = 12;
@@ -14,21 +15,6 @@ const UP_AXIS = new Vector3(0, 1, 0);
 /** How often the FPS/memory readout refreshes - every frame would be unreadable and wasteful to re-render for. */
 const STATS_UPDATE_INTERVAL_SEC = 0.5;
 const BYTES_PER_MB = 1024 * 1024;
-
-/**
- * Classifies camera-relative move input (x = right, y = forward) into which
- * real locomotion clip should play - see LocomotionDirection. Whichever axis
- * has the bigger magnitude wins (ties go to forward): "mostly forward" (with
- * or without a slight strafe) returns null, meaning "just use plain walk/run
- * and face the way you're moving" - already smooth for any diagonal blend.
- * A dominant backward or sideways push returns the matching real clip
- * instead, so e.g. holding only S plays a genuine backward-walk clip while
- * still facing forward, rather than spinning the character 180°.
- */
-function classifyLocomotionDirection(x: number, y: number): LocomotionDirection | null {
-  if (Math.abs(y) >= Math.abs(x)) return y < 0 ? 'bw' : null;
-  return x > 0 ? 'rt' : 'lf';
-}
 
 /** Chrome-only, non-standard - not in the DOM lib types. Absent on other engines. */
 interface PerformanceMemoryInfo {

@@ -69,7 +69,10 @@ export class CharacterSelectScene implements AppScene {
         const controller = new CharacterController(this.sceneController.scene);
         const bounds = await controller.mount(rfCharacter, character.race);
         for (const modelType of BASE_MODEL_TYPES) {
-          await controller.setBaseAppearance(modelType, character.baseAppearance[modelType] ?? 0);
+          // ?. guards against a Go nil map marshaling to JSON `null` rather
+          // than `{}` - same class of bug as characterAppearance.ts's
+          // AppearanceLike, just for CharacterSummary instead.
+          await controller.setBaseAppearance(modelType, character.baseAppearance?.[modelType] ?? 0);
         }
         return { character, controller, bounds };
       }),

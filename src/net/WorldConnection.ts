@@ -56,9 +56,16 @@ export class WorldConnection {
     });
   }
 
-  /** Sends a MovementInput; the sequence number is assigned internally and increments per call. */
-  sendMovement(dirX: number, dirZ: number, running: boolean): void {
-    this.send({ payload: { $case: 'movement', movement: { sequence: this.nextSequence++, dirX, dirZ, running } } });
+  /**
+   * Sends a MovementInput; the sequence number is assigned internally and
+   * increments per call. `facing` is the character's actual orientation
+   * (see compassRotation.ts's facingToRotation) - not necessarily the same
+   * compass direction as dirX/dirZ, since moving backward or strafing keeps
+   * the character facing whichever way it already was rather than turning
+   * to face the movement itself.
+   */
+  sendMovement(dirX: number, dirZ: number, running: boolean, facing: number): void {
+    this.send({ payload: { $case: 'movement', movement: { sequence: this.nextSequence++, dirX, dirZ, running, facing } } });
   }
 
   sendChatAll(message: string): void {

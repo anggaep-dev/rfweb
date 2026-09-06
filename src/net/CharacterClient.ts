@@ -1,5 +1,5 @@
 import { RaceGender } from '../rf/character';
-import type { BaseAppearance, CharacterSummary } from '../rf/characterProfile';
+import type { BaseAppearance, CharacterAppearance, CharacterProfile, CharacterSummary } from '../rf/characterProfile';
 import { isSecurePage, pageHostname, SERVER_PORT } from './serverHost';
 
 function defaultHttpBase(): string {
@@ -53,4 +53,14 @@ export function createCharacter(sessionToken: string, req: CreateCharacterReques
 
 export function deleteCharacter(sessionToken: string, characterId: string): Promise<void> {
   return request<void>(`/characters/${encodeURIComponent(characterId)}`, sessionToken, { method: 'DELETE' });
+}
+
+/** Full per-character data (base appearance + equipped items + inventory) - fetched once entering the world, not by the (lighter) character-select list. */
+export function getCharacterProfile(sessionToken: string, characterId: string): Promise<CharacterProfile> {
+  return request<CharacterProfile>(`/characters/${encodeURIComponent(characterId)}`, sessionToken);
+}
+
+/** Any account's character can be looked up here (not just your own - see CharacterAppearance's doc comment) - used to render other players' real look instead of a placeholder (see RemoteEntityController). */
+export function getCharacterAppearance(sessionToken: string, characterId: string): Promise<CharacterAppearance> {
+  return request<CharacterAppearance>(`/characters/${encodeURIComponent(characterId)}/appearance`, sessionToken);
 }

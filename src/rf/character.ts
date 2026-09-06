@@ -95,6 +95,24 @@ function animationFileNames(nameToken: string): Record<(typeof CLIP_NAMES)[numbe
  */
 export type LocomotionDirection = 'bw' | 'lf' | 'rt';
 
+/**
+ * Classifies move input (x = right, y = forward, relative to whatever
+ * reference direction the caller considers "forward" - a camera's own
+ * forward for click-free camera-relative movement, or a character's last
+ * facing for a fixed-world-compass scheme) into which real locomotion clip
+ * should play. Whichever axis has the bigger magnitude wins (ties go to
+ * forward): "mostly forward" (with or without a slight strafe) returns
+ * null, meaning "just use plain walk/run and face the way you're moving" -
+ * already smooth for any diagonal blend. A dominant backward or sideways
+ * push returns the matching real clip instead, so e.g. holding only
+ * "backward" plays a genuine backward-walk clip while still facing forward,
+ * rather than spinning the character 180°.
+ */
+export function classifyLocomotionDirection(x: number, y: number): LocomotionDirection | null {
+  if (Math.abs(y) >= Math.abs(x)) return y < 0 ? 'bw' : null;
+  return x > 0 ? 'rt' : 'lf';
+}
+
 const DIRECTION_SEGMENT_PREFIX: Record<LocomotionDirection, string> = { bw: 'BW', lf: 'LF', rt: 'RT' };
 const DIRECTIONAL_LOCOMOTION_KINDS = ['walk', 'run'] as const;
 export const LOCOMOTION_DIRECTIONS: LocomotionDirection[] = ['bw', 'lf', 'rt'];
