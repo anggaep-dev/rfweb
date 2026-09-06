@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react';
-import type { FormEvent } from 'react';
+import { Button, Dialog } from '../ui';
 import { RACE_LABELS, RaceGender } from '../../rf/character';
 import type { CharacterSummary } from '../../rf/characterProfile';
-import { defaultBaseAppearance, MAX_CHARACTERS_PER_ACCOUNT } from '../../rf/characterProfile';
-import { createCharacter, deleteCharacter, listCharacters } from '../../net/CharacterClient';
+import { MAX_CHARACTERS_PER_ACCOUNT } from '../../rf/characterProfile';
+import { preloadShowcaseAssets } from '../../rf/characterShowcase';
+import { deleteCharacter, listCharacters } from '../../net/CharacterClient';
 import { CharacterSelectScene } from '../../scenes/CharacterSelectScene';
 import type { SceneManager } from '../../scenes/SceneManager';
 import './CharacterSelectScreen.css';
@@ -12,15 +13,9 @@ export interface CharacterSelectScreenProps {
   sceneManager: SceneManager;
   sessionToken: string;
   onEnterWorld: (characterId: string, race: RaceGender) => void;
+  /** Empty-slot "+ Create Character" - the actual creation flow is its own full screen (CharacterCreateScreen), owned by SceneApp. */
+  onCreateCharacter: () => void;
 }
-
-const RACE_OPTIONS: RaceGender[] = [
-  RaceGender.Bell_Male,
-  RaceGender.Bell_Female,
-  RaceGender.Cora_Male,
-  RaceGender.Cora_Female,
-  RaceGender.Accretia,
-];
 
 function formatLastPlayed(iso: string | undefined): string {
   if (!iso) return 'Never';
@@ -35,13 +30,18 @@ function formatLastPlayed(iso: string | undefined): string {
  * saved base appearance; this component owns the account-level character
  * list and the create/delete network calls around it.
  */
-export default function CharacterSelectScreen({ sceneManager, sessionToken, onEnterWorld }: CharacterSelectScreenProps) {
+export default function CharacterSelectScreen({
+  sceneManager,
+  sessionToken,
+  onEnterWorld,
+  onCreateCharacter,
+}: CharacterSelectScreenProps) {
   const [characters, setCharacters] = useState<CharacterSummary[] | null>(null);
   const [loadError, setLoadError] = useState('');
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [showInfo, setShowInfo] = useState(false);
-  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
-  const [createSlotIndex, setCreateSlotIndex] = useState<number | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<CharacterSummary | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
   const [reloadNonce, setReloadNonce] = useState(0);
 
   useEffect(() => {
@@ -75,14 +75,20 @@ export default function CharacterSelectScreen({ sceneManager, sessionToken, onEn
 
   const selected = characters?.find((c) => c.id === selectedId) ?? null;
 
-  const handleDelete = (characterId: string) => {
-    deleteCharacter(sessionToken, characterId)
+  const handleDelete = () => {
+    if (!deleteTarget) return;
+    setIsDeleting(true);
+    deleteCharacter(sessionToken, deleteTarget.id)
       .then(() => {
-        if (selectedId === characterId) setSelectedId(null);
-        setConfirmDeleteId(null);
+        if (selectedId === deleteTarget.id) setSelectedId(null);
+        setDeleteTarget(null);
+        setIsDeleting(false);
         setReloadNonce((n) => n + 1);
       })
-      .catch((err: unknown) => setLoadError(err instanceof Error ? err.message : 'Failed to delete character'));
+      .catch((err: unknown) => {
+        setLoadError(err instanceof Error ? err.message : 'Failed to delete character');
+        setIsDeleting(false);
+      });
   };
 
   if (loadError) {
@@ -90,14 +96,16 @@ export default function CharacterSelectScreen({ sceneManager, sessionToken, onEn
       <div className="character-select-screen">
         <div className="character-select-overlay character-select-overlay-error">
           Failed to load characters: {loadError}
-          <button
+          <Button
+            variant="secondary"
+            size="sm"
             onClick={() => {
               setLoadError('');
               setReloadNonce((n) => n + 1);
             }}
           >
             Retry
-          </button>
+          </Button>
         </div>
       </div>
     );
@@ -132,18 +140,20 @@ export default function CharacterSelectScreen({ sceneManager, sessionToken, onEn
               <div className="character-select-card-meta">
                 Lv.{character.level} · {RACE_LABELS[character.race]}
               </div>
-              <button
+              <Button
                 className="character-select-card-select"
+                size="sm"
                 onClick={(e) => {
                   e.stopPropagation();
                   onEnterWorld(character.id, character.race);
                 }}
               >
                 Select
-              </button>
+              </Button>
               <div className="character-select-card-links">
-                <button
-                  className="character-select-card-link"
+                <Button
+                  variant="ghost"
+                  size="sm"
                   onClick={(e) => {
                     e.stopPropagation();
                     setSelectedId(character.id);
@@ -151,139 +161,83 @@ export default function CharacterSelectScreen({ sceneManager, sessionToken, onEn
                   }}
                 >
                   Info
-                </button>
-                <button
-                  className="character-select-card-link character-select-card-link-danger"
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
                   onClick={(e) => {
                     e.stopPropagation();
-                    setConfirmDeleteId(character.id);
+                    setDeleteTarget(character);
                   }}
                 >
                   Delete
-                </button>
+                </Button>
               </div>
-              {confirmDeleteId === character.id && (
-                <div className="character-select-confirm">
-                  <span>Delete {character.name}?</span>
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleDelete(character.id);
-                    }}
-                  >
-                    Yes, delete
-                  </button>
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setConfirmDeleteId(null);
-                    }}
-                  >
-                    Cancel
-                  </button>
-                </div>
-              )}
             </div>
           ) : (
             <div key={`empty-${slotIndex}`} className="character-select-card character-select-card-empty">
-              <button className="character-select-card-create" onClick={() => setCreateSlotIndex(slotIndex)}>
+              <Button
+                variant="ghost"
+                onClick={() => {
+                  // Head start on the race-showcase screen's mesh fetches -
+                  // see rf/characterShowcase.ts's preloadShowcaseAssets doc
+                  // comment - fired here so the network has the whole
+                  // screen-transition + all-5-characters-mount time to work
+                  // before that screen's own equip calls need the data.
+                  preloadShowcaseAssets();
+                  onCreateCharacter();
+                }}
+              >
                 + Create Character
-              </button>
+              </Button>
             </div>
           ),
         )}
       </div>
 
-      {showInfo && selected && (
-        <div className="character-select-info" onClick={() => setShowInfo(false)}>
-          <div className="character-select-info-panel" onClick={(e) => e.stopPropagation()}>
-            <h2>{selected.name}</h2>
-            <dl>
-              <dt>Race</dt>
-              <dd>{RACE_LABELS[selected.race]}</dd>
-              <dt>Level</dt>
-              <dd>{selected.level}</dd>
-              <dt>Gold</dt>
-              <dd>{selected.gold.toLocaleString()}</dd>
-              <dt>CP</dt>
-              <dd>{selected.cp.toLocaleString()}</dd>
-              <dt>EXP</dt>
-              <dd>{selected.exp.toLocaleString()}</dd>
-              <dt>Guild</dt>
-              <dd>{selected.guildName ?? 'None'}</dd>
-              <dt>Location</dt>
-              <dd>
-                {selected.lastLocation.x}, {selected.lastLocation.y}, {selected.lastLocation.z}
-              </dd>
-              <dt>Created</dt>
-              <dd>{new Date(selected.createdAt).toLocaleDateString()}</dd>
-              <dt>Last Played</dt>
-              <dd>{formatLastPlayed(selected.lastPlayedAt)}</dd>
-            </dl>
-            <button onClick={() => setShowInfo(false)}>Close</button>
-          </div>
-        </div>
-      )}
+      <Dialog open={showInfo && !!selected} title={selected?.name.toUpperCase() ?? ''} onClose={() => setShowInfo(false)}>
+        {selected && (
+          <dl className="character-select-info-list">
+            <dt>Race</dt>
+            <dd>{RACE_LABELS[selected.race]}</dd>
+            <dt>Level</dt>
+            <dd>{selected.level}</dd>
+            <dt>Gold</dt>
+            <dd>{selected.gold.toLocaleString()}</dd>
+            <dt>CP</dt>
+            <dd>{selected.cp.toLocaleString()}</dd>
+            <dt>EXP</dt>
+            <dd>{selected.exp.toLocaleString()}</dd>
+            <dt>Guild</dt>
+            <dd>{selected.guildName ?? 'None'}</dd>
+            <dt>Location</dt>
+            <dd>
+              {selected.lastLocation.x}, {selected.lastLocation.y}, {selected.lastLocation.z}
+            </dd>
+            <dt>Created</dt>
+            <dd>{new Date(selected.createdAt).toLocaleDateString()}</dd>
+            <dt>Last Played</dt>
+            <dd>{formatLastPlayed(selected.lastPlayedAt)}</dd>
+          </dl>
+        )}
+      </Dialog>
 
-      {createSlotIndex !== null && (
-        <CreateCharacterDialog
-          slotIndex={createSlotIndex}
-          onCancel={() => setCreateSlotIndex(null)}
-          onCreate={(name, race) => {
-            createCharacter(sessionToken, { name, race, baseAppearance: defaultBaseAppearance() })
-              .then(() => {
-                setCreateSlotIndex(null);
-                setReloadNonce((n) => n + 1);
-              })
-              .catch((err: unknown) => setLoadError(err instanceof Error ? err.message : 'Failed to create character'));
-          }}
-        />
-      )}
-    </div>
-  );
-}
+      <Dialog
+        open={!!deleteTarget}
+        title="DELETE CHARACTER"
+        onClose={() => setDeleteTarget(null)}
+        closeOnBackdrop={!isDeleting}
+        closeOnEscape={!isDeleting}
+        actions={[
+          { label: 'Cancel', onClick: () => setDeleteTarget(null), variant: 'secondary', disabled: isDeleting },
+          { label: 'Delete', onClick: handleDelete, variant: 'danger', loading: isDeleting },
+        ]}
+      >
+        <p>
+          Delete <strong>{deleteTarget?.name}</strong>? This cannot be undone.
+        </p>
+      </Dialog>
 
-interface CreateCharacterDialogProps {
-  slotIndex: number;
-  onCreate: (name: string, race: RaceGender) => void;
-  onCancel: () => void;
-}
-
-function CreateCharacterDialog({ onCreate, onCancel }: CreateCharacterDialogProps) {
-  const [name, setName] = useState('');
-  const [race, setRace] = useState<RaceGender>(RaceGender.Bell_Male);
-
-  const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    if (!name.trim()) return;
-    onCreate(name.trim(), race);
-  };
-
-  return (
-    <div className="character-select-info" onClick={onCancel}>
-      <form className="character-select-info-panel" onClick={(e) => e.stopPropagation()} onSubmit={handleSubmit}>
-        <h2>Create Character</h2>
-        <label className="character-select-create-label">
-          Name
-          <input value={name} onChange={(e) => setName(e.target.value)} autoFocus />
-        </label>
-        <label className="character-select-create-label">
-          Race
-          <select value={race} onChange={(e) => setRace(Number(e.target.value) as RaceGender)}>
-            {RACE_OPTIONS.map((r) => (
-              <option key={r} value={r}>
-                {RACE_LABELS[r]}
-              </option>
-            ))}
-          </select>
-        </label>
-        <div className="character-select-create-actions">
-          <button type="submit">Create</button>
-          <button type="button" onClick={onCancel}>
-            Cancel
-          </button>
-        </div>
-      </form>
     </div>
   );
 }

@@ -99,6 +99,19 @@ export const SLOT_LABELS: Record<ModelType, string> = {
   [ModelType.Cloak]: 'Cloak',
 };
 
+const HAIR_INSTEAD_OF_HELMET_RACES = new Set<RaceGender>([
+  RaceGender.Bell_Male,
+  RaceGender.Bell_Female,
+  RaceGender.Cora_Male,
+  RaceGender.Cora_Female,
+]);
+
+/** SLOT_LABELS, except Bell/Cora's Helmet base slot is their hairstyle, not armor - see ALL_MODEL_TYPES' doc comment. Accretia's own Helmet slot is a head/faceplate design instead, so it keeps the generic label. Only meaningful for base-appearance UI (BasePartPanel, character creation) - the equip panel (real armor items) always uses the plain SLOT_LABELS. */
+export function baseSlotLabel(modelType: ModelType, raceGender: RaceGender): string {
+  if (modelType === ModelType.Helmet && HAIR_INSTEAD_OF_HELMET_RACES.has(raceGender)) return 'Hairstyle';
+  return SLOT_LABELS[modelType];
+}
+
 const ITEM_DATA_BASE = '/game-assets/data/item';
 
 export interface ItemDefinition {
@@ -109,15 +122,28 @@ export interface ItemDefinition {
   model: string;
   /** Raw eligibility bitmask string - see isItemUsableByRace(). */
   civil: string;
+  /** Required character level to use this item, 0 if the item's file doesn't carry the field at all (faceItem.json - see loadShowcaseCandidates' doc comment). */
+  levelLim: number;
 }
 
 interface RawItemEntry {
   Name?: string;
-  Model?: string;
+  // Almost always a string (e.g. "A10300"), but weaponItem.json's Launcher
+  // (Type 7) and Grenade Launcher (Type 11) rows are frequently a bare JSON
+  // number instead (e.g. 411407) - coerced to string below either way, same
+  // as Civil/LevelLim's own string-vs-number split. Left uncoerced, a raw
+  // number here made every Map-keyed resource lookup (resolveWeaponMesh,
+  // resolveItemMeshStem, resolveCloakMeshStem - all Map<string, ...>) miss
+  // outright even when a real matching entry existed, since Map key lookups
+  // never coerce types - which is why every Launcher mesh resolved to
+  // "unavailable" despite itemResource.json actually having most of them.
+  Model?: string | number;
   // weaponItem.json and cloakItem.json both store this as a bare JSON
   // number (e.g. 11111000) rather than a zero-padded string like every
   // other slot's item file - coerced to string below either way.
   Civil?: string | number;
+  // Same string-vs-number split as Civil above (weaponItem.json/cloakItem.json numeric, every other slot's file zero-padded-string).
+  LevelLim?: string | number;
   /**
    * Whether this row is a real, currently-obtainable item vs. a
    * removed/unused placeholder entry (a large fraction of weaponItem.json's
@@ -138,16 +164,30 @@ interface RawItemEntry {
 /**
  * "Civil" is a per-race eligibility bitmask: one decimal digit per race, in
  * the same left-to-right order as the RaceGender enum (Bell_Male,
- * Bell_Female, Cora_Male, Cora_Female, Accretia) - e.g. "10000" means
- * Bell_Male only, "11000000" means either Bellato gender. Verified against
- * the real item data: faceItem.json stores it unpadded ("1" for an
- * Accretia-only face), while gauntletItem.json stores it zero-padded to 8
- * digits with 3 unused trailing digits ("00001000" for Accretia-only
- * gloves) - left-padding to 5 before indexing by RaceGender handles both.
+ * Bell_Female, Cora_Male, Cora_Female, Accretia), FOLLOWED BY 3 always-zero
+ * unused trailing digits - so the true value is always a multiple of 1000,
+ * e.g. numeric 1000 means Accretia only, 10000 means Cora_Female only,
+ * 11111000 means every race. helmetItem/lowerItem/gauntletItem/shoeItem.json
+ * give this as an already-8-character zero-padded string, so it needs no
+ * reconstruction; upperItem.json (despite also being string-typed) and
+ * weaponItem.json/cloakItem.json (bare JSON numbers) both frequently have
+ * their leading zeros lost - e.g. weaponItem.json's every Launcher
+ * ("Cerberus" etc, Accretia's own weapon type) stores Civil as the bare
+ * number 1000, which naively left-padded to 5 characters ("01000") would
+ * misread as Bell_Female-only instead of Accretia-only. Dividing out the 3
+ * always-zero trailing digits first (Math.floor(civil / 1000)) recovers the
+ * true 5-digit race code regardless of how many leading zeros survived.
+ * faceItem.json is the one exception - a genuinely 5-digit-wide code with no
+ * unused trailing digits (e.g. "1" for an Accretia-only face) - moot in
+ * practice since every one of its rows is an unused placeholder (see
+ * RawItemEntry.IsExist's doc comment), but handled correctly here anyway.
  */
-export function isItemUsableByRace(civil: string, raceGender: RaceGender): boolean {
-  const padded = civil.padStart(5, '0');
-  return padded.charAt(raceGender) === '1';
+export function isItemUsableByRace(civil: string, raceGender: RaceGender, modelType: ModelType): boolean {
+  if (modelType === ModelType.Face) {
+    return civil.padStart(5, '0').charAt(raceGender) === '1';
+  }
+  const raceCode = Math.floor(Number(civil) / 1000);
+  return String(raceCode).padStart(5, '0').charAt(raceGender) === '1';
 }
 
 const slotItemsCache = new Map<ModelType, Promise<ItemDefinition[]>>();
@@ -164,7 +204,13 @@ async function fetchSlotItems(modelType: ModelType): Promise<ItemDefinition[]> {
     // Weapon/Cloak-only - see RawItemEntry.IsExist's doc comment on why this
     // isn't applied to every slot.
     if ((modelType === ModelType.Weapon || modelType === ModelType.Cloak) && String(entry.IsExist) === '0') continue;
-    items.push({ id, name: entry.Name ?? id, model: entry.Model, civil: String(entry.Civil) });
+    items.push({
+      id,
+      name: entry.Name ?? id,
+      model: String(entry.Model),
+      civil: String(entry.Civil),
+      levelLim: entry.LevelLim === undefined ? 0 : Number(entry.LevelLim),
+    });
   }
   return items;
 }
@@ -182,5 +228,29 @@ export function loadSlotItems(modelType: ModelType): Promise<ItemDefinition[]> {
 /** Loads a slot's items filtered to the ones a given race/gender is actually allowed to wear. */
 export async function loadUsableSlotItems(modelType: ModelType, raceGender: RaceGender): Promise<ItemDefinition[]> {
   const items = await loadSlotItems(modelType);
-  return items.filter((item) => isItemUsableByRace(item.civil, raceGender));
+  return items.filter((item) => isItemUsableByRace(item.civil, raceGender, modelType));
+}
+
+/**
+ * Candidates for the character-creation race showcase (see
+ * CharacterCreateRaceScene) - dressing each race in impressive high-level
+ * gear rather than nothing, purely for spectacle. Ordered closest-to-
+ * targetLevel first (ties favor the higher level) so a caller can try each
+ * in turn via CharacterController.equipItem() until one actually resolves to
+ * real mesh data and stop there - plenty of item rows in this data dump have
+ * no backing mesh yet (equipItem returns 'unavailable' for those, same as
+ * the debug equip panel already handles). Items with no LevelLim at all
+ * (levelLim 0 - faceItem.json's rows are all placeholders, see
+ * RawItemEntry.IsExist's doc comment) are excluded, not just deprioritized,
+ * since they're not real showcase-able gear.
+ */
+export async function loadShowcaseCandidates(
+  modelType: ModelType,
+  raceGender: RaceGender,
+  targetLevel: number,
+): Promise<ItemDefinition[]> {
+  const items = await loadUsableSlotItems(modelType, raceGender);
+  return items
+    .filter((item) => item.levelLim > 0)
+    .sort((a, b) => Math.abs(a.levelLim - targetLevel) - Math.abs(b.levelLim - targetLevel) || b.levelLim - a.levelLim);
 }

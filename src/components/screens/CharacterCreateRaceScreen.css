@@ -1,0 +1,65 @@
+.character-create-race-screen {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+}
+
+.character-create-race-back {
+  pointer-events: auto;
+  position: absolute;
+  top: var(--space-4);
+  left: var(--space-4);
+}
+
+.character-create-race-title {
+  position: absolute;
+  top: var(--space-4);
+  left: 50%;
+  transform: translateX(-50%);
+  color: var(--text-primary);
+  font: 700 14px var(--font-display);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  text-shadow: 0 2px 6px rgba(0, 0, 0, 0.8);
+  background: rgba(16, 19, 27, 0.65);
+  padding: var(--space-2) var(--space-4);
+  border-radius: 2px;
+  border: 1px solid var(--border-chrome);
+  pointer-events: none;
+}
+
+.character-create-race-hint {
+  position: absolute;
+  top: calc(var(--space-4) + 44px);
+  left: 50%;
+  transform: translateX(-50%);
+  color: var(--text-secondary);
+  font: 500 0.8rem var(--font-display);
+  background: rgba(16, 19, 27, 0.55);
+  padding: var(--space-1) var(--space-3);
+  border-radius: 999px;
+  pointer-events: none;
+}
+
+.character-create-race-panel {
+  pointer-events: auto;
+  position: absolute;
+  left: 50%;
+  bottom: var(--space-6);
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  background: var(--elevation-panel-bg);
+  box-shadow: var(--elevation-panel-shadow);
+  border: var(--elevation-panel-border);
+  border-radius: 4px;
+  padding: var(--space-3) var(--space-4);
+}
+
+.character-create-race-name {
+  min-width: 10rem;
+  color: var(--text-primary);
+  font: 700 1rem var(--font-display);
+  text-align: center;
+}

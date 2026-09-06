@@ -1,6 +1,6 @@
 import { memo } from 'react';
-import { ALL_MODEL_TYPES, BASE_APPEARANCE_VARIANT_COUNT, ModelType, SLOT_LABELS } from '../../rf/items';
-import { RaceGender } from '../../rf/character';
+import { ALL_MODEL_TYPES, BASE_APPEARANCE_VARIANT_COUNT, baseSlotLabel, ModelType } from '../../rf/items';
+import type { RaceGender } from '../../rf/character';
 import './DebugPanel.css';
 
 export interface BasePartPanelProps {
@@ -9,19 +9,6 @@ export interface BasePartPanelProps {
   variantBySlot: Partial<Record<ModelType, number>>;
   onVariantChange: (modelType: ModelType, variantIndex: number) => void;
   onClose: () => void;
-}
-
-const HAIR_RACES = new Set<RaceGender>([
-  RaceGender.Bell_Male,
-  RaceGender.Bell_Female,
-  RaceGender.Cora_Male,
-  RaceGender.Cora_Female,
-]);
-
-/** Bell/Cora's "Helmet" base slot is their hairstyle, not armor - see ALL_MODEL_TYPES' doc comment in items.ts. Accretia's own Helmet slot is a head/faceplate design instead, so it keeps the generic label. */
-function slotLabel(modelType: ModelType, raceGender: RaceGender): string {
-  if (modelType === ModelType.Helmet && HAIR_RACES.has(raceGender)) return 'Hairstyle';
-  return SLOT_LABELS[modelType];
 }
 
 const VARIANT_OPTIONS = Array.from({ length: BASE_APPEARANCE_VARIANT_COUNT }, (_, i) => i);
@@ -56,7 +43,7 @@ const BasePartPanel = memo(function BasePartPanel({
 
       {ALL_MODEL_TYPES.map((modelType) => (
         <label key={modelType} className="debug-panel-equip-row">
-          <span>{slotLabel(modelType, raceGender)}</span>
+          <span>{baseSlotLabel(modelType, raceGender)}</span>
           <select
             className="debug-panel-base-part-select"
             value={variantBySlot[modelType] ?? 0}

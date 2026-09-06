@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
+import CharacterCreateScreen from './CharacterCreateScreen';
+import CharacterCreateRaceScreen from './CharacterCreateRaceScreen';
 import OnlineScreen from './OnlineScreen';
 import RegisterScreen from './RegisterScreen';
 import RfViewer from './RfViewer';
@@ -9,7 +11,15 @@ import LoginScreen from './LoginScreen';
 import { SceneManager } from '../../scenes/SceneManager';
 import './SceneApp.css';
 
-type Screen = 'preloading' | 'login' | 'register' | 'characterSelect' | 'viewer' | 'uitest';
+type Screen =
+  | 'preloading'
+  | 'login'
+  | 'register'
+  | 'characterSelect'
+  | 'characterCreateRace'
+  | 'characterCreate'
+  | 'viewer'
+  | 'uitest';
 
 /** "/debug" reaches the old offline/debug viewer (ViewerScene); every other path is online play (OnlineScene). */
 const isDebugRoute = window.location.pathname.replace(/\/+$/, '') === '/debug';
@@ -36,6 +46,8 @@ export default function SceneApp() {
   const [preloadError, setPreloadError] = useState('');
   const [selectedRace, setSelectedRace] = useState<RaceGender | null>(null);
   const [selectedCharacterId, setSelectedCharacterId] = useState<string | null>(null);
+  // Chosen in CharacterCreateRaceScreen, consumed by CharacterCreateScreen - only ever set while screen is 'characterCreateRace' or 'characterCreate'.
+  const [createRace, setCreateRace] = useState<RaceGender | null>(null);
   // Issued by LoginScreen's real login() call (see net/AuthClient.ts) - the
   // WS connection authenticates with this, not with credentials again. Only
   // ever needed on the online (non-debug) route, which is the only one
@@ -134,6 +146,26 @@ export default function SceneApp() {
             setSelectedRace(race);
             setScreen('viewer');
           }}
+          onCreateCharacter={() => setScreen('characterCreateRace')}
+        />
+      )}
+      {sceneManager && screen === 'characterCreateRace' && (
+        <CharacterCreateRaceScreen
+          sceneManager={sceneManager}
+          onPickRace={(race) => {
+            setCreateRace(race);
+            setScreen('characterCreate');
+          }}
+          onCancel={() => setScreen('characterSelect')}
+        />
+      )}
+      {sceneManager && screen === 'characterCreate' && sessionToken !== null && createRace !== null && (
+        <CharacterCreateScreen
+          sceneManager={sceneManager}
+          sessionToken={sessionToken}
+          race={createRace}
+          onCreated={() => setScreen('characterSelect')}
+          onCancel={() => setScreen('characterCreateRace')}
         />
       )}
       {sceneManager &&

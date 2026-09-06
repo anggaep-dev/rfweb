@@ -84,7 +84,12 @@ export class CharacterSelectScene implements AppScene {
     const startX = -((MAX_CHARACTERS_PER_ACCOUNT - 1) * spacing) / 2;
     mounted.forEach((m) => {
       const group = m.controller.group;
-      if (group) group.position.x += startX + m.character.slotIndex * spacing;
+      if (!group) return;
+      group.position.x += startX + m.character.slotIndex * spacing;
+      // The authored mesh's front faces world -Z at rest, but this stage's
+      // camera sits on +Z looking back at the origin - without this, every
+      // character shows its back instead of facing the camera.
+      group.rotation.y = Math.PI;
     });
 
     this.slots = mounted.map((m) => ({ characterId: m.character.id, controller: m.controller }));

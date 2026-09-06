@@ -616,7 +616,8 @@ export class CharacterController {
    */
   private async equipCloak(item: ItemDefinition | null): Promise<EquipResult> {
     const character = this.character;
-    if (!character) return 'no-character';
+    const raceGender = this.raceGender;
+    if (!character || raceGender === null) return 'no-character';
 
     this.currentBodyItem[ModelType.Cloak] = item;
     const previous = this.equippedObjects[ModelType.Cloak];
@@ -633,7 +634,7 @@ export class CharacterController {
       return 'default';
     }
 
-    const stem = await resolveCloakMeshStem(item.model);
+    const stem = await resolveCloakMeshStem(item.model, raceGender);
     if (this.character !== character) return 'no-character'; // superseded mid-await
     if (!stem) return 'unavailable';
 

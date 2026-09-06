@@ -104,9 +104,16 @@ interface ItemResourceEntry {
 // items that live outside the per-race player Mesh/Tex archives.
 type ItemResourceData = Record<string, ItemResourceEntry>;
 
-let itemResourceIndexPromise: Promise<Map<string, ItemResourceEntry>> | null = null;
+interface ItemResourceIndexes {
+  /** Exact-string-keyed, matching the raw (inconsistently-padded hex) id verbatim - covers items whose Model already IS the literal resource id (weapons - see resolveWeaponMesh). */
+  byId: Map<string, ItemResourceEntry>;
+  /** Same entries, keyed by parsed hex value - see resolveCloakMeshStem, which needs this for the same per-race-block correction resolveItemMeshStem does above. */
+  byValue: Map<number, ItemResourceEntry>;
+}
 
-function loadItemResourceIndex(): Promise<Map<string, ItemResourceEntry>> {
+let itemResourceIndexPromise: Promise<ItemResourceIndexes> | null = null;
+
+function loadItemResourceIndex(): Promise<ItemResourceIndexes> {
   if (!itemResourceIndexPromise) {
     itemResourceIndexPromise = fetch(ITEM_RESOURCE_URL)
       .then((res) => {
@@ -114,11 +121,15 @@ function loadItemResourceIndex(): Promise<Map<string, ItemResourceEntry>> {
         return res.json() as Promise<ItemResourceData>;
       })
       .then((data) => {
-        const index = new Map<string, ItemResourceEntry>();
+        const byId = new Map<string, ItemResourceEntry>();
+        const byValue = new Map<number, ItemResourceEntry>();
         for (const [id, entry] of Object.entries(data)) {
-          if (entry.FileName) index.set(id, entry);
+          if (!entry.FileName) continue;
+          byId.set(id, entry);
+          const value = Number.parseInt(id, 16);
+          if (!Number.isNaN(value)) byValue.set(value, entry);
         }
-        return index;
+        return { byId, byValue };
       });
     itemResourceIndexPromise.catch(() => {
       itemResourceIndexPromise = null;
@@ -154,8 +165,8 @@ const WEAPON_TOKEN_PATTERN = /_WEAPON_([A-Z]+)_\d+$/;
  * should treat that as "no visual mesh available," not an error.
  */
 export async function resolveWeaponMesh(modelId: string): Promise<WeaponMeshInfo | null> {
-  const index = await loadItemResourceIndex();
-  const entry = index.get(modelId);
+  const { byId } = await loadItemResourceIndex();
+  const entry = byId.get(modelId);
   if (!entry) return null;
   const stem = entry.FileName.replace(/\.msh$/i, '');
   const match = WEAPON_TOKEN_PATTERN.exec(stem.toUpperCase());
@@ -165,18 +176,28 @@ export async function resolveWeaponMesh(modelId: string): Promise<WeaponMeshInfo
 /**
  * Resolves a cloak item's Model id to its mesh filename stem, via
  * itemResource.json - same table as weapons (not playerResource.json's
- * per-race Mesh blocks, which was the wrong table: verified only 12 of
- * cloakItem.json's 1572 rows have a matching entry there at all, none
- * backed by a real archive file). Direct id match here gets ~27% (425/1572)
- * instead - a real, if partial, hit rate, since cloak meshes turn out to
- * live under item/Armor/Mesh/ (see loadCloakArchives in character.ts), a
- * race-agnostic shared archive set the same way weapon meshes are, not a
- * per-race body-part swap. No weapon-token parsing needed (a cloak isn't
- * combat-clip-relevant), unlike resolveWeaponMesh above.
+ * per-race Mesh blocks). A direct id match alone only covers Accretia
+ * (~33%, 421/1272 IsExist=1 rows) - cloakItem.json's own Model values encode
+ * race with a "family" block that doesn't split by gender (0x700000-ish for
+ * either Bellato gender, 0x800000-ish for either Cora gender, matching
+ * neither actual mesh file), while itemResource.json's real entries ARE
+ * split per gender using the *same* per-race block scheme
+ * resolveItemMeshStem uses above (0x100000 per RaceGender value - verified:
+ * "BELMALE_ARMOR_CLOAK_000"/"BELFEMALE_ARMOR_CLOAK_000"/etc sit at
+ * raceGender*0x100000 + the item's own low 20 bits). Applying that same
+ * block correction for the character's actual raceGender recovers the
+ * other ~843 rows (~99% total, 1264/1272), evenly spread across all 5
+ * races instead of Accretia alone.
  */
-export async function resolveCloakMeshStem(modelId: string): Promise<string | null> {
-  const index = await loadItemResourceIndex();
-  const entry = index.get(modelId);
-  if (!entry) return null;
-  return entry.FileName.replace(/\.msh$/i, '');
+export async function resolveCloakMeshStem(modelId: string, raceGender: RaceGender): Promise<string | null> {
+  const { byId, byValue } = await loadItemResourceIndex();
+
+  const direct = byId.get(modelId);
+  if (direct) return direct.FileName.replace(/\.msh$/i, '');
+
+  if (!/^[0-9a-fA-F]+$/.test(modelId)) return null;
+  const low = Number.parseInt(modelId, 16) & 0xfffff;
+  const candidate = byValue.get(raceGender * RACE_MESH_BLOCK_SIZE + low);
+  if (!candidate) return null;
+  return candidate.FileName.replace(/\.msh$/i, '');
 }

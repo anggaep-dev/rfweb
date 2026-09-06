@@ -471,19 +471,32 @@ function buildObjectsFromParsedMesh(
   const siblingsByName = new Map<string, { object3D: Object3D; objectMatrix: Matrix4 }>();
 
   for (const obj of objects) {
-    if (obj.vertices.length === 0) continue;
-
-    const geometry = buildGeometry(obj);
-    const material = new MeshStandardMaterial({
-      map: texture ?? undefined,
-      color: texture ? 0xffffff : 0xcccccc,
-      side: DoubleSide,
-      ...materialAlphaOptions(texture),
-    });
+    // 0-vertex objects render nothing, but some multi-part meshes still
+    // chain a *real* sibling's parentName through one of these as a pure
+    // transform pivot - e.g. a cloak's "BONE Cloak"/"BONE Cloak Wing00"
+    // pseudo-bones, which exist only to position the wing/cover meshes
+    // parented to them, never to draw anything themselves (verified against
+    // ACCRETIA_ARMOR_CLOAK_000.msh: its visible pieces are parented to a
+    // chain of these, which are themselves parented to the real "Bip01
+    // Spine1" skeleton bone). Skipping them outright (as this used to)
+    // means every child one level or deeper in that chain fails both the
+    // real-bone lookup and the sibling-chain lookup below, falls through to
+    // "no parent found," and never gets added to the scene at all - not
+    // merely misplaced, but invisible. So these still go through the same
+    // rigid-attach-or-chain logic as any other part, just as a bare
+    // Object3D instead of a Mesh (no geometry/material to build).
+    const isRenderable = obj.vertices.length > 0;
 
     let builtObject: Object3D;
 
-    if (obj.skinBoneNames && obj.skinWeights) {
+    if (isRenderable && obj.skinBoneNames && obj.skinWeights) {
+      const geometry = buildGeometry(obj);
+      const material = new MeshStandardMaterial({
+        map: texture ?? undefined,
+        color: texture ? 0xffffff : 0xcccccc,
+        side: DoubleSide,
+        ...materialAlphaOptions(texture),
+      });
       const { skinIndices, skinWeights } = buildSkinAttributes(obj, built.nameToIndex);
       geometry.setAttribute('skinIndex', new BufferAttribute(skinIndices, 4));
       geometry.setAttribute('skinWeight', new BufferAttribute(skinWeights, 4));
@@ -506,8 +519,21 @@ function buildObjectsFromParsedMesh(
       builtObject = skinnedMesh;
     } else {
       // Rigid (unweighted) part: attach directly to its parent bone (or
-      // parent sub-object - see above) so it follows the pose.
-      const mesh = new Mesh(geometry, material);
+      // parent sub-object - see above) so it follows the pose. A 0-vertex
+      // pivot (isRenderable false - see above) gets a bare Object3D instead
+      // of a Mesh, since there's no geometry to build for it, but otherwise
+      // goes through the exact same placement logic below.
+      const mesh: Object3D = isRenderable
+        ? new Mesh(
+            buildGeometry(obj),
+            new MeshStandardMaterial({
+              map: texture ?? undefined,
+              color: texture ? 0xffffff : 0xcccccc,
+              side: DoubleSide,
+              ...materialAlphaOptions(texture),
+            }),
+          )
+        : new Object3D();
       mesh.name = obj.name || `${namePrefix}_${objects.indexOf(obj)}`;
 
       const parentIndex = built.nameToIndex.get(obj.parentName);
@@ -603,7 +629,17 @@ function parseBodyMeshEntry(
   }
   const meshBuffer = readRfsEntry(meshHit.archive, meshHit.entry);
 
-  const texHit = findEntryInArchives(texArchives, `${stem}.RFT`);
+  // Cloak textures are a naming outlier: their archives (AKT00.RFS) name
+  // entries "..._WEAPON_CLOAK_..." while the matching mesh stem (resolved
+  // via resolveCloakMeshStem) is "..._ARMOR_CLOAK_..." - verified against
+  // the real archive contents, not a guess. Harmless to try generically for
+  // every stem (not just cloak's): body-part stems are only ever looked up
+  // against their own race's Tex archives, which don't contain a
+  // "_WEAPON_"-substituted name for anything real, so this fallback simply
+  // finds nothing there instead of matching something wrong.
+  const texHit =
+    findEntryInArchives(texArchives, `${stem}.RFT`) ??
+    (stem.includes('_ARMOR_') ? findEntryInArchives(texArchives, `${stem.replace('_ARMOR_', '_WEAPON_')}.RFT`) : null);
   let texture: Texture | null = null;
   if (texHit) {
     try {
