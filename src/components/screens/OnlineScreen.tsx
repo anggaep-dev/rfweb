@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import FullscreenButton from '../hud/FullscreenButton';
 import PingIndicator from '../hud/PingIndicator';
+import { useKeyboardMove } from '../../hooks/useKeyboardMove';
 import type { RaceGender } from '../../rf/character';
 import type { ConnectionStatus } from '../../net/WorldConnection';
 import { OnlineScene } from '../../scenes/OnlineScene';
@@ -24,6 +25,11 @@ export default function OnlineScreen({ sceneManager, initialRaceGender, sessionT
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('connecting');
   const [pingMs, setPingMs] = useState<number | null>(null);
 
+  // Assigned by the mount effect below, so handleMoveInput (and any other
+  // future per-frame input) can reach the scene without needing it in its
+  // own dependency array - same pattern RfViewer uses for viewerSceneRef.
+  const onlineSceneRef = useRef<OnlineScene | null>(null);
+
   useEffect(() => {
     const onlineScene = new OnlineScene(sceneManager.renderer, initialRaceGender, sessionToken, characterId, {
       onConnectionStatusChange: setConnectionStatus,
@@ -33,11 +39,28 @@ export default function OnlineScreen({ sceneManager, initialRaceGender, sessionT
       },
       onPingChange: setPingMs,
     });
+    onlineSceneRef.current = onlineScene;
     // Disposal is SceneManager's job once this scene is superseded (by
     // whichever screen's mount effect calls setScene() next) or on full app
     // unmount - see the equivalent note in RfViewer's mount effect.
     void sceneManager.setScene(onlineScene);
+
+    return () => {
+      onlineSceneRef.current = null;
+    };
   }, [sceneManager, initialRaceGender, sessionToken, characterId]);
+
+  // Camera-relative (x=right, y=forward - see OnlineScene's own doc comment
+  // on why movement is camera-relative now) WASD/arrow-key input, same
+  // shared channel ViewerScene's debug controls use. Memoized so
+  // useKeyboardMove's listeners aren't torn down/reattached (losing
+  // in-progress key state) on every unrelated re-render - see RfViewer's
+  // own handleMoveInput for the same reasoning.
+  const handleMoveInput = useCallback((input: { x: number; y: number } | null) => {
+    onlineSceneRef.current?.setMoveInput(input);
+  }, []);
+
+  useKeyboardMove(handleMoveInput);
 
   return (
     <div className="online-screen">

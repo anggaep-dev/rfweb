@@ -24,6 +24,23 @@ export interface CameraUpdateContext {
   characterGroupQuaternion: Quaternion | null;
   characterPosition: Vector3 | null;
   isMoving: boolean;
+  /**
+   * Skips the "ease the orbit around to directly behind the character's
+   * facing" step below even while moving - for callers (OnlineScene) whose
+   * own facing ALREADY tracks the camera every frame (camera-relative WASD
+   * with no click-to-move), where this auto-follow is not just redundant
+   * but actively unstable: it chases the mesh's rotation, which chases
+   * `facing`, which is itself derived from the camera's own orientation -
+   * a closed loop with no independent damping on the facing side. Confirmed
+   * via direct testing (holding forward after a camera drag) that this
+   * loop drifts/oscillates the camera (and so the reported facing) even
+   * with a perfectly steady held key, eventually crossing a locomotion-
+   * classification boundary and producing a visible one-frame wrong-
+   * direction flicker on remote observers. ViewerScene's click-to-move
+   * doesn't have this issue - its facing is driven by the move target, not
+   * the camera - so it leaves this unset/false and keeps the auto-follow.
+   */
+  suppressBehindFollow?: boolean;
 }
 
 /**
@@ -219,7 +236,7 @@ export class CameraController {
       // directly behind the character's facing - unless the user is
       // right-dragging, which takes full manual control of the angle
       // until released.
-      if (ctx.isMoving && !this.rightDragging && ctx.characterGroupQuaternion) {
+      if (ctx.isMoving && !this.rightDragging && !ctx.suppressBehindFollow && ctx.characterGroupQuaternion) {
         this.behindDir.set(0, 0, 1).applyQuaternion(ctx.characterGroupQuaternion);
         this.behindDir.y = 0;
         if (this.behindDir.lengthSq() > 1e-8) {

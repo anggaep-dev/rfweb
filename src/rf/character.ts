@@ -113,6 +113,69 @@ export function classifyLocomotionDirection(x: number, y: number): LocomotionDir
   return x > 0 ? 'rt' : 'lf';
 }
 
+/** How much more dominant the "winning" axis needs to be to switch away from whichever group (forward/backward vs strafe) is already active - see classifyLocomotionDirectionStable. */
+const LOCOMOTION_HYSTERESIS_FACTOR = 1.15;
+
+/**
+ * Same as classifyLocomotionDirection, but resists rapidly toggling back
+ * and forth when x/y sit right at (or drift slightly across) the
+ * forward/backward-vs-strafe boundary - a real, confirmed failure mode for
+ * both OnlineScene's local classification and RemoteEntityController's
+ * remote one, since either can land arbitrarily close to that boundary
+ * depending on camera angle or network smoothing. Once settled into one
+ * group, switching to the other requires that group's own axis to become
+ * clearly (not just barely) more dominant - a classic hysteresis/Schmitt-
+ * trigger band around the boundary. Switching between 'bw'/null (a sign
+ * flip on y) or between 'lf'/'rt' (a sign flip on x) still happens
+ * immediately - those are genuine direction reversals within the SAME
+ * group, not boundary noise, and hysteresis only guards the group boundary
+ * itself. Callers that track locomotion frame-to-frame should use this
+ * instead of the plain function, threading back whatever it last returned
+ * as `previous`.
+ */
+export function classifyLocomotionDirectionStable(
+  x: number,
+  y: number,
+  previous: LocomotionDirection | null,
+): LocomotionDirection | null {
+  const wasForwardOrBackward = previous === null || previous === 'bw';
+  const absX = Math.abs(x);
+  const absY = Math.abs(y);
+  const isForwardOrBackward = wasForwardOrBackward
+    ? absY * LOCOMOTION_HYSTERESIS_FACTOR >= absX
+    : absY >= absX * LOCOMOTION_HYSTERESIS_FACTOR;
+
+  if (isForwardOrBackward) return y < 0 ? 'bw' : null;
+  return x > 0 ? 'rt' : 'lf';
+}
+
+/**
+ * Classifies a world-space `moveDirection` against a world-space `facing`
+ * (both assumed already snapped to the same 8-way compass grid the network
+ * protocol carries - see compassRotation.ts) into a LocomotionDirection,
+ * via classifyLocomotionDirectionStable. Shared by OnlineScene (local
+ * prediction, classifying its own moveDirection against its own facing) and
+ * RemoteEntityController (classifying a remote entity's server-reported
+ * travel direction against its server-reported facing) - both need the
+ * exact same "project onto facing's right/forward axes, then classify"
+ * orchestration, and having it live in two independently-maintained copies
+ * (as it did before) meant a fix applied to one side silently left the
+ * other's classification behavior different. `scratchRight` is caller-owned
+ * scratch space (reused across frames/entities), never held past this call.
+ */
+export function classifyMovementAgainstFacing(
+  moveDirection: Vector3,
+  facing: Vector3,
+  previous: LocomotionDirection | null,
+  scratchRight: Vector3,
+  upAxis: Vector3,
+): LocomotionDirection | null {
+  scratchRight.crossVectors(facing, upAxis).normalize();
+  const localX = moveDirection.dot(scratchRight);
+  const localY = moveDirection.dot(facing);
+  return classifyLocomotionDirectionStable(localX, localY, previous);
+}
+
 const DIRECTION_SEGMENT_PREFIX: Record<LocomotionDirection, string> = { bw: 'BW', lf: 'LF', rt: 'RT' };
 const DIRECTIONAL_LOCOMOTION_KINDS = ['walk', 'run'] as const;
 export const LOCOMOTION_DIRECTIONS: LocomotionDirection[] = ['bw', 'lf', 'rt'];

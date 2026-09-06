@@ -40,7 +40,10 @@ export class WorldConnection {
       this.onStatusChange?.('open');
       this.startPinging();
     });
-    ws.addEventListener('close', () => {
+    ws.addEventListener('close', (event) => {
+      // TEMP diagnostic - investigating an early/spurious disconnect with 2
+      // concurrent players; remove once root-caused.
+      console.log('[WorldConnection] close', { code: event.code, reason: event.reason, wasClean: event.wasClean });
       this.onStatusChange?.('closed');
       this.stopPinging();
     });

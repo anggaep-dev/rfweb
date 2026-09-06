@@ -27,6 +27,7 @@ const TURN_SPEED_RAD_PER_SEC = Math.PI * 2.2;
 // lookAt convention (-Z), so the computed facing needs a 180 degree
 // correction around the character's up axis.
 const FACING_CORRECTION = new Quaternion(0, 1, 0, 0);
+const Y_AXIS = new Vector3(0, 1, 0);
 const CROSSFADE_SECONDS = 0.25;
 /** A bone rotating more than this in a single frame is almost certainly a pop, not real motion. */
 const SUSPICIOUS_ANGLE_RAD = Math.PI / 2;
@@ -181,6 +182,7 @@ export class CharacterController {
   private readonly lastQuatByBone = new Map<string, Quaternion>();
   private readonly lookMatrix = new Matrix4();
   private readonly lookTargetQuat = new Quaternion();
+  private readonly worldYawQuat = new Quaternion();
 
   constructor(
     private readonly scene: Scene,
@@ -410,6 +412,36 @@ export class CharacterController {
       this.moveLocomotionDirection = null;
       if (!this.moveTarget) this.setDesiredClip('stand');
     }
+  }
+
+  /**
+   * Directly sets the character's world-space yaw (rotation.y-equivalent),
+   * bypassing update()'s own lookAt+rotateTowards turn-rate limiting -
+   * for a caller that already smooths yaw itself (RemoteEntityController,
+   * matching its own position smoothing) and wants that exact value applied
+   * immediately, not turned toward gradually on top of its own smoothing.
+   *
+   * Deliberately does NOT apply FACING_CORRECTION - confirmed by direct
+   * numeric comparison that update()'s lookAt(facePoint, character position,
+   * up) call (note the swapped eye/target - it looks FROM one step ahead
+   * BACK AT the character, not the standard order) already lands its local
+   * -Z axis pointing the intended facing direction's way once
+   * FACING_CORRECTION is folded in - i.e. that combination nets out to
+   * exactly the same thing a plain `setFromAxisAngle(Y, yaw)` gives on its
+   * own (which is exactly rotationToYaw's own documented contract: yaw=0
+   * faces local forward at world -Z). Applying FACING_CORRECTION a second
+   * time here (as this method used to, and as the `rotation.y = yaw +
+   * MESH_FACING_CORRECTION_RAD` it replaced always had) double-corrects and
+   * faces every remote entity exactly backward from the local player's own
+   * rendering of the same yaw - confirmed as the actual cause of remote
+   * players appearing to face/turn the opposite way from what they're
+   * actually doing.
+   */
+  setWorldYaw(yaw: number): void {
+    const character = this.character;
+    if (!character) return;
+    this.worldYawQuat.setFromAxisAngle(Y_AXIS, yaw);
+    character.group.quaternion.copy(this.worldYawQuat);
   }
 
   stepFrame(deltaFrames: number): void {

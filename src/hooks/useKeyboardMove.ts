@@ -23,8 +23,18 @@ function isTypingTarget(target: EventTarget | null): boolean {
  * keys to drive the same camera-relative (x, y) move-input channel
  * (ViewerScene.setMoveInput) the joystick uses, so both sources share one
  * movement path through CharacterController rather than each needing their
- * own. Diagonals (e.g. W+D) are normalized to the same max magnitude a
- * fully-pushed joystick would send.
+ * own.
+ *
+ * Single-direction only, matching the real client - no diagonal combos.
+ * Holding two keys at once (e.g. S+D) picks whichever was pressed most
+ * recently and ignores the other entirely until it's released, at which
+ * point the still-held older key (if any) takes back over. `pressed` is a
+ * Set, which iterates in insertion order, so "most recently pressed key
+ * still held" is just its last element - no separate ordering structure
+ * needed. This also sidesteps a real fragility diagonal input had: a 45°
+ * input sits exactly on the boundary between the forward/backward and
+ * strafe locomotion-classification groups, the one spot the hysteresis in
+ * classifyLocomotionDirectionStable is weakest.
  */
 export function useKeyboardMove(onMove: (input: { x: number; y: number } | null) => void): void {
   const pressed = useRef(new Set<string>());
@@ -39,20 +49,14 @@ export function useKeyboardMove(onMove: (input: { x: number; y: number } | null)
 
   useEffect(() => {
     const emit = () => {
-      let x = 0;
-      let y = 0;
-      for (const code of pressed.current) {
-        const mapped = MOVE_KEYS[code];
-        if (!mapped) continue;
-        if (mapped.axis === 'x') x += mapped.sign;
-        else y += mapped.sign;
-      }
-      if (x === 0 && y === 0) {
+      let active: string | undefined;
+      for (const code of pressed.current) active = code; // last iterated = most recently added
+      if (!active) {
         onMoveRef.current(null);
         return;
       }
-      const len = Math.hypot(x, y);
-      onMoveRef.current({ x: x / len, y: y / len });
+      const mapped = MOVE_KEYS[active];
+      onMoveRef.current(mapped.axis === 'x' ? { x: mapped.sign, y: 0 } : { x: 0, y: mapped.sign });
     };
 
     const handleKeyDown = (event: KeyboardEvent) => {

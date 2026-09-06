@@ -20,7 +20,7 @@ const CANVAS_HEIGHT = 96;
  */
 const SPRITE_HEIGHT_RADIUS_FACTOR = 0.18;
 /** How far above the head bone's own position the tag floats, same radius-relative reasoning - the bone itself sits roughly at the neck/chin joint, not the top of the skull. */
-const HEAD_CLEARANCE_RADIUS_FACTOR = 0.30;
+const HEAD_CLEARANCE_RADIUS_FACTOR = 0.40;
 
 function createNameTagTexture(name: string): { texture: CanvasTexture; aspect: number } {
   const canvas = document.createElement('canvas');
@@ -44,7 +44,7 @@ function createNameTagTexture(name: string): { texture: CanvasTexture; aspect: n
 
   const texture = new CanvasTexture(canvas);
   texture.needsUpdate = true;
-  return { texture, aspect: canvas.width / canvas.height };
+  return { texture, aspect:   canvas.width / canvas.height };
 }
 
 /**
