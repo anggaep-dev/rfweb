@@ -19,6 +19,7 @@ export default function VitalsBar() {
   return (
     <div className="vitals-bar">
       <div className="vitals-level" aria-label={`Level ${MOCK_LEVEL}`}>
+        <span className="vitals-level-tag">LV</span>
         <span className="vitals-level-number">{MOCK_LEVEL}</span>
       </div>
       <div className="vitals-bars">

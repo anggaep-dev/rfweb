@@ -12,8 +12,8 @@ const MOVE_KEYS: Record<string, { axis: 'x' | 'y'; sign: 1 | -1 }> = {
   ArrowLeft: { axis: 'x', sign: -1 },
 };
 
-/** Typing in a text field (the GM console, an equip search, ...) shouldn't also walk the character. */
-function isTypingTarget(target: EventTarget | null): boolean {
+/** Typing in a text field (the GM console, an equip search, ...) shouldn't also walk the character - exported so other global-keydown listeners (e.g. HudIconRow's C/I/L shortcuts) can guard against the same thing. */
+export function isTypingTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
   return target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable;
 }

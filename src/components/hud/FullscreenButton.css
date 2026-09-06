@@ -1,6 +1,7 @@
 .fullscreen-button-wrap {
   /* top-left, stacked just below PingIndicator, which is itself below
-     MiniMap - top-right is taken by OnlineScreen's Exit button/icon row. */
+     MiniMap - top-right is taken by OnlineScreen's Exit button, and
+     HudIconRow now lives as a vertical bar on the right edge. */
   position: absolute;
   top: 12.6rem;
   left: var(--space-4);

@@ -24,6 +24,16 @@ export interface OnlineSceneCallbacks {
   onStatusChange?: (status: 'loading' | 'ready' | 'error', errorMessage?: string) => void;
   onPingChange?: (pingMs: number | null) => void;
   onRadarFrame?: (frame: RadarFrame) => void;
+  onChatMessage?: (entry: ChatLogEntry) => void;
+}
+
+export interface ChatLogEntry {
+  /** Assigned locally (see nextChatEntryId) purely as a React key - the wire protocol carries no message id. */
+  id: number;
+  kind: 'chat' | 'whisper' | 'system';
+  /** Present for 'chat'/'whisper' (ChatEvent/WhisperEvent both carry player_name), absent for 'system' (SystemMessage has no sender). */
+  playerName?: string;
+  message: string;
 }
 
 export interface RadarFrame {
@@ -148,6 +158,8 @@ export class OnlineScene implements AppScene {
    */
   private readonly serverSelfPosition = new Vector3();
   private hasServerSelfPosition = false;
+  /** Assigns each incoming ChatLogEntry a locally-unique id - see its own doc comment. */
+  private nextChatEntryId = 1;
   private nameTag: NameTag | null = null;
   /** TEMP debug gizmo (facing/moveDirection arrows + locomotion/clip label) - see LocomotionDebugGizmo's own doc comment. */
   private debugGizmo: LocomotionDebugGizmo | null = null;
@@ -208,6 +220,13 @@ export class OnlineScene implements AppScene {
   /** Camera-relative move intent (x=right, y=forward), or null when idle - see OnlineScreen's useKeyboardMove, the same channel ViewerScene's WASD/mobile-joystick input uses. */
   setMoveInput(input: { x: number; y: number } | null): void {
     this.moveInput = input;
+  }
+
+  /** Sends a chat-all message - see ChatBox. Empty/whitespace-only is silently dropped rather than sending a blank line to every other client. */
+  sendChatMessage(message: string): void {
+    const trimmed = message.trim();
+    if (!trimmed) return;
+    this.connection.sendChatAll(trimmed);
   }
 
   async mount(): Promise<void> {
@@ -482,9 +501,23 @@ export class OnlineScene implements AppScene {
         break;
       }
       case 'chat':
+        this.callbacks.onChatMessage?.({
+          id: this.nextChatEntryId++,
+          kind: 'chat',
+          playerName: payload.chat.playerName,
+          message: payload.chat.message,
+        });
+        break;
       case 'whisper':
+        this.callbacks.onChatMessage?.({
+          id: this.nextChatEntryId++,
+          kind: 'whisper',
+          playerName: payload.whisper.playerName,
+          message: payload.whisper.message,
+        });
+        break;
       case 'systemMessage':
-        console.log('[OnlineScene] packet', payload);
+        this.callbacks.onChatMessage?.({ id: this.nextChatEntryId++, kind: 'system', message: payload.systemMessage.message });
         break;
     }
   }

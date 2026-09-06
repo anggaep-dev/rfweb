@@ -1,0 +1,160 @@
+.inventory-window {
+  /* Centered floating overlay, not a Dialog-style full-screen backdrop - the
+     rest of the HUD/scene stays visible behind it, same layered-overlay
+     convention every other HUD piece (MiniMap, VitalsBar, ...) already
+     follows. Width/max-height are capped by viewport so this never overflows
+     a small phone screen; a single fixed comfortable width (rather than
+     distinct mobile/desktop layouts) reads fine centered on a big desktop
+     viewport too, same as the real client's own fixed-size panels. */
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 600;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-3);
+  width: 17rem;
+  max-width: 94vw;
+  max-height: 92vh;
+  overflow-y: auto;
+  pointer-events: auto;
+}
+
+.inventory-equip-card,
+.inventory-bag-card {
+  width: 100%;
+  flex-shrink: 0;
+}
+
+/* ── Equipment paperdoll (design.md §5.2) ──
+   12-unit column grid so rows can mix widths (a denser row of small
+   accessory slots, wider armor slots below, rings flanking a wider center
+   slot at the bottom) instead of one uniform NxM grid - see EQUIP_SLOTS'
+   own `span` field for exactly which slot claims how many units. */
+.equip-grid {
+  display: grid;
+  grid-template-columns: repeat(12, 1fr);
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+
+.equip-slot {
+  aspect-ratio: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 2px;
+  background: var(--elevation-slot-bg);
+  box-shadow: var(--elevation-slot-shadow);
+  border: var(--elevation-slot-border);
+  /* #475569 is design.md §5.2's own literal value for an empty slot's
+     silhouette color - not in tokens.css as a named variable, but it's the
+     spec's prescribed value for this exact case, not an ad-hoc pick. */
+  color: #475569;
+}
+
+.equip-slot-round {
+  border-radius: 50%;
+}
+
+.equip-slot-icon {
+  width: 60%;
+  height: 60%;
+  opacity: 0.55;
+}
+
+/* ── Currency row ── */
+.inventory-currency-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+  font: 700 0.8rem var(--font-mono);
+}
+
+.inventory-currency-swatch {
+  width: 0.7rem;
+  height: 0.7rem;
+  margin-right: auto;
+  background: var(--surface-highlight);
+  border: 1px solid var(--border-chrome);
+}
+
+.inventory-currency-cp {
+  color: var(--text-cyan);
+}
+
+.inventory-currency-gold {
+  color: var(--text-gold);
+}
+
+.inventory-currency-label {
+  margin-left: 0.25rem;
+  color: var(--text-secondary);
+  font: 600 0.6rem var(--font-display);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* ── Bag tab selector (design.md §5.3) ── */
+.inventory-bag-tabs {
+  display: flex;
+  gap: var(--space-1);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border-subtle);
+}
+
+.inventory-bag-tab {
+  flex: 1;
+  aspect-ratio: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 2px;
+  border: 1px solid var(--border-subtle);
+  border-top-width: 2px;
+  background: var(--surface-panel-alt);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.inventory-bag-tab:hover {
+  color: var(--text-secondary);
+}
+
+.inventory-bag-tab-active {
+  background: var(--surface-elevated);
+  border-color: var(--energy-cyan);
+  color: var(--text-primary);
+}
+
+/* ── Per-bag item grid (design.md §5.3) ── */
+.bag-grid {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: var(--space-1);
+}
+
+.bag-slot {
+  aspect-ratio: 1;
+  border-radius: 2px;
+  background: var(--elevation-slot-bg);
+  box-shadow: var(--elevation-slot-shadow);
+  border: var(--elevation-slot-border);
+}
+
+.inventory-capacity-footer {
+  margin-top: var(--space-2);
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  font: 500 0.7rem var(--font-display);
+}
+
+.inventory-mono {
+  color: var(--text-primary);
+  font: 700 0.75rem var(--font-mono);
+}
