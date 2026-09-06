@@ -1,8 +1,8 @@
 .fullscreen-button-wrap {
-  /* top-left, stacked just below PingIndicator (also top-left, on
-     OnlineScreen) - top-right is taken by OnlineScreen's Exit button. */
+  /* top-left, stacked just below PingIndicator, which is itself below
+     MiniMap - top-right is taken by OnlineScreen's Exit button/icon row. */
   position: absolute;
-  top: 3.2rem;
+  top: 12.6rem;
   left: var(--space-4);
   display: flex;
   flex-direction: column;

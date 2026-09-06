@@ -1,6 +1,7 @@
 .ping-indicator {
+  /* Stacked below MiniMap (top-left, 8.5rem tall + space-4 top offset) so the two don't overlap. */
   position: absolute;
-  top: var(--space-4);
+  top: 10rem;
   left: var(--space-4);
   padding: var(--space-1) var(--space-2);
   border-radius: 2px;

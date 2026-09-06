@@ -1,6 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import FullscreenButton from '../hud/FullscreenButton';
+import HudIconRow from '../hud/HudIconRow';
+import MiniMap from '../hud/MiniMap';
+import type { MiniMapHandle } from '../hud/MiniMap';
+import MobileControls from '../hud/MobileControls';
 import PingIndicator from '../hud/PingIndicator';
+import VitalsBar from '../hud/VitalsBar';
 import { useKeyboardMove } from '../../hooks/useKeyboardMove';
 import type { RaceGender } from '../../rf/character';
 import type { ConnectionStatus } from '../../net/WorldConnection';
@@ -29,6 +34,9 @@ export default function OnlineScreen({ sceneManager, initialRaceGender, sessionT
   // future per-frame input) can reach the scene without needing it in its
   // own dependency array - same pattern RfViewer uses for viewerSceneRef.
   const onlineSceneRef = useRef<OnlineScene | null>(null);
+  // Written to directly every frame (see onRadarFrame below), not through
+  // React state - same reasoning as onlineSceneRef/MobileControls' knob.
+  const miniMapRef = useRef<MiniMapHandle | null>(null);
 
   useEffect(() => {
     const onlineScene = new OnlineScene(sceneManager.renderer, initialRaceGender, sessionToken, characterId, {
@@ -38,6 +46,7 @@ export default function OnlineScreen({ sceneManager, initialRaceGender, sessionT
         setErrorMessage(message ?? '');
       },
       onPingChange: setPingMs,
+      onRadarFrame: (frame) => miniMapRef.current?.update(frame.facingRad, frame.blips),
     });
     onlineSceneRef.current = onlineScene;
     // Disposal is SceneManager's job once this scene is superseded (by
@@ -51,11 +60,16 @@ export default function OnlineScreen({ sceneManager, initialRaceGender, sessionT
   }, [sceneManager, initialRaceGender, sessionToken, characterId]);
 
   // Camera-relative (x=right, y=forward - see OnlineScene's own doc comment
-  // on why movement is camera-relative now) WASD/arrow-key input, same
-  // shared channel ViewerScene's debug controls use. Memoized so
-  // useKeyboardMove's listeners aren't torn down/reattached (losing
-  // in-progress key state) on every unrelated re-render - see RfViewer's
-  // own handleMoveInput for the same reasoning.
+  // on why movement is camera-relative now) move intent, shared by WASD/
+  // arrow keys (useKeyboardMove below) and the mobile joystick
+  // (MobileControls below) - both drive the exact same setMoveInput()
+  // channel, same as RfViewer/ViewerScene's equivalent pairing. Memoized
+  // (stable identity) for two reasons, both confirmed live bugs in
+  // RfViewer's own copy of this: useKeyboardMove's listeners would be torn
+  // down/reattached (losing in-progress key state) on every unrelated
+  // re-render, and MobileControls' unmount-cleanup effect would fire on
+  // every fresh reference too, repeatedly zeroing the joystick input
+  // mid-hold - see MobileControls' own onMoveRef doc comment.
   const handleMoveInput = useCallback((input: { x: number; y: number } | null) => {
     onlineSceneRef.current?.setMoveInput(input);
   }, []);
@@ -64,8 +78,12 @@ export default function OnlineScreen({ sceneManager, initialRaceGender, sessionT
 
   return (
     <div className="online-screen">
+      {status === 'ready' && <MiniMap ref={miniMapRef} />}
       {status === 'ready' && <PingIndicator pingMs={pingMs} />}
       {status === 'ready' && <FullscreenButton />}
+      {status === 'ready' && <HudIconRow />}
+      {status === 'ready' && <VitalsBar />}
+      {status === 'ready' && <MobileControls onMove={handleMoveInput} />}
 
       {status === 'loading' && <div className="online-screen-overlay">Loading character…</div>}
       {status === 'error' && (

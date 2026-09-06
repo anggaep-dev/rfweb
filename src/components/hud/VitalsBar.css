@@ -1,0 +1,88 @@
+.vitals-bar {
+  position: absolute;
+  bottom: var(--space-6);
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 14rem;
+  max-width: calc(100vw - 15rem);
+  padding: var(--space-2);
+  background: var(--elevation-panel-bg);
+  border: var(--elevation-panel-border);
+  border-radius: 4px;
+  box-shadow: var(--elevation-panel-shadow);
+  pointer-events: none;
+}
+
+.vitals-level {
+  flex: none;
+  width: 2.2rem;
+  height: 2.2rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  clip-path: polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%);
+  background: var(--surface-elevated);
+  border: 1px solid var(--accent-primary);
+  box-shadow: var(--elevation-active-shadow);
+}
+
+.vitals-level-number {
+  color: var(--text-gold);
+  font: 700 0.85rem var(--font-mono);
+}
+
+.vitals-bars {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.vitals-track {
+  position: relative;
+  width: 100%;
+  border-radius: 2px;
+  background: var(--elevation-slot-bg);
+  box-shadow: var(--elevation-slot-shadow);
+  border: var(--elevation-slot-border);
+  overflow: hidden;
+}
+
+.vitals-track-hp {
+  height: 0.7rem;
+}
+
+.vitals-track-mp {
+  height: 0.4rem;
+}
+
+.vitals-fill {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  border-radius: inherit;
+  transition: width 0.2s ease-out;
+}
+
+.vitals-fill-hp {
+  background: linear-gradient(180deg, #fb7185 0%, var(--vital-ruby) 100%);
+}
+
+.vitals-fill-mp {
+  background: linear-gradient(180deg, #67e8f9 0%, var(--energy-cyan) 100%);
+}
+
+.vitals-label {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-primary);
+  font: 700 0.55rem var(--font-mono);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.9);
+}

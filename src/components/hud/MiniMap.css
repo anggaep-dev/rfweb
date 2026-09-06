@@ -1,0 +1,120 @@
+.minimap {
+  position: absolute;
+  top: var(--space-4);
+  left: var(--space-4);
+  width: 8.5rem;
+  height: 8.5rem;
+  pointer-events: none;
+}
+
+.minimap-compass {
+  position: absolute;
+  top: -0.4rem;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 0 var(--space-1);
+  background: var(--surface-panel);
+  border: 1px solid var(--border-chrome);
+  border-radius: 2px;
+  color: var(--text-cyan);
+  font: 700 0.6rem var(--font-mono);
+  letter-spacing: 0.08em;
+  z-index: 1;
+}
+
+.minimap-face {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  overflow: hidden;
+  background: radial-gradient(circle at 50% 40%, #131824 0%, var(--surface-base) 75%);
+  border: 2px solid var(--border-chrome);
+  box-shadow: var(--elevation-panel-shadow), 0 0 0 1px rgba(212, 162, 70, 0.25);
+}
+
+.minimap-grid {
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(rgba(34, 211, 238, 0.14) 1px, transparent 1px) 0 0 / 100% 33.3%,
+    linear-gradient(90deg, rgba(34, 211, 238, 0.14) 1px, transparent 1px) 0 0 / 33.3% 100%;
+}
+
+/* Slow rotating radar sweep - purely decorative "is this thing alive" cue, no real scan data behind it. */
+.minimap-sweep {
+  position: absolute;
+  inset: 0;
+  background: conic-gradient(from 0deg, rgba(34, 211, 238, 0.35), transparent 22%, transparent 100%);
+  animation: minimap-sweep-spin 6s linear infinite;
+}
+
+@keyframes minimap-sweep-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.minimap-blip {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 0.4rem;
+  height: 0.4rem;
+  margin-left: -0.2rem;
+  margin-top: -0.2rem;
+  border-radius: 50%;
+  background: var(--energy-cyan);
+  box-shadow: 0 0 4px rgba(34, 211, 238, 0.8);
+}
+
+.minimap-player {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 0;
+  height: 0;
+  margin-left: -0.35rem;
+  margin-top: -0.35rem;
+  border-left: 0.35rem solid transparent;
+  border-right: 0.35rem solid transparent;
+  border-bottom: 0.6rem solid var(--accent-primary);
+  filter: drop-shadow(0 0 4px rgba(212, 162, 70, 0.8));
+}
+
+/* Tactical bracket corners, echoing the mech-cockpit "targeting frame" motif rather than a plain square panel. */
+.minimap-corner {
+  position: absolute;
+  width: 0.6rem;
+  height: 0.6rem;
+  border-color: var(--accent-primary);
+  border-style: solid;
+  opacity: 0.85;
+}
+
+.minimap-corner-tl {
+  top: -0.15rem;
+  left: -0.15rem;
+  border-width: 2px 0 0 2px;
+}
+
+.minimap-corner-tr {
+  top: -0.15rem;
+  right: -0.15rem;
+  border-width: 2px 2px 0 0;
+}
+
+.minimap-corner-bl {
+  bottom: -0.15rem;
+  left: -0.15rem;
+  border-width: 0 0 2px 2px;
+}
+
+.minimap-corner-br {
+  bottom: -0.15rem;
+  right: -0.15rem;
+  border-width: 0 2px 2px 0;
+}

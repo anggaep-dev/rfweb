@@ -9,7 +9,7 @@ import { RemoteEntityController } from '../controllers/RemoteEntityController';
 import { SceneController } from '../controllers/SceneController';
 import { getCharacterProfile } from '../net/CharacterClient';
 import { facingToRotation, quantizeDirectionVector, quantizeToCompass } from '../net/compassRotation';
-import type { ServerPacket } from '../net/generated/protocol';
+import type { EntitySnapshot, EntityUpdate, ServerPacket } from '../net/generated/protocol';
 import { SERVER_PORT, isSecurePage, pageHostname } from '../net/serverHost';
 import type { ConnectionStatus } from '../net/WorldConnection';
 import { WorldConnection } from '../net/WorldConnection';
@@ -23,6 +23,22 @@ export interface OnlineSceneCallbacks {
   onConnectionStatusChange?: (status: ConnectionStatus) => void;
   onStatusChange?: (status: 'loading' | 'ready' | 'error', errorMessage?: string) => void;
   onPingChange?: (pingMs: number | null) => void;
+  onRadarFrame?: (frame: RadarFrame) => void;
+}
+
+export interface RadarFrame {
+  /** Local player's facing as a radians angle: 0 = world -Z ("north", up on the minimap), increasing clockwise toward +X ("east", right) - same convention as compassRotation.ts's own North=-Z. See MiniMap's own doc comment for how this drives the player marker's rotation. */
+  facingRad: number;
+  /**
+   * Every other tracked entity's position relative to the local player, in
+   * raw server world-units (see RemoteEntityController.setScale's own doc
+   * comment on what those are) - deliberately NOT converted to scene units,
+   * since the radar has its own fixed world-unit range independent of the
+   * 3D scene's render scale. Empty until the first WorldSnapshot/EntityEnter
+   * that actually includes the local player's own entity has arrived (see
+   * hasServerSelfPosition) - there's nothing to be relative TO before then.
+   */
+  blips: { dx: number; dz: number }[];
 }
 
 // Server world-units-to-scene-units scale, derived by matching the
@@ -119,6 +135,19 @@ export class OnlineScene implements AppScene {
   private sentRunning = false;
   private isRunning = false;
   private myPlayerId: number | null = null;
+  /**
+   * The server's own authoritative position for the local player, raw server
+   * world-units - tracked purely for the radar's relative-position math (see
+   * RadarFrame/onRadarFrame below), from the exact same worldSnapshot/enter/
+   * update messages RemoteEntityController consumes for every OTHER entity
+   * (just not skipped for entityId===myPlayerId here). Never used to move or
+   * reconcile the local character's own RENDERED position - that stays pure
+   * client-side prediction, per this class's own doc comment; this is a
+   * separate, parallel bookkeeping purely so "how far away is that other
+   * player" has a meaningful answer.
+   */
+  private readonly serverSelfPosition = new Vector3();
+  private hasServerSelfPosition = false;
   private nameTag: NameTag | null = null;
   /** TEMP debug gizmo (facing/moveDirection arrows + locomotion/clip label) - see LocomotionDebugGizmo's own doc comment. */
   private debugGizmo: LocomotionDebugGizmo | null = null;
@@ -385,6 +414,16 @@ export class OnlineScene implements AppScene {
       // camera-relative (no click-to-move) control scheme.
       suppressBehindFollow: true,
     });
+
+    if (this.callbacks.onRadarFrame) {
+      const blips = this.hasServerSelfPosition
+        ? this.remoteEntityController.getEntityPositions().map((position) => ({
+            dx: position.x - this.serverSelfPosition.x,
+            dz: position.z - this.serverSelfPosition.z,
+          }))
+        : [];
+      this.callbacks.onRadarFrame({ facingRad: Math.atan2(this.facing.x, -this.facing.z), blips });
+    }
   }
 
   resize(aspect: number): void {
@@ -423,13 +462,22 @@ export class OnlineScene implements AppScene {
       case 'welcome':
         this.myPlayerId = payload.welcome.playerId;
         break;
-      case 'worldSnapshot':
+      case 'worldSnapshot': {
+        const selfSnapshot = payload.worldSnapshot.entities.find((entity) => entity.entityId === this.myPlayerId);
+        if (selfSnapshot) this.snapServerSelfPosition(selfSnapshot);
         this.remoteEntityController.applySnapshot(payload.worldSnapshot.entities, this.myPlayerId);
         break;
+      }
       case 'worldDelta': {
         const { enters, updates, exits } = payload.worldDelta;
-        for (const enter of enters) this.remoteEntityController.enter(enter.entityId, enter.entity, this.myPlayerId);
-        for (const update of updates) this.remoteEntityController.update(update.entityId, update, this.myPlayerId);
+        for (const enter of enters) {
+          if (enter.entityId === this.myPlayerId && enter.entity) this.snapServerSelfPosition(enter.entity);
+          this.remoteEntityController.enter(enter.entityId, enter.entity, this.myPlayerId);
+        }
+        for (const update of updates) {
+          if (update.entityId === this.myPlayerId) this.applyServerSelfDelta(update);
+          this.remoteEntityController.update(update.entityId, update, this.myPlayerId);
+        }
         for (const exit of exits) this.remoteEntityController.exit(exit.entityId, this.myPlayerId);
         break;
       }
@@ -439,6 +487,17 @@ export class OnlineScene implements AppScene {
         console.log('[OnlineScene] packet', payload);
         break;
     }
+  }
+
+  private snapServerSelfPosition(entity: EntitySnapshot): void {
+    this.serverSelfPosition.set(entity.x, entity.y, entity.z);
+    this.hasServerSelfPosition = true;
+  }
+
+  private applyServerSelfDelta(update: EntityUpdate): void {
+    this.serverSelfPosition.x += update.dx;
+    this.serverSelfPosition.y += update.dy;
+    this.serverSelfPosition.z += update.dz;
   }
 
   private handleRunKeyChange(event: KeyboardEvent, pressed: boolean): void {

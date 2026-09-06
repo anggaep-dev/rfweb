@@ -162,6 +162,13 @@ export class RemoteEntityController {
     this.remove(entityId);
   }
 
+  /** Current tracked positions (raw, unscaled server world-units - see setScale) of every entity here, for OnlineScene's radar relative-position math (see RadarFrame). Order is not meaningful or stable. */
+  getEntityPositions(): { x: number; z: number }[] {
+    const positions: { x: number; z: number }[] = [];
+    for (const remote of this.entities.values()) positions.push({ x: remote.position.x, z: remote.position.z });
+    return positions;
+  }
+
   /** Smooths every tracked entity's rendered position/yaw toward its latest server-reported target, and drives its walk/idle animation - call once per render frame. */
   tick(delta: number): void {
     const posT = 1 - Math.exp(-POSITION_SMOOTHING_RATE * delta);
