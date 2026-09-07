@@ -61,6 +61,7 @@
 }
 
 .debug-panel-cam-select,
+.debug-panel-cloak-ani-select,
 .debug-panel-race-select select {
   padding: var(--space-2) var(--space-3);
   border-radius: 2px;
@@ -73,6 +74,7 @@
 }
 
 .debug-panel-cam-select:hover,
+.debug-panel-cloak-ani-select:hover,
 .debug-panel-race-select select:hover {
   background: var(--surface-elevated);
   color: var(--text-primary);

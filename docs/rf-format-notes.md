@@ -11,6 +11,33 @@ code, trust the code and fix this doc.
 
 ## Binary file formats
 
+**CDN migration (weapons, body armor, cloak, character base animations)** -
+these categories are no longer fetched as packed `.RFS` archives at
+runtime at all. `scripts/extract_rfs.py` explodes the relevant archives
+into loose per-entry files (decrypting `.RFT` -> plain `.dds` along the
+way) and uploads them to a CDN; `character.ts` fetches by exact filename
+(`characterCdnBase()`/`CLOAK_CDN_BASE`/`WEAPON_CDN_BASE`/`ANI_CDN_BASE`)
+instead of downloading a whole archive to search it. The `.RFS`
+parsing/lookup code below is still real and still used for whatever
+hasn't been migrated (Shield/Etc/Booster/Mount, at time of writing), but
+`RfsArchive`/`findRfsEntry`/`readRfsEntry` are gone entirely from
+`character.ts` for the migrated categories - don't be surprised not to
+find them there. Two non-obvious things this migration surfaced:
+- The archive format's own 32-byte name-field truncation (see
+  `findRfsEntry` below) means a resolved *filename* doesn't always survive
+  intact through extraction - `scripts/extract_rfs.py`'s `force_extension`
+  (mirrored in `character.ts` as `forceAniExtension`/`aniCdnFileName` for
+  the categories still keyed by truncated name, i.e. animations) has to
+  actively repair a truncated extension, including the edge case where
+  the truncation lands exactly on the dot (leaving an empty tail) - get
+  this wrong and real items 404 silently (confirmed: several
+  `ACCRETIA_WEAPON_GRELAUNCHER_*` weapons and dozens of combat/gesture
+  animation clips were broken this way on a real, already-uploaded CDN
+  bucket before the fix).
+- Booster items (see the Cloak section below) turned out to need their
+  own texture-naming special case on top of this - see
+  `boosterTextureName` in `character.ts`.
+
 ### `.RFS` archive (`src/rf/rfs.ts`)
 
 Flat, uncompressed table of fixed-size records followed by the raw payload
@@ -391,8 +418,42 @@ of those 9 ids. The real cloak meshes live under `item/Armor/Mesh/`
 (`AKM00`/`NewCloakM`/`PHBP01`/`XMC.RFS`, textures in `item/Armor/Tex/`
 (`AKT00`/`NewCloakT.RFS`) - direct `itemResource.json` id lookup (exactly
 like `resolveWeaponMesh`, no arithmetic) gets 425/1572 (~27%) real hits.
-See `resolveCloakMeshStem()` in `resource.ts` and `loadCloakArchives()` in
-`character.ts`.
+See `resolveCloakMeshStem()` in `resource.ts` (mesh/tex are now CDN-hosted
+loose files - see the CDN migration note at the top of this doc's binary
+formats section - rather than fetched from `item/Armor/Mesh|Tex/*.RFS`
+directly).
+
+**Real cloak meshes are rigid, not skinned cloth** - every cloak `.msh`
+sub-object checked (items 002-041, several races) has `weightAmount == 0`
+on its visible geometry, parented directly (or through 0-vertex pivot
+sub-objects - `buildObjectsFromParsedMesh`'s own comment documents item
+000's "BONE Cloak"/"BONE Cloak Wing00" chain) to the real skeleton's
+`"Bip01 Spine1"` bone - the exact same rigid-attach mechanism weapons use,
+not the "skinned mesh that drapes over the body" this project assumed
+until this was actually checked.
+
+**Some cloak items additionally carry their own animation clips** -
+`item/Armor/Ani/{stem}_{STATE}.ANI` (`ATTACK`/`DEFAULT`/`EQUIP`/`UNEQUIP`/
+`UNUSE`/`USE` - only a handful of item numbers per race actually have this
+data, most cloaks don't). `item/Armor/Bone/{stem}.bn` (~30 bones, same
+names as the main humanoid rig) looks like the obvious matching skeleton
+but **is not used at all** - confirmed by parsing a real clip
+(`ACCRETIA_ARMOR_CLOAK_000_USE.ANI`): its animated object names are
+`Wing00`..`Wing07`/`BONE Cloak WingNN`/`Cloak Cover`/`BONE Cloak Cover`
+plus one root track named after the item stem - these match the cloak
+*mesh*'s own sub-object names one-for-one (the `BONE Cloak` pivot chain
+described above), not any `Bip01 ...` bone from the `.bn` skeleton. So the
+clips drive the cloak's own already-built rigid sub-objects directly by
+name, using each object's static placement (already correct via the rigid
+attach above) as its bind pose - no separate skeleton or per-frame delta
+math needed (see `loadCloakAnimationRig` in `character.ts` and
+`CloakSwayState`/`applyCloakAnimation` in `CharacterController.ts`). This
+gives the cloak an equip flourish, an idle sway loop, and a retract
+animation on unequip, independent of whatever the main body clip is doing.
+`DEFAULT` (bind pose, nothing to play) and `UNEQUIP` (apparently unused by
+the real client for this - `UNUSE` is what plays on removal) aren't wired
+up; neither is `ATTACK` (no attack/combat action exists anywhere in this
+app yet to trigger it from).
 
 Neither table's `PathName`/`TexutrePath` reliably names which archive
 actually holds the mesh - most `itemResource.json` weapon entries just say

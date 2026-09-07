@@ -19,6 +19,9 @@ export interface DebugPanelProps {
 
   clipName: string;
   onManualClip: (name: string) => void;
+  /** Which animation states the currently-equipped cloak's own rig actually has (see CharacterController.getCloakAnimationStateNames) - empty if no cloak, or one with no bone/ani data, is equipped. The dropdown is hidden entirely when empty rather than shown disabled. */
+  cloakAniStates: string[];
+  onManualCloakAniState: (state: string) => void;
   showBones: boolean;
   onToggleBones: () => void;
   camMode: CamMode;
@@ -49,6 +52,8 @@ export default function DebugPanel({
   onRaceGenderChange,
   clipName,
   onManualClip,
+  cloakAniStates,
+  onManualCloakAniState,
   showBones,
   onToggleBones,
   camMode,
@@ -83,6 +88,24 @@ export default function DebugPanel({
                 {name}
               </button>
             ))}
+            {cloakAniStates.length > 0 && (
+              <select
+                className="debug-panel-cloak-ani-select"
+                value=""
+                onChange={(e) => {
+                  if (e.target.value) onManualCloakAniState(e.target.value);
+                }}
+              >
+                <option value="" disabled>
+                  cloak: preview...
+                </option>
+                {cloakAniStates.map((state) => (
+                  <option key={state} value={state}>
+                    cloak: {state}
+                  </option>
+                ))}
+              </select>
+            )}
             <button className={showBones ? 'active' : ''} onClick={onToggleBones}>
               bones
             </button>

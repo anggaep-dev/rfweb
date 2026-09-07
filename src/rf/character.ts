@@ -29,7 +29,14 @@ const ASSET_BASE = '/game-assets/character/player';
 // across every skinned part - see the comment at its call site below.
 const IDENTITY_MATRIX = new Matrix4();
 
-export const CLIP_NAMES = ['stand', 'walk', 'run', 'sit'] as const;
+// 'fly' is the Booster movement pose (see CharacterController's
+// isBoosterEquipped/getDesiredLocomotionClip) - a real unarmed locomotion
+// clip in the same ETA archive as stand/walk/run/sit, just never loaded
+// here before now. Directional (BW/FW/LT/RT) fly variants exist too
+// (confirmed in the real data), but aren't loaded - out of scope until
+// directional-while-boosting is actually needed; the plain clip is what
+// LocomotionDirection's own "mostly forward" case already falls back to.
+export const CLIP_NAMES = ['stand', 'walk', 'run', 'sit', 'fly'] as const;
 
 /**
  * Playable race/gender bodies, matching the client's RACEGENDER enum
@@ -79,6 +86,7 @@ function animationFileNames(nameToken: string): Record<(typeof CLIP_NAMES)[numbe
     walk: `${nameToken}_PEACE_WALK_NONE_NONE_01_00.ANI`,
     run: `${nameToken}_PEACE_RUN_NONE_NONE_01_00.ANI`,
     sit: `${nameToken}_COMMON_SIT_NONE_NONE_01_00.ANI`,
+    fly: `${nameToken}_PEACE_FLY_NONE_NONE_01_00.ANI`,
   };
 }
 
@@ -178,8 +186,16 @@ const DIRECTION_SEGMENT_PREFIX: Record<LocomotionDirection, string> = { bw: 'BW'
 const DIRECTIONAL_LOCOMOTION_KINDS = ['walk', 'run'] as const;
 export const LOCOMOTION_DIRECTIONS: LocomotionDirection[] = ['bw', 'lf', 'rt'];
 
-/** Cache key (also the character.clips key) for an unarmed directional walk/run clip - see LocomotionDirection. */
-function directionalClipKey(kind: 'walk' | 'run', direction: LocomotionDirection): string {
+// Fly has the same backward/strafe clip set as walk/run (confirmed present
+// for every race in the unarmed ETA archive, same as DIRECTION_SEGMENT_PREFIX's
+// own doc comment) - but its "left" segment is spelled "LT" ("...LTFLY..."),
+// not "LF" like walk/run's ("...LFWALK.../...LFRUN..."). A real per-clip-type
+// naming quirk in the source data, not a typo - keep this table separate
+// rather than special-casing 'fly' into DIRECTION_SEGMENT_PREFIX itself.
+const FLY_DIRECTION_SEGMENT_PREFIX: Record<LocomotionDirection, string> = { bw: 'BW', lf: 'LT', rt: 'RT' };
+
+/** Cache key (also the character.clips key) for an unarmed directional walk/run/fly clip - see LocomotionDirection. */
+function directionalClipKey(kind: 'walk' | 'run' | 'fly', direction: LocomotionDirection): string {
   return `${kind}:${direction}`;
 }
 
@@ -194,6 +210,14 @@ function directionalAnimationFileNames(nameToken: string): { key: string; fileNa
     }
   }
   return entries;
+}
+
+/** Fly's own backward/left/right clips (see FLY_DIRECTION_SEGMENT_PREFIX) - "forward" has no dedicated variant used here, same as walk/run: the character already turns to face its travel direction, so plain "fly" (this file's CLIP_NAMES entry) covers both idling and moving forward. */
+function directionalFlyAnimationFileNames(nameToken: string): { key: string; fileName: string }[] {
+  return LOCOMOTION_DIRECTIONS.map((direction) => ({
+    key: directionalClipKey('fly', direction),
+    fileName: `${nameToken}_PEACE_${FLY_DIRECTION_SEGMENT_PREFIX[direction]}FLY_NONE_NONE_01_00.ANI`,
+  }));
 }
 
 export interface RfCharacter {
@@ -289,7 +313,13 @@ function forceAniExtension(name: string): string {
   const dotIndex = name.lastIndexOf('.');
   if (dotIndex >= 0) {
     const tail = name.slice(dotIndex + 1);
-    if (tail.length > 0 && tail.length <= 4 && /^[a-zA-Z0-9]+$/.test(tail)) {
+    // tail === '' means the truncation landed exactly on the dot (e.g.
+    // "...GRELAUNCHER_000.") - just as much "nothing real to keep" as a
+    // short alnum remnant, and must be stripped the same way or this
+    // produces "...000..ani" (double dot) instead of "...000.ani" - see
+    // force_extension's own doc comment in scripts/extract_rfs.py for the
+    // real weapon/animation names this actually broke.
+    if (tail.length <= 4 && (tail === '' || /^[a-zA-Z0-9]+$/.test(tail))) {
       return `${name.slice(0, dotIndex)}.ani`;
     }
   }
@@ -684,6 +714,55 @@ interface ParsedBodyMesh {
 // time something already seen once gets equipped again.
 const bodyMeshParseCache = new Map<string, ParsedBodyMesh | null>();
 
+// "Booster" cloak items (cloakItem.json's "Premium Booster"/"Blood
+// Booster[N Grade]" rows - an ordinary cloak-slot item, not a separate
+// mechanic) resolve to a mesh stem like "BELMALE_COSTUMEARMOR_CLOAK_50",
+// but their texture lives under a completely different naming scheme:
+// "{tier}_buster_{raceCode}" (e.g. "01_buster_BE"), confirmed against the
+// real GDBUSTER.RFS Tex archive - 12 entries (4 tiers x 3 race buckets),
+// not 20 like the mesh side. Tier reindexes positionally (50->01, 52->02,
+// 53->03, 54->04) and race collapses to 3 buckets shared across both
+// genders for Bell/Cora - the texture is generic thruster/metal, not
+// body-shape-specific like the mesh is.
+const BOOSTER_TIER_TO_INDEX: Record<string, string> = { '50': '01', '52': '02', '53': '03', '54': '04' };
+const BOOSTER_RACE_TOKEN_TO_CODE: Record<string, string> = {
+  ACCRETIA: 'AC',
+  BELFEMALE: 'BE',
+  BELMALE: 'BE',
+  CORFEMALE: 'CO',
+  CORMALE: 'CO',
+};
+
+function boosterTextureName(stem: string): string | null {
+  const match = /^([A-Z]+)_COSTUMEARMOR_CLOAK_(\d+)$/.exec(stem);
+  if (!match) return null;
+  const [, raceToken, tier] = match;
+  const code = BOOSTER_RACE_TOKEN_TO_CODE[raceToken];
+  const index = BOOSTER_TIER_TO_INDEX[tier];
+  return code && index ? `${index}_buster_${code}` : null;
+}
+
+/**
+ * The mesh stem alone doesn't always say what its texture is actually
+ * named on the CDN - two confirmed real-data outliers, tried in order
+ * after the stem itself:
+ * 1. Regular cloak textures name entries "..._WEAPON_CLOAK_..." while the
+ *    matching mesh stem is "..._ARMOR_CLOAK_..." - verified against the
+ *    real archive contents, not a guess.
+ * 2. Booster cloak textures use an unrelated "{tier}_buster_{raceCode}"
+ *    scheme entirely - see boosterTextureName above.
+ * Harmless to try both generically for every stem, not just cloak's: a
+ * body-part stem never matches either pattern, so these fallbacks just
+ * 404 instead of matching something wrong.
+ */
+function textureNameCandidates(stem: string): string[] {
+  const candidates = [stem];
+  if (stem.includes('_ARMOR_')) candidates.push(stem.replace('_ARMOR_', '_WEAPON_'));
+  const boosterName = boosterTextureName(stem);
+  if (boosterName) candidates.push(boosterName);
+  return candidates;
+}
+
 async function fetchBodyMeshEntry(stem: string, cdnBase: string): Promise<ParsedBodyMesh | null> {
   const cached = bodyMeshParseCache.get(stem);
   if (cached !== undefined) return cached;
@@ -697,27 +776,25 @@ async function fetchBodyMeshEntry(stem: string, cdnBase: string): Promise<Parsed
     return null;
   }
 
-  // Cloak textures are a naming outlier: their source archive (AKT00.RFS)
-  // named entries "..._WEAPON_CLOAK_..." while the matching mesh stem
-  // (resolved via resolveCloakMeshStem) is "..._ARMOR_CLOAK_..." - verified
-  // against the real archive contents, not a guess, and preserved as-is
-  // through extraction (scripts/extract_rfs.py doesn't rename anything).
-  // Harmless to try generically for every stem (not just cloak's):
-  // body-part stems never have a real "_WEAPON_"-substituted counterpart on
-  // the CDN, so this fallback just 404s there instead of matching wrong.
   let texture: Texture | null = null;
-  try {
-    let texBuffer: ArrayBuffer;
+  let texBuffer: ArrayBuffer | null = null;
+  for (const candidate of textureNameCandidates(stem)) {
     try {
-      texBuffer = await fetchBuffer(`${cdnBase}/tex/${stem}.dds`);
-    } catch (err) {
-      if (!stem.includes('_ARMOR_')) throw err;
-      texBuffer = await fetchBuffer(`${cdnBase}/tex/${stem.replace('_ARMOR_', '_WEAPON_')}.dds`);
+      texBuffer = await fetchBuffer(`${cdnBase}/tex/${candidate}.dds`);
+      break;
+    } catch {
+      // Not this name - try the next candidate, if any.
     }
-    texture = decodeRftTexture(texBuffer);
-    texture.userData.pooled = true;
-  } catch (err) {
-    console.warn(`No usable texture for ${stem}:`, err);
+  }
+  if (texBuffer) {
+    try {
+      texture = decodeRftTexture(texBuffer);
+      texture.userData.pooled = true;
+    } catch (err) {
+      console.warn(`Texture decode failed for ${stem}:`, err);
+    }
+  } else {
+    console.warn(`No usable texture for ${stem}`);
   }
 
   let objects: RfMeshObject[];
@@ -751,6 +828,75 @@ export async function buildMeshPartObjects(stem: string, cdnBase: string, built:
   if (!parsed) return [];
 
   return buildObjectsFromParsedMesh(parsed.objects, parsed.texture, built, stem);
+}
+
+/** Which of a cloak's own animation states this project actually plays - see loadCloakAnimationRig's doc comment for why ATTACK/DEFAULT/UNEQUIP aren't included. */
+const CLOAK_ANI_STATES = ['EQUIP', 'USE', 'UNUSE'] as const;
+type CloakAniState = (typeof CLOAK_ANI_STATES)[number];
+
+export interface CloakAnimationRig {
+  mixer: AnimationMixer;
+  clips: Partial<Record<CloakAniState, AnimationClip>>;
+}
+
+/**
+ * Loads a cloak item's own animation clips, if it has any - most cloak
+ * items don't (confirmed: only a handful of item numbers per race ship
+ * `.ANI` data at all under item/Armor/Ani). A 404 on every state is the
+ * common case, not an error.
+ *
+ * The item's own `item/Armor/Bone/{stem}.bn` file is NOT used here, despite
+ * looking like the obvious source of an animation "skeleton" - verified by
+ * parsing a real clip (ACCRETIA_ARMOR_CLOAK_000_USE.ANI): its animated
+ * object names are "Wing00".."Wing07"/"BONE Cloak WingNN"/"Cloak Cover"/
+ * "BONE Cloak Cover" plus one root-named track - these match the cloak
+ * *mesh*'s own sub-object names one-for-one (confirmed by parsing the real
+ * .msh: a "BONE Cloak" pivot attached to "Bip01 Spine1", with 8 wing pivot+
+ * mesh pairs and a cover pivot+mesh hanging off it), not any "Bip01 ..."
+ * bone name from the .bn skeleton. So the clips animate the cloak's own
+ * already-built rigid sub-objects directly by name - `target` (the top
+ * pivot already correctly placed by buildObjectsFromParsedMesh) is used
+ * both as the bind-pose source (each descendant's current position/
+ * quaternion/scale, snapshotted before any clip plays, is already its
+ * correct static placement) and as the AnimationMixer's root, so no
+ * separate skeleton or per-frame delta math is needed at all - the clip
+ * just drives these real objects' transforms directly, same as any other
+ * three.js skinned/rigged animation.
+ *
+ * The root track's own name doesn't match any real sub-object (it's named
+ * after the item, e.g. "ACCRETIA_ARMOR_CLOAK_000", while the actual pivot
+ * is named "BONE Cloak") - aliased in the bind-pose map under `stem` too
+ * so that track still binds to `target` instead of silently not matching
+ * anything.
+ *
+ * Only EQUIP/USE/UNUSE are loaded - see docs/rf-format-notes.md and this
+ * project's own plan notes: DEFAULT is just the bind pose (nothing to
+ * play), UNEQUIP appears unused by the real client for this (UNUSE is
+ * what actually plays on removal), and ATTACK has no trigger to hook into
+ * yet (no attack/combat action exists anywhere in this app today).
+ */
+export async function loadCloakAnimationRig(stem: string, target: Object3D): Promise<CloakAnimationRig | null> {
+  const bindPoseByBone = new Map<string, BindPose>();
+  target.traverse((obj) => {
+    bindPoseByBone.set(obj.name, { position: obj.position.clone(), rotation: obj.quaternion.clone(), scale: obj.scale.clone() });
+  });
+  const targetBind = bindPoseByBone.get(target.name);
+  if (targetBind) bindPoseByBone.set(stem, targetBind);
+
+  const clips: Partial<Record<CloakAniState, AnimationClip>> = {};
+  await Promise.all(
+    CLOAK_ANI_STATES.map(async (state) => {
+      try {
+        const buffer = await fetchBuffer(`${CLOAK_CDN_BASE}/ani/${stem}_${state}.ANI`);
+        clips[state] = buildAnimationClip(state, parseAnimation(buffer), bindPoseByBone);
+      } catch {
+        // Missing is common (e.g. no UNUSE for this item) - just leave that state unset.
+      }
+    }),
+  );
+  if (Object.keys(clips).length === 0) return null;
+
+  return { mixer: new AnimationMixer(target), clips };
 }
 
 // Weapon meshes/textures used to live packed inside a fixed list of RFS
@@ -1033,6 +1179,11 @@ export async function loadCharacter(raceGender: RaceGender = RaceGender.Bell_Fem
     // has these and CharacterController needs them the instant WASD/
     // joystick strafing starts, not after an await.
     loadClipsInto(clips, aniCdnFolder, directionalAnimationFileNames(race.nameToken), bindPoseByBone),
+    // Fly's own backward/left/right clips (see directionalFlyAnimationFileNames)
+    // - loaded eagerly alongside walk/run's for the same reason: every race
+    // always has them, and the Fly toggle (CharacterController.setFlying)
+    // needs them the instant a strafe/backward input happens while flying.
+    loadClipsInto(clips, aniCdnFolder, directionalFlyAnimationFileNames(race.nameToken), bindPoseByBone),
   ]);
 
   return { group, builtSkeleton: built, mixer, clips };

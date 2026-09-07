@@ -133,6 +133,19 @@ CLOAK_MESH_ARCHIVE_NAMES = ["AKM00", "NewCloakM", "PHBP01", "XMC"]
 CLOAK_TEX_BASE = "item/Armor/Tex"
 CLOAK_TEX_ARCHIVE_NAMES = ["AKT00", "NewCloakT"]
 
+# "Booster" items (e.g. cloakItem.json's "Premium Booster"/"Blood Booster[N
+# Grade]" rows) are ordinary cloak-slot items, not a separate mechanic in
+# the data - their Model resolves (via the same itemResource.json race-
+# block correction every other cloak uses) to a mesh stem like
+# "BELMALE_COSTUMEARMOR_CLOAK_50", but the actual bytes live in this
+# separate archive pair instead of the regular item/Armor/ ones above.
+# Flattened into the same cloak/mesh + cloak/tex output (stems never
+# collide - "COSTUMEARMOR_CLOAK" vs "ARMOR_CLOAK" - so one shared namespace
+# is safe, same reasoning as CLOAK_ANI_EXTRA_ARCHIVE below).
+BOOSTER_MESH_BASE = "item/New_Booster/Mesh"
+BOOSTER_TEX_BASE = "item/New_Booster/Tex"
+BOOSTER_ARCHIVE_NAME = "GDBUSTER"
+
 # Cloaks also carry their own small per-item skeleton (Bone) and dedicated
 # animation set (Ani: ATTACK/DEFAULT/EQUIP/UNEQUIP/USE/UNUSE per item, e.g.
 # sway/attack/equip-transition poses) - confirmed unreferenced anywhere in
@@ -275,13 +288,28 @@ def force_extension(name: str, expected_ext: str) -> str:
     The live app never notices because it only ever compares two names
     truncated the same way - it never filters entries by extension. This
     extractor has to actively repair that, or it silently drops every
-    truncated entry instead of writing it under a usable filename."""
+    truncated entry instead of writing it under a usable filename.
+
+    A second, nastier case (found via a real booster item, but affecting
+    plenty of already-extracted weapons/animations too - e.g.
+    "ACCRETIA_WEAPON_GRELAUNCHER_000.msh" truncates to exactly
+    "...GRELAUNCHER_000." with the dot as the very last byte): the
+    truncation can land exactly ON the dot, leaving an empty tail. The
+    original `0 < len(tail)` check treated that as "no remnant to strip"
+    and appended the extension onto the trailing dot instead of replacing
+    it - producing a real file named "...000..msh" (double dot) that the
+    true stem ("...000.msh", from the untruncated FileName field in
+    itemResource.json/playerResource.json) never actually requests. Real,
+    silent 404s for every item whose name happens to truncate this way -
+    an empty tail is just as much "nothing real to keep" as a short
+    alnum one, so it must be stripped too."""
     if name.lower().endswith(expected_ext):
         return name
     head, dot, tail = name.rpartition(".")
-    if dot and 0 < len(tail) <= 4 and tail.isalnum():
-        # Looks like a truncated remnant of the real extension - drop it
-        # rather than end up with "NAME.m.msh".
+    if dot and len(tail) <= 4 and (tail == "" or tail.isalnum()):
+        # Looks like a truncated remnant of the real extension (or the
+        # truncation landed exactly on the dot, leaving nothing) - drop it
+        # rather than end up with "NAME.m.msh" or "NAME..msh".
         name = head
     return name + expected_ext
 
@@ -435,7 +463,9 @@ def cmd_cloak(args: argparse.Namespace) -> None:
     out_root = Path(args.out)
 
     mesh_archives = [assets_root / CLOAK_MESH_BASE / f"{name}.RFS" for name in CLOAK_MESH_ARCHIVE_NAMES]
+    mesh_archives.append(assets_root / BOOSTER_MESH_BASE / f"{BOOSTER_ARCHIVE_NAME}.RFS")
     tex_archives = [assets_root / CLOAK_TEX_BASE / f"{name}.RFS" for name in CLOAK_TEX_ARCHIVE_NAMES]
+    tex_archives.append(assets_root / BOOSTER_TEX_BASE / f"{BOOSTER_ARCHIVE_NAME}.RFS")
 
     print(f"Extracting cloak meshes from {len(mesh_archives)} archives (priority order)...")
     mesh_manifest, mesh_collisions = extract_flattened(mesh_archives, out_root / "cloak" / "mesh", ".msh")

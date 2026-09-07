@@ -1,5 +1,5 @@
-import { Box3, Matrix4, Object3D, Quaternion, SkeletonHelper, Vector3 } from 'three';
-import type { AnimationAction, Bone, Group, Scene } from 'three';
+import { Box3, LoopOnce, LoopRepeat, Matrix4, Object3D, Quaternion, SkeletonHelper, Vector3 } from 'three';
+import type { AnimationAction, AnimationClip, Bone, Group, Scene } from 'three';
 import { ANI_FPS } from '../rf/animation';
 import {
   CLOAK_CDN_BASE,
@@ -8,10 +8,11 @@ import {
   buildMeshPartObjects,
   characterCdnBase,
   getWeaponClip,
+  loadCloakAnimationRig,
   loadWeaponMeshObjects,
   weaponClipKey,
 } from '../rf/character';
-import type { LocomotionDirection, RfCharacter } from '../rf/character';
+import type { CloakAnimationRig, LocomotionDirection, RfCharacter } from '../rf/character';
 import { ALL_MODEL_TYPES, MODEL_TYPE_TO_PART_TOKEN, ModelType } from '../rf/items';
 import type { ItemDefinition } from '../rf/items';
 import { resolveCloakMeshStem, resolveItemMeshStem, resolveWeaponMesh } from '../rf/resource';
@@ -21,6 +22,8 @@ const ARRIVE_FRACTION_OF_RADIUS = 0.04;
 export const WALK_SPEED_RADIUS_PER_SEC = 0.9;
 /** How much faster running is than walking - the actual client's ratio isn't in this data set, so this is a reasonable-looking approximation. */
 const RUN_SPEED_MULTIPLIER = 1.8;
+/** How much faster a "Booster" cloak (see equipCloak's isBoosterEquipped doc comment) makes running - like RUN_SPEED_MULTIPLIER, the real client's value isn't in this data set: cloakItem.json's BoostSpd field looked promising but isn't booster-specific (it's "9" for 1263 of 1572 cloak rows, including plenty of non-booster capes), so this is a reasonable-looking approximation instead. Only applies while running, not walking - matches how the original client's booster is described as a run-speed item. */
+const BOOSTER_SPEED_MULTIPLIER = 1.35;
 const TURN_SPEED_RAD_PER_SEC = Math.PI * 2.2;
 // The model's authored "forward" faces the opposite way from three.js's
 // lookAt convention (-Z), so the computed facing needs a 180 degree
@@ -51,6 +54,23 @@ export type EquipResult = 'equipped' | 'default' | 'unavailable' | 'no-character
 export type BattleMode = 'peace' | 'war';
 /** Which locomotion clip (and speed) click-to-move uses - independent of BattleMode, which only decides *whether* the combat variant of walk/run/stand plays. */
 export type MoveMode = 'walk' | 'run';
+
+/**
+ * Live state for one equipped cloak's own animation rig (see
+ * character.ts's loadCloakAnimationRig) - just the mixer/clips, since the
+ * rig plays directly on the cloak's own already-built, already-correctly-
+ * placed rigid objects (by name - "Wing00".."Wing07"/"Cloak Cover"/their
+ * pivots) rather than a separate skeleton needing per-frame delta math.
+ */
+interface CloakSwayState {
+  rig: CloakAnimationRig;
+}
+
+/** A CloakSwayState mid-UNUSE after a real unequip - see departingCloakAnimations. */
+interface DepartingCloakSwayState extends CloakSwayState {
+  action: AnimationAction;
+  objectsToDispose: Object3D[];
+}
 /** The animation-token equivalent of "no weapon" in the combat clip archive - "COMBAT_FWWALK_NONE_NONE_01_00" etc, the empty-handed War-mode locomotion. */
 const UNARMED_WEAPON_TOKEN = 'NONE';
 
@@ -157,6 +177,24 @@ export class CharacterController {
   /** Peace/War toggle - see BattleMode. Only War shows the weapon mesh and plays combat walk/run; Peace always plays the unarmed clips regardless of what's equipped. */
   private battleMode: BattleMode = 'peace';
 
+  /** Whether the currently-equipped cloak is a "Booster" item (see equipCloak) - consulted by getCurrentSpeed() to apply BOOSTER_SPEED_MULTIPLIER while running. Not a separate equip slot in the real game; just a cosmetically-distinct cloak. */
+  private isBoosterEquipped = false;
+
+  /** Player-invoked "Fly" toggle (see setFlying) - independent of isBoosterEquipped/getCurrentSpeed's automatic run-speed mechanic above. While true, getDesiredLocomotionClip/getIdleClip both resolve to "fly" (and its own backward/left/right variants) regardless of moveMode or whether anything is actually moving. */
+  private isFlying = false;
+
+  /** The currently-equipped cloak's own animation rig (see applyCloakAnimation) - null for the common case of a cloak with no bone/ani data, or no cloak equipped at all. */
+  private cloakAnimation: CloakSwayState | null = null;
+  /**
+   * Cloak sway states mid-UNUSE (retract) after a real unequip - kept
+   * alive and updated independently of cloakAnimation (already cleared by
+   * the time these exist) purely so their retract animation can finish
+   * playing before their objects are actually disposed - see equipCloak's
+   * `!item` branch. A re-equip happening while one of these is still
+   * playing doesn't touch it; it just finishes on its own and gets pruned.
+   */
+  private departingCloakAnimations: DepartingCloakSwayState[] = [];
+
   private moveTarget: Vector3 | null = null;
   /** Continuous move input (e.g. from a mobile joystick or WASD), world-space XZ - magnitude 0-1 scales speed. Takes priority over moveTarget; see setMoveDirection. */
   private moveDirection: Vector3 | null = null;
@@ -233,6 +271,29 @@ export class CharacterController {
   setShowBones(show: boolean): void {
     this.showBones = show;
     if (this.skeletonHelper) this.skeletonHelper.visible = show;
+  }
+
+  /** Debug-only: which animation states the currently-equipped cloak's own rig actually has (see applyCloakAnimation) - empty if no cloak is equipped, or it has no bone/ani data at all. For populating a manual clip-preview dropdown; not consulted by the real EQUIP->USE->UNUSE state machine. */
+  getCloakAnimationStateNames(): string[] {
+    return this.cloakAnimation ? Object.keys(this.cloakAnimation.rig.clips) : [];
+  }
+
+  /**
+   * Debug-only: force-plays one of the current cloak rig's clips directly,
+   * looping so it stays visible for inspection instead of playing once and
+   * freezing on the last frame - bypasses the real EQUIP->USE->UNUSE state
+   * machine entirely (this is for previewing a specific clip in isolation,
+   * not simulating a real equip/unequip). No-op if there's no active cloak
+   * rig, or it doesn't have this particular state.
+   */
+  playCloakAnimationState(stateName: string): void {
+    const rig = this.cloakAnimation?.rig;
+    if (!rig) return;
+    const clip = (rig.clips as Record<string, AnimationClip | undefined>)[stateName];
+    if (!clip) return;
+    console.log(`[anim-debug] cloak sway: manually previewing "${stateName}" (duration ${clip.duration.toFixed(3)}s)`);
+    rig.mixer.stopAllAction();
+    rig.mixer.clipAction(clip).reset().setLoop(LoopRepeat, Infinity).play();
   }
 
   getBattleMode(): BattleMode {
@@ -332,6 +393,61 @@ export class CharacterController {
     }
   }
 
+  /** Advances one cloak sway rig's mixer by one frame - the clip drives the cloak's own already-placed rigid objects directly by name (see loadCloakAnimationRig's doc comment), no extra per-frame math needed. Shared by the active cloakAnimation and every still-finishing departingCloakAnimations entry. */
+  private updateCloakSway(state: CloakSwayState, delta: number): void {
+    state.rig.mixer.update(delta);
+  }
+
+  /**
+   * Best-effort, fire-and-forget: loads a just-equipped cloak's own
+   * animation clips (see character.ts's loadCloakAnimationRig), if it has
+   * any - most cloaks don't, and that's not an error, same reasoning as
+   * applyGlowOverlay. Finds the one object among `sourceObjects` actually
+   * parented to a real character bone (everything else in the rigid
+   * sibling chain - see buildObjectsFromParsedMesh - hangs off it already)
+   * to use as both the clip's target and its bind-pose source, and starts
+   * EQUIP (falling through to a looping USE once it finishes, or
+   * immediately if EQUIP is missing).
+   */
+  private async applyCloakAnimation(stem: string, character: RfCharacter, sourceObjects: Object3D[]): Promise<void> {
+    const boneSet = new Set<Object3D>(character.builtSkeleton.bones);
+    const target = sourceObjects.find((o) => o.parent && boneSet.has(o.parent));
+    if (!target) return; // no sub-object is directly parented to a real skeleton bone - nothing to animate from
+
+    const rig = await loadCloakAnimationRig(stem, target);
+    if (this.character !== character || this.equippedObjects[ModelType.Cloak] !== sourceObjects) return; // superseded mid-await
+    if (!rig) return; // common case - this cloak has no ani data
+
+    const state: CloakSwayState = { rig };
+    this.cloakAnimation = state;
+
+    const equipClip = rig.clips.EQUIP;
+    const useClip = rig.clips.USE;
+    if (equipClip) {
+      const equipAction = rig.mixer.clipAction(equipClip).reset();
+      equipAction.setLoop(LoopOnce, 1);
+      equipAction.clampWhenFinished = true;
+      equipAction.play();
+      if (useClip) {
+        const onEquipFinished = (e: { action: AnimationAction }) => {
+          if (e.action !== equipAction) return;
+          rig.mixer.removeEventListener('finished', onEquipFinished);
+          // clampWhenFinished keeps equipAction "running" (frozen on its last
+          // frame, still contributing weight) even after this fires - left
+          // alone, the mixer blends that frozen pose together with useClip's
+          // loop instead of replacing it, damping the idle sway down to
+          // near-invisible. Stop it explicitly so useClip has the track to
+          // itself.
+          equipAction.stop();
+          rig.mixer.clipAction(useClip).reset().setLoop(LoopRepeat, Infinity).play();
+        };
+        rig.mixer.addEventListener('finished', onEquipFinished);
+      }
+    } else if (useClip) {
+      rig.mixer.clipAction(useClip).reset().setLoop(LoopRepeat, Infinity).play();
+    }
+  }
+
   setDebugPaused(paused: boolean): void {
     this.debugPaused = paused;
     const active = this.activeAction;
@@ -365,10 +481,59 @@ export class CharacterController {
     return this.moveMode;
   }
 
-  /** Toggles walk/run for click-to-move / joystick movement. Takes effect immediately if already mid-move, not just on the next moveTo(). */
+  /** Toggles walk/run for click-to-move / joystick movement. Takes effect immediately if already mid-move, not just on the next moveTo() - going through getDesiredLocomotionClip (not just `mode` directly) so this doesn't briefly stomp "fly" while isFlying/isBoosterEquipped is active. */
   setMoveMode(mode: MoveMode): void {
     this.moveMode = mode;
-    if (this.moveTarget || this.moveDirection) this.setDesiredClip(mode);
+    if (this.moveTarget || this.moveDirection) this.setDesiredClip(this.getDesiredLocomotionClip());
+  }
+
+  getIsBoosterEquipped(): boolean {
+    return this.isBoosterEquipped;
+  }
+
+  /**
+   * Debug/test-only: forces isBoosterEquipped without actually equipping a
+   * real "Booster" cloak item (see equipCloak's doc comment on how that
+   * flag is normally set/reset). Real equip/unequip and mount() still take
+   * priority whenever they run - this is for scenes with no cloak-equip UI
+   * wired up yet that just want to verify getCurrentSpeed()'s multiplier
+   * and the run clip visually, independent of CDN mesh/texture
+   * availability for the real booster items.
+   */
+  setDebugBoosterEnabled(enabled: boolean): void {
+    this.isBoosterEquipped = enabled;
+  }
+
+  getIsFlying(): boolean {
+    return this.isFlying;
+  }
+
+  /** "stand"/"fly" - whichever clip should play while nothing is moving, depending on isFlying. Not resolveClipName's concern (that only handles walk/run/fly's *directional* variants and war-mode) - this is just which name gets passed in for the "stationary" case, same as "stand" always was before flying existed. */
+  private getIdleClip(): 'stand' | 'fly' {
+    return this.isFlying ? 'fly' : 'stand';
+  }
+
+  /**
+   * Player-invoked Fly toggle - requires any cloak to be equipped (not
+   * specifically a "Booster" item; see isBoosterEquipped for that separate,
+   * automatic run-speed mechanic). Turning it on with no cloak equipped is a
+   * no-op that returns false, so the caller (RfViewer's Fly button) can show
+   * a "must equip a cloak" notice instead of silently doing nothing; turning
+   * it off always succeeds. Re-resolves the currently-desired clip
+   * immediately either way, covering both "already moving" (getDesiredLocomotionClip)
+   * and "standing still" (getIdleClip) - a plain moveMode/battleMode toggle
+   * only needs the former since "stand" never depended on either of those,
+   * but flying's own idle clip does.
+   */
+  setFlying(enabled: boolean): boolean {
+    if (enabled) {
+      if (!this.equippedObjects[ModelType.Cloak]) return false;
+      this.isFlying = true;
+    } else {
+      this.isFlying = false;
+    }
+    this.setDesiredClip(this.moveTarget || this.moveDirection ? this.getDesiredLocomotionClip() : this.getIdleClip());
+    return true;
   }
 
   moveTo(point: Vector3): void {
@@ -380,7 +545,7 @@ export class CharacterController {
     this.moveDirection = null;
     this.moveLocomotionDirection = null;
     this.moveTarget = point.clone();
-    this.setDesiredClip(this.moveMode);
+    this.setDesiredClip(this.getDesiredLocomotionClip());
   }
 
   /**
@@ -409,7 +574,7 @@ export class CharacterController {
       this.moveDirection = null;
       this.faceDirection = null;
       this.moveLocomotionDirection = null;
-      if (!this.moveTarget) this.setDesiredClip('stand');
+      if (!this.moveTarget) this.setDesiredClip(this.getIdleClip());
     }
   }
 
@@ -622,14 +787,16 @@ export class CharacterController {
 
   /**
    * Cloak-slot equip: like Weapon, has no default appearance (an unequipped
-   * character just shows nothing there) - but unlike a weapon, a cloak is a
-   * skinned mesh that drapes over the body (not a rigid single-bone attach),
-   * so it goes through the same buildMeshPartObjects path as a body-part
-   * item, just resolved via resolveCloakMeshStem/CLOAK_CDN_BASE (the
-   * race-agnostic item/Armor/ archives, pre-extracted to their own CDN
-   * folder) instead of resolveItemMeshStem/characterCdnBase (the per-race
-   * character/player/Mesh armor archives) - verified cloak meshes actually
-   * live in the former, not the latter.
+   * character just shows nothing there) - unlike a weapon, though, a cloak
+   * is resolved via resolveCloakMeshStem/CLOAK_CDN_BASE (the race-agnostic
+   * item/Armor/ archives, pre-extracted to their own CDN folder) instead of
+   * resolveItemMeshStem/characterCdnBase (the per-race character/player/
+   * Mesh armor archives) - verified cloak meshes actually live in the
+   * former, not the latter. Every real cloak checked turned out to be a
+   * *rigid* part attached to "Bip01 Spine1" (not skinned/draping cloth as
+   * previously assumed here), same buildObjectsFromParsedMesh path a
+   * weapon's rigid attach uses - see applyCloakAnimation for the separate,
+   * optional sway rig some cloaks layer on top of that static placement.
    */
   private async equipCloak(item: ItemDefinition | null): Promise<EquipResult> {
     const character = this.character;
@@ -640,14 +807,51 @@ export class CharacterController {
     const previous = this.equippedObjects[ModelType.Cloak];
 
     if (!item) {
-      if (previous) {
-        for (const obj of previous) {
-          obj.parent?.remove(obj);
-          disposeObject3D(obj);
+      // A cloak with a sway rig and a real UNUSE clip gets to play its
+      // retract animation before actually disappearing - see
+      // departingCloakAnimations' own doc comment. Everything else
+      // (no rig, or no UNUSE clip) disposes immediately, same as before.
+      const outgoing = this.cloakAnimation;
+      this.cloakAnimation = null;
+      const unuseClip = outgoing?.rig.clips.UNUSE;
+
+      if (previous && outgoing && unuseClip) {
+        // Whatever was previously playing (USE's loop, or a still-frozen
+        // EQUIP if it has no USE clip) needs to stop first, same reasoning
+        // as applyCloakAnimation's equip->use handoff - otherwise it keeps
+        // contributing weight and blends with/dampens the retract clip.
+        outgoing.rig.mixer.stopAllAction();
+        const action = outgoing.rig.mixer.clipAction(unuseClip).reset();
+        action.setLoop(LoopOnce, 1);
+        action.clampWhenFinished = true;
+        action.play();
+        const departing: DepartingCloakSwayState = { ...outgoing, action, objectsToDispose: previous };
+        this.departingCloakAnimations.push(departing);
+        const onUnuseFinished = (e: { action: AnimationAction }) => {
+          if (e.action !== action) return;
+          outgoing.rig.mixer.removeEventListener('finished', onUnuseFinished);
+          for (const obj of departing.objectsToDispose) {
+            obj.parent?.remove(obj);
+            disposeObject3D(obj);
+          }
+          const index = this.departingCloakAnimations.indexOf(departing);
+          if (index !== -1) this.departingCloakAnimations.splice(index, 1);
+        };
+        outgoing.rig.mixer.addEventListener('finished', onUnuseFinished);
+      } else {
+        if (previous) {
+          for (const obj of previous) {
+            obj.parent?.remove(obj);
+            disposeObject3D(obj);
+          }
         }
-        delete this.equippedObjects[ModelType.Cloak];
       }
+
+      delete this.equippedObjects[ModelType.Cloak];
       this.disposeGlowOverlayFor(ModelType.Cloak);
+      this.isBoosterEquipped = false;
+      // Flying requires a cloak (see setFlying) - none left to require it of.
+      if (this.isFlying) this.setFlying(false);
       return 'default';
     }
 
@@ -659,6 +863,23 @@ export class CharacterController {
     if (this.character !== character) return 'no-character'; // superseded mid-await
     if (newObjects.length === 0) return 'unavailable';
 
+    // "Booster" items (cloakItem.json's "Premium Booster"/"Blood Booster[N
+    // Grade]" rows) aren't a separate mechanic - they're ordinary cloaks
+    // whose mesh happens to live under a "COSTUMEARMOR_CLOAK" stem instead
+    // of the regular "ARMOR_CLOAK" one (see character.ts's
+    // boosterTextureName doc comment for the full naming story). That's
+    // the only signal available to tell them apart - cloakItem.json's own
+    // BoostSpd stat isn't booster-specific (see BOOSTER_SPEED_MULTIPLIER).
+    // Set only now that the mesh actually resolved - an 'unavailable' equip
+    // above must leave the previous booster state untouched, not silently
+    // grant/revoke the speed boost for an item that never actually equipped.
+    this.isBoosterEquipped = stem.includes('COSTUMEARMOR_CLOAK');
+
+    // Swapping to a different cloak, not a genuine unequip - the outgoing
+    // one's sway state (if any) is dropped immediately (its objects are
+    // about to be disposed below anyway), no UNUSE flourish (see
+    // equipCloak's `!item` branch for where that happens).
+    this.cloakAnimation = null;
     if (previous) {
       for (const obj of previous) {
         obj.parent?.remove(obj);
@@ -673,6 +894,7 @@ export class CharacterController {
     this.equippedObjects[ModelType.Cloak] = newObjects;
     void this.applyGlowOverlay(ModelType.Cloak, item, character, newObjects);
     void this.applySurfaceShineFor(item, newObjects);
+    void this.applyCloakAnimation(stem, character, newObjects);
 
     return 'equipped';
   }
@@ -790,6 +1012,12 @@ export class CharacterController {
     // already freed them; this just drops the now-stale bookkeeping so
     // update()/applyWeaponVisibility() stop iterating dangling entries.
     this.equippedGlowOverlays = {};
+    // Same reasoning as equippedGlowOverlays above - the cloak rig plays
+    // directly on the cloak's own objects, which are descendants of
+    // prevGroup, already freed by disposeObject3D(prevGroup); this just
+    // drops the now-stale bookkeeping.
+    this.cloakAnimation = null;
+    this.departingCloakAnimations = [];
     this.scene.add(character.group);
 
     // The toggle button only renders once status is 'ready', so there's no
@@ -814,6 +1042,8 @@ export class CharacterController {
     this.currentWeaponToken = null;
     this.battleMode = 'peace';
     this.moveMode = 'walk';
+    this.isBoosterEquipped = false;
+    this.isFlying = false;
     this.lastQuatByBone.clear();
     this.callbacks.onClipChange?.('stand');
     this.callbacks.onFrameLabelChange?.('');
@@ -831,6 +1061,31 @@ export class CharacterController {
     return { box, center, radius };
   }
 
+  /** Base movement speed for the current moveMode, including the booster multiplier while running with a Booster cloak equipped (see isBoosterEquipped) - callers scale by input intensity themselves where relevant (moveDirection's analog magnitude; click-to-move is always full speed). */
+  private getCurrentSpeed(): number {
+    if (this.moveMode !== 'run') return this.walkSpeed;
+    const runSpeed = this.walkSpeed * RUN_SPEED_MULTIPLIER;
+    return this.isBoosterEquipped ? runSpeed * BOOSTER_SPEED_MULTIPLIER : runSpeed;
+  }
+
+  /**
+   * Which clip setDesiredClip should actually be asked to play for the
+   * current moveMode while actually moving - normally moveMode itself, but
+   * 'fly' (a real unarmed locomotion clip - see character.ts's CLIP_NAMES)
+   * takes over whenever isFlying is on (the player-invoked Fly toggle - see
+   * setFlying), or else while running with a Booster cloak equipped (same
+   * condition getCurrentSpeed uses for its own multiplier - boosting only
+   * applies to running, not walking, matching how the original client
+   * names/uses it). Does go through resolveClipName's directional logic
+   * like walk/run (fly has its own real backward/left/right clips - see
+   * character.ts's directionalFlyAnimationFileNames) - just never its
+   * war-mode combat lookup, since no combat variant of it exists.
+   */
+  private getDesiredLocomotionClip(): MoveMode | 'fly' {
+    if (this.isFlying) return 'fly';
+    return this.moveMode === 'run' && this.isBoosterEquipped ? 'fly' : this.moveMode;
+  }
+
   /**
    * Advances movement, animation crossfades and the pose watchdog by one
    * frame. Returns whether the character just arrived at its move target
@@ -846,7 +1101,7 @@ export class CharacterController {
       const magnitude = direction.length();
       const dirNorm = direction.clone().divideScalar(magnitude);
       const intensity = Math.min(magnitude, 1);
-      const speed = (this.moveMode === 'run' ? this.walkSpeed * RUN_SPEED_MULTIPLIER : this.walkSpeed) * intensity;
+      const speed = this.getCurrentSpeed() * intensity;
       character.group.position.addScaledVector(dirNorm, speed * delta);
 
       const faceSource = this.faceDirection ?? direction;
@@ -855,7 +1110,7 @@ export class CharacterController {
       this.lookMatrix.lookAt(facePoint, character.group.position, character.group.up);
       this.lookTargetQuat.setFromRotationMatrix(this.lookMatrix).multiply(FACING_CORRECTION);
       character.group.quaternion.rotateTowards(this.lookTargetQuat, TURN_SPEED_RAD_PER_SEC * delta);
-      this.setDesiredClip(this.moveMode);
+      this.setDesiredClip(this.getDesiredLocomotionClip());
     } else {
       const target = this.moveTarget;
       if (target) {
@@ -865,11 +1120,11 @@ export class CharacterController {
         if (distance <= this.arriveThreshold) {
           this.moveTarget = null;
           arrived = true;
-          console.log('[anim-debug] arrived at click-to-move target, switching to "stand"');
-          this.setDesiredClip('stand');
+          console.log(`[anim-debug] arrived at click-to-move target, switching to "${this.getIdleClip()}"`);
+          this.setDesiredClip(this.getIdleClip());
         } else {
           toTarget.normalize();
-          const speed = this.moveMode === 'run' ? this.walkSpeed * RUN_SPEED_MULTIPLIER : this.walkSpeed;
+          const speed = this.getCurrentSpeed();
           const step = Math.min(distance, speed * delta);
           character.group.position.addScaledVector(toTarget, step);
           character.group.position.y = target.y;
@@ -878,6 +1133,11 @@ export class CharacterController {
           this.lookMatrix.lookAt(facePoint, character.group.position, character.group.up);
           this.lookTargetQuat.setFromRotationMatrix(this.lookMatrix).multiply(FACING_CORRECTION);
           character.group.quaternion.rotateTowards(this.lookTargetQuat, TURN_SPEED_RAD_PER_SEC * delta);
+          // Re-checked every frame (cheap - setDesiredClip no-ops if
+          // unchanged) so toggling Booster mid-click-to-move switches to/
+          // from "fly" immediately, matching the moveDirection branch above
+          // instead of only picking up the change on the next moveTo().
+          this.setDesiredClip(this.getDesiredLocomotionClip());
         }
       }
     }
@@ -915,25 +1175,30 @@ export class CharacterController {
     character.mixer.update(delta);
     this.checkForPoseAnomalies(character);
     this.updateGlowAnimation(delta);
+    if (this.cloakAnimation) this.updateCloakSway(this.cloakAnimation, delta);
+    for (const departing of this.departingCloakAnimations) this.updateCloakSway(departing, delta);
 
     return { arrived };
   }
 
   /**
-   * Maps an abstract desired clip ("walk"/"run"/"stand"/"sit") to the
+   * Maps an abstract desired clip ("walk"/"run"/"fly"/"stand"/"sit") to the
    * actual clips key to play, in priority order:
    *
    * 1. War + directional (moveLocomotionDirection set, walk/run only): the
    *    combat clip for the wielded weapon token AND that exact backward/
    *    strafe direction - only ever cached for Accretia (see getWeaponClip).
-   * 2. Directional, unarmed: the real backward/strafe clip every race has
-   *    in Peace's ETA archive (see LocomotionDirection) - tried *before*
-   *    the direction-blind combat clip below, armed or not, because a real
-   *    backward/strafing leg animation (just missing the weapon-drawn arm
-   *    pose) reads far better than a forward-facing combat walk/run playing
-   *    while the character is visibly moving backward or sideways. This is
-   *    what makes backward/strafe movement look right while armed on every
-   *    race but Accretia, which is the only one with step 1's clips.
+   * 2. Directional, unarmed (walk/run/fly): the real backward/strafe clip
+   *    every race has in Peace's ETA archive (see LocomotionDirection and,
+   *    for fly specifically, directionalFlyAnimationFileNames) - tried
+   *    *before* the direction-blind combat clip below, armed or not,
+   *    because a real backward/strafing leg animation (just missing the
+   *    weapon-drawn arm pose) reads far better than a forward-facing combat
+   *    walk/run playing while the character is visibly moving backward or
+   *    sideways. This is what makes backward/strafe movement look right
+   *    while armed on every race but Accretia, which is the only one with
+   *    step 1's clips. Fly has no combat variant at all, so it only ever
+   *    reaches this step or step 4 below - never step 1 or 3.
    * 3. War, plain: the combat variant for whatever's currently wielded (or
    *    the empty-handed "NONE" token, if nothing is - War still changes how
    *    an unarmed character moves and idles) - forward-only fallback, same
@@ -947,7 +1212,7 @@ export class CharacterController {
    */
   private resolveClipName(desiredClip: string): string {
     const isLocomotion = desiredClip === 'walk' || desiredClip === 'run';
-    const direction = isLocomotion ? this.moveLocomotionDirection : null;
+    const direction = isLocomotion || desiredClip === 'fly' ? this.moveLocomotionDirection : null;
     const directionalUnarmedKey = direction ? `${desiredClip}:${direction}` : null;
 
     if (this.battleMode === 'war' && this.character && (isLocomotion || desiredClip === 'stand')) {
@@ -1011,6 +1276,8 @@ export class CharacterController {
     }
     this.character = null;
     this.skeletonHelper = null;
+    this.cloakAnimation = null;
+    this.departingCloakAnimations = [];
     this.equippedGlowOverlays = {};
     this.helmetBaseObjects = [];
     this.helmetBaseVariant = null;

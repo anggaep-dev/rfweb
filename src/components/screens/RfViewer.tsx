@@ -52,6 +52,17 @@ export default function RfViewer({ sceneManager, initialRaceGender, onExit }: Rf
   // plays. See CharacterController.setMoveMode.
   const [moveMode, setMoveMode] = useState<MoveMode>('walk');
 
+  // Debug-only booster toggle - forces isBoosterEquipped without needing a
+  // real "Booster" cloak item equipped (there's no cloak-equip UI in this
+  // scene yet), so the run-speed multiplier can be verified directly. Only
+  // actually changes anything while moveMode is 'run' - see getCurrentSpeed.
+  const [isBoosterOn, setIsBoosterOn] = useState(false);
+
+  // The real, player-facing Fly toggle - see CharacterController.setFlying.
+  // Requires any cloak to be equipped; handleToggleFly below shows a notice
+  // via commandFeedback instead of flipping this when that's not the case.
+  const [isFlying, setIsFlying] = useState(false);
+
   // The debug/dev-tooling panel (race switcher, clip buttons, camera-mode
   // select, frame-stepping) - hidden by default and revealed only via the
   // GM console's "%debug 1"/"%debug 0" (see handleCommandSubmit below), not
@@ -156,6 +167,10 @@ export default function RfViewer({ sceneManager, initialRaceGender, onExit }: Rf
   }, [moveMode]);
 
   useEffect(() => {
+    viewerSceneRef.current?.characterController.setDebugBoosterEnabled(isBoosterOn);
+  }, [isBoosterOn]);
+
+  useEffect(() => {
     viewerSceneRef.current?.setWeaponEditEnabled(showWeaponEdit);
   }, [showWeaponEdit]);
 
@@ -184,6 +199,8 @@ export default function RfViewer({ sceneManager, initialRaceGender, onExit }: Rf
     setEquippedItemId({});
     setBattleMode('peace');
     setMoveMode('walk');
+    setIsBoosterOn(false);
+    setIsFlying(false);
     // CharacterController.mount() resets baseAppearance to {} (all variant 0)
     // for the same "fresh character" reason - see its own reset block.
     setBaseAppearance({});
@@ -226,6 +243,25 @@ export default function RfViewer({ sceneManager, initialRaceGender, onExit }: Rf
 
   const handleManualClip = (name: string) => {
     viewerSceneRef.current?.characterController.setClip(name);
+  };
+
+  const handleManualCloakAniState = (state: string) => {
+    viewerSceneRef.current?.characterController.playCloakAnimationState(state);
+  };
+
+  // Fly requires a cloak to be equipped (see CharacterController.setFlying) -
+  // a click while none is equipped fails without changing state, so this
+  // surfaces a notice instead of silently doing nothing. Turning it off
+  // always succeeds.
+  const handleToggleFly = () => {
+    const next = !isFlying;
+    const ok = viewerSceneRef.current?.characterController.setFlying(next) ?? false;
+    if (ok) {
+      setIsFlying(next);
+      if (next) setCommandFeedback('');
+    } else {
+      setCommandFeedback('You must equip a cloak to fly.');
+    }
   };
 
   // Memoized (stable identity) - MobileControls' unmount-cleanup effect used
@@ -376,6 +412,24 @@ export default function RfViewer({ sceneManager, initialRaceGender, onExit }: Rf
         )}
         {status === 'ready' && (
           <button
+            className={`rf-viewer-debug-toggle${isBoosterOn ? ' active' : ''}`}
+            onClick={() => setIsBoosterOn((v) => !v)}
+            title="Debug-only: forces the run-speed boost without equipping a real Booster cloak (see CharacterController.setDebugBoosterEnabled)"
+          >
+            Booster {isBoosterOn ? 'On' : 'Off'}
+          </button>
+        )}
+        {status === 'ready' && (
+          <button
+            className={`rf-viewer-debug-toggle${isFlying ? ' active' : ''}`}
+            onClick={handleToggleFly}
+            title="Requires a cloak to be equipped"
+          >
+            Fly {isFlying ? 'On' : 'Off'}
+          </button>
+        )}
+        {status === 'ready' && (
+          <button
             className={`rf-viewer-debug-toggle${battleMode === 'war' ? ' active' : ''}`}
             onClick={() => setBattleMode((v) => (v === 'peace' ? 'war' : 'peace'))}
           >
@@ -442,6 +496,8 @@ export default function RfViewer({ sceneManager, initialRaceGender, onExit }: Rf
           onRaceGenderChange={setRaceGender}
           clipName={clipName}
           onManualClip={handleManualClip}
+          cloakAniStates={viewerSceneRef.current?.characterController.getCloakAnimationStateNames() ?? []}
+          onManualCloakAniState={handleManualCloakAniState}
           showBones={showBones}
           onToggleBones={() => setShowBones((v) => !v)}
           camMode={camMode}
