@@ -3,7 +3,6 @@ import { Button, Dialog } from '../ui';
 import { RACE_LABELS, RaceGender } from '../../rf/character';
 import type { CharacterSummary } from '../../rf/characterProfile';
 import { MAX_CHARACTERS_PER_ACCOUNT } from '../../rf/characterProfile';
-import { preloadShowcaseAssets } from '../../rf/characterShowcase';
 import { deleteCharacter, listCharacters } from '../../net/CharacterClient';
 import { CharacterSelectScene } from '../../scenes/CharacterSelectScene';
 import type { SceneManager } from '../../scenes/SceneManager';
@@ -176,18 +175,7 @@ export default function CharacterSelectScreen({
             </div>
           ) : (
             <div key={`empty-${slotIndex}`} className="character-select-card character-select-card-empty">
-              <Button
-                variant="ghost"
-                onClick={() => {
-                  // Head start on the race-showcase screen's mesh fetches -
-                  // see rf/characterShowcase.ts's preloadShowcaseAssets doc
-                  // comment - fired here so the network has the whole
-                  // screen-transition + all-5-characters-mount time to work
-                  // before that screen's own equip calls need the data.
-                  preloadShowcaseAssets();
-                  onCreateCharacter();
-                }}
-              >
+              <Button variant="ghost" onClick={onCreateCharacter}>
                 + Create Character
               </Button>
             </div>

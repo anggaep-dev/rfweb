@@ -63,12 +63,12 @@ export default function SceneApp() {
     const sceneManager = new SceneManager(container);
     setSceneManagerState(sceneManager);
 
-    // Blocks entry past the login screen only until every race's small
-    // default-body assets are cached (~6MB/race) - real armor/weapon/cloak
-    // meshes are loaded on demand instead, the first time an equip actually
-    // needs one (see getRaceArmorArchives/loadParsedWeaponMesh/
-    // loadCloakArchives), so this stays fast regardless of how much
-    // equipment data exists rather than blocking on ~600MB of it upfront.
+    // Blocks entry past the login screen only until every race's skeleton
+    // and base animations are cached - body-part/armor/weapon/cloak meshes
+    // are all CDN-fetched by stem on demand instead, the first time an
+    // equip actually needs one (see characterCdnBase/loadParsedWeaponMesh/
+    // CLOAK_CDN_BASE), so this stays fast regardless of how much equipment
+    // data exists rather than blocking on hundreds of MB of it upfront.
     preloadAllRaces((loaded, total) => {
       if (!disposed) setPreloadProgress({ loaded, total });
     })

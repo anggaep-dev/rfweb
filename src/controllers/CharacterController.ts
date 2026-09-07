@@ -2,13 +2,12 @@ import { Box3, Matrix4, Object3D, Quaternion, SkeletonHelper, Vector3 } from 'th
 import type { AnimationAction, Bone, Group, Scene } from 'three';
 import { ANI_FPS } from '../rf/animation';
 import {
+  CLOAK_CDN_BASE,
   LOCOMOTION_DIRECTIONS,
   RaceGender,
   buildMeshPartObjects,
-  getRaceArmorArchives,
-  getRaceAssets,
+  characterCdnBase,
   getWeaponClip,
-  loadCloakArchives,
   loadWeaponMeshObjects,
   weaponClipKey,
 } from '../rf/character';
@@ -495,39 +494,24 @@ export class CharacterController {
 
     this.currentBodyItem[modelType] = item;
 
-    const { meshArchive, texArchive } = await getRaceAssets(raceGender);
-    // A newer mount()/equipItem() may have replaced the character while the
-    // above await was in flight - bail rather than mutate a stale/disposed group.
-    if (this.character !== character) return 'no-character';
-
     let stem: string;
-    let meshArchives: (typeof meshArchive | null)[];
-    let texArchives: (typeof texArchive | null)[];
     if (item) {
       const resolvedStem = await resolveItemMeshStem(item.model, raceGender);
       if (this.character !== character) return 'no-character'; // superseded mid-await
       if (!resolvedStem) return 'unavailable';
       stem = resolvedStem;
-
-      // Real armor items may live in the per-race armor-tier archives, not
-      // the default body archive above - fetched (and cached) on demand
-      // here rather than eagerly for every race at startup, see
-      // getRaceArmorArchives. The default/base-appearance path below never
-      // needs this - that stem is always in the archive already fetched.
-      const armor = await getRaceArmorArchives(raceGender);
-      if (this.character !== character) return 'no-character'; // superseded mid-await
-      meshArchives = [meshArchive, ...armor.meshArchives];
-      texArchives = [texArchive, ...armor.texArchives];
     } else {
       // See baseAppearance's doc comment - this is the character's own
       // chosen variant for this slot, not always "_000".
       const variant = this.baseAppearance[modelType] ?? 0;
       stem = `${character.group.name}_DEFAULT_${MODEL_TYPE_TO_PART_TOKEN[modelType]}_${String(variant).padStart(3, '0')}`;
-      meshArchives = [meshArchive];
-      texArchives = [texArchive];
     }
 
-    const newObjects = buildMeshPartObjects(stem, meshArchives, texArchives, character.builtSkeleton);
+    // Default appearance and real armor items are both in the same per-race
+    // CDN folder now (see characterCdnBase's doc comment in character.ts) -
+    // no separate "which archive holds this stem" step needed any more.
+    const newObjects = await buildMeshPartObjects(stem, characterCdnBase(raceGender), character.builtSkeleton);
+    if (this.character !== character) return 'no-character'; // superseded mid-await
     if (newObjects.length === 0) return 'unavailable';
 
     const previous = this.equippedObjects[modelType];
@@ -641,10 +625,11 @@ export class CharacterController {
    * character just shows nothing there) - but unlike a weapon, a cloak is a
    * skinned mesh that drapes over the body (not a rigid single-bone attach),
    * so it goes through the same buildMeshPartObjects path as a body-part
-   * item, just resolved via resolveCloakMeshStem/loadCloakArchives (the
-   * race-agnostic item/Armor/ archives) instead of resolveItemMeshStem/
-   * getRaceAssets (the per-race character/player/Mesh armor archives) -
-   * verified cloak meshes actually live in the former, not the latter.
+   * item, just resolved via resolveCloakMeshStem/CLOAK_CDN_BASE (the
+   * race-agnostic item/Armor/ archives, pre-extracted to their own CDN
+   * folder) instead of resolveItemMeshStem/characterCdnBase (the per-race
+   * character/player/Mesh armor archives) - verified cloak meshes actually
+   * live in the former, not the latter.
    */
   private async equipCloak(item: ItemDefinition | null): Promise<EquipResult> {
     const character = this.character;
@@ -670,10 +655,8 @@ export class CharacterController {
     if (this.character !== character) return 'no-character'; // superseded mid-await
     if (!stem) return 'unavailable';
 
-    const { meshArchives, texArchives } = await loadCloakArchives();
+    const newObjects = await buildMeshPartObjects(stem, CLOAK_CDN_BASE, character.builtSkeleton);
     if (this.character !== character) return 'no-character'; // superseded mid-await
-
-    const newObjects = buildMeshPartObjects(stem, meshArchives, texArchives, character.builtSkeleton);
     if (newObjects.length === 0) return 'unavailable';
 
     if (previous) {
@@ -721,12 +704,11 @@ export class CharacterController {
       this.helmetBaseObjects = [];
 
       const stem = `${character.group.name}_DEFAULT_${MODEL_TYPE_TO_PART_TOKEN[ModelType.Helmet]}_${String(desiredVariant).padStart(3, '0')}`;
-      // Base appearance is always in the default body archive - never needs
-      // the (lazily-loaded) armor-tier archives, see getRaceArmorArchives.
-      const { meshArchive, texArchive } = await getRaceAssets(raceGender);
+      // Base appearance and real armor items are both in the same per-race
+      // CDN folder - see characterCdnBase's doc comment in character.ts.
+      this.helmetBaseObjects = await buildMeshPartObjects(stem, characterCdnBase(raceGender), character.builtSkeleton);
       if (this.character !== character) return 'no-character'; // superseded mid-await
 
-      this.helmetBaseObjects = buildMeshPartObjects(stem, [meshArchive], [texArchive], character.builtSkeleton);
       for (const obj of this.helmetBaseObjects) {
         if (!obj.parent) character.group.add(obj);
       }
@@ -751,17 +733,8 @@ export class CharacterController {
     if (this.character !== character) return 'no-character'; // superseded mid-await
     if (!resolvedStem) return 'unavailable';
 
-    const { meshArchive, texArchive } = await getRaceAssets(raceGender);
+    const newObjects = await buildMeshPartObjects(resolvedStem, characterCdnBase(raceGender), character.builtSkeleton);
     if (this.character !== character) return 'no-character'; // superseded mid-await
-    const armor = await getRaceArmorArchives(raceGender);
-    if (this.character !== character) return 'no-character'; // superseded mid-await
-
-    const newObjects = buildMeshPartObjects(
-      resolvedStem,
-      [meshArchive, ...armor.meshArchives],
-      [texArchive, ...armor.texArchives],
-      character.builtSkeleton,
-    );
     if (newObjects.length === 0) return 'unavailable';
 
     if (previousItemObjects) {

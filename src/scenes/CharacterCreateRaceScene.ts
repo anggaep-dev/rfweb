@@ -3,7 +3,7 @@ import type { Scene } from 'three';
 import { CharacterController } from '../controllers/CharacterController';
 import { SceneController } from '../controllers/SceneController';
 import { RaceGender, loadCharacter } from '../rf/character';
-import { loadShowcaseLoadout, preloadShowcaseAssets } from '../rf/characterShowcase';
+import { loadShowcaseLoadout } from '../rf/characterShowcase';
 import type { AppScene } from './AppScene';
 
 const CLICK_DRAG_TOLERANCE_PX = 12;
@@ -89,12 +89,6 @@ export class CharacterCreateRaceScene implements AppScene {
   }
 
   async mount(): Promise<void> {
-    // Head start for whatever CharacterSelectScreen's own call to this
-    // (fired the moment "+ Create Character" is clicked) hasn't already
-    // finished fetching - safe/free to call again, everything it kicks off
-    // is cached forever after the first fetch.
-    preloadShowcaseAssets();
-
     const loaded = await Promise.all(
       SELECTABLE_RACES.map(async ({ race, label }) => ({ race, label, character: await loadCharacter(race) })),
     );

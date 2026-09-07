@@ -18,8 +18,6 @@ import { buildAnimationClip, parseAnimation } from './animation';
 import type { BindPose } from './animation';
 import { parseMesh } from './mesh';
 import type { RfMeshObject } from './mesh';
-import { findRfsEntry, parseRfs, readRfsEntry } from './rfs';
-import type { RfsArchive, RfsEntry } from './rfs';
 import { buildThreeSkeleton, parseSkeleton } from './skeleton';
 import type { BuiltSkeleton, RfSkeleton } from './skeleton';
 import { decodeRftTexture } from './texture';
@@ -273,26 +271,53 @@ async function fetchBuffer(url: string): Promise<ArrayBuffer> {
   return res.arrayBuffer();
 }
 
-/** Fetches+parses+builds each named clip from an Ani archive into `clips`, keyed by `key` - shared by loadCharacter()'s base and directional clip passes. A missing/unparsable entry just skips that one key (warned, not thrown) - callers fall back to a base clip when a specific key isn't present. */
-function loadClipsInto(
-  clips: Record<string, AnimationClip>,
-  aniArchive: RfsArchive,
-  entries: { key: string; fileName: string }[],
-  bindPoseByBone: Map<string, BindPose>,
-): void {
-  for (const { key, fileName } of entries) {
-    const aniEntry = findRfsEntry(aniArchive, fileName);
-    if (!aniEntry) {
-      console.warn(`Skipping animation ${key}: no "${fileName}" entry in the Ani archive`);
-      continue;
-    }
-    try {
-      const buffer = readRfsEntry(aniArchive, aniEntry);
-      clips[key] = buildAnimationClip(key, parseAnimation(buffer), bindPoseByBone);
-    } catch (err) {
-      console.warn(`Skipping animation ${key}:`, err);
+const ANI_CDN_BASE = 'https://rfscdn.ketikart.com/rfs/character/ani';
+// Same 32-byte name-field limit rfs.ts's own record layout enforces on
+// disk - a real filename longer than this got truncated before it was ever
+// written to the archive (confirmed: ~89% of real .ani entries), and
+// findRfsEntry already truncates its query the same way before comparing.
+// scripts/extract_rfs.py's extraction preserved that truncated name as the
+// CDN filename (via its own force_extension, appending .ani only if the
+// cut landed before/inside the real extension) - so computing the right
+// CDN URL for a clip means reproducing that exact same truncate-then-force
+// logic here, not just appending the archive-relative filename as-is.
+const ANI_NAME_FIELD_SIZE = 32;
+
+/** Mirrors scripts/extract_rfs.py's force_extension byte for byte - see ANI_CDN_BASE's doc comment above for why this has to match exactly. */
+function forceAniExtension(name: string): string {
+  if (name.toLowerCase().endsWith('.ani')) return name;
+  const dotIndex = name.lastIndexOf('.');
+  if (dotIndex >= 0) {
+    const tail = name.slice(dotIndex + 1);
+    if (tail.length > 0 && tail.length <= 4 && /^[a-zA-Z0-9]+$/.test(tail)) {
+      return `${name.slice(0, dotIndex)}.ani`;
     }
   }
+  return `${name}.ani`;
+}
+
+/** The exact CDN filename for one logical clip name, e.g. "BELFEMALE_PEACE_STAND_NONE_NONE_01_00.ANI" -> "BELFEMALE_PEACE_STAND_NONE_NONE_.ani" (truncated to 32 bytes, real extension lost, forced back on). */
+function aniCdnFileName(fullName: string): string {
+  return forceAniExtension(fullName.slice(0, ANI_NAME_FIELD_SIZE));
+}
+
+/** Fetches+parses+builds each named clip from one CDN-hosted Ani archive folder into `clips`, keyed by `key` - shared by loadCharacter()'s base and directional clip passes. A missing/unparsable entry just skips that one key (warned, not thrown) - callers fall back to a base clip when a specific key isn't present. */
+async function loadClipsInto(
+  clips: Record<string, AnimationClip>,
+  aniCdnFolder: string,
+  entries: { key: string; fileName: string }[],
+  bindPoseByBone: Map<string, BindPose>,
+): Promise<void> {
+  await Promise.all(
+    entries.map(async ({ key, fileName }) => {
+      try {
+        const buffer = await fetchBuffer(`${aniCdnFolder}/${aniCdnFileName(fileName)}`);
+        clips[key] = buildAnimationClip(key, parseAnimation(buffer), bindPoseByBone);
+      } catch (err) {
+        console.warn(`Skipping animation ${key}:`, err);
+      }
+    }),
+  );
 }
 
 function buildSkinAttributes(meshObj: RfMeshObject, nameToIndex: Map<string, number>) {
@@ -323,29 +348,8 @@ function buildGeometry(meshObj: RfMeshObject): BufferGeometry {
   return geometry;
 }
 
-async function fetchRfsArchive(url: string): Promise<RfsArchive> {
-  return parseRfs(await fetchBuffer(url));
-}
-
 export interface RaceAssets {
   skeletonBuffer: ArrayBuffer;
-  /** The DEFAULT{code}.RFS body - always sufficient for the default/base-appearance stem (see CharacterController.equipHelmet/equipItem's null branch); a real armor item may need getRaceArmorArchives() instead. */
-  meshArchive: RfsArchive;
-  texArchive: RfsArchive;
-  aniArchive: RfsArchive;
-  /** Per-weapon-category combat walk/run/stand clips (character/player/Ani/{race}COA.RFS) - see getWeaponClip(). */
-  weaponAniArchive: RfsArchive;
-  /**
-   * Directional (backward/strafe) combat walk/run clips (character/player/
-   * Ani/{race}MOA.RFS) - see getWeaponClip(). COA's own BW/LF/RT/FW-
-   * prefixed entries only exist for Accretia (confirmed by direct count:
-   * zero across Bell/Cora's COA archives); MOA carries the same directional
-   * set - full token-for-token coverage matching COA's plain-form tokens,
-   * confirmed by comparison - for every race, but has no COMBAT_STAND at
-   * all, so it's only ever consulted for walk/run direction lookups, never
-   * as a general COA substitute.
-   */
-  weaponMoaArchive: RfsArchive;
 }
 
 const scratchWielderPos = new Vector3();
@@ -663,79 +667,64 @@ function buildObjectsFromParsedMesh(
   return built3d;
 }
 
-/** Searches a fixed list of already-loaded archives in order for one named entry - the same archive-list-search shape as findInNamedArchives below, minus the lazy fetch/cache (these are all preloaded up front, see loadRaceAssets). Nulls (a tier archive that failed/doesn't exist for this race) are skipped. */
-function findEntryInArchives(
-  archives: (RfsArchive | null)[],
-  name: string,
-): { archive: RfsArchive; entry: RfsEntry } | null {
-  for (const archive of archives) {
-    if (!archive) continue;
-    const entry = findRfsEntry(archive, name);
-    if (entry) return { archive, entry };
-  }
-  return null;
-}
-
 interface ParsedBodyMesh {
   objects: RfMeshObject[];
   /** Tagged with userData.pooled = true below - same reasoning as ParsedWeaponMesh.texture: shared across every equip of this stem, so disposeObject3D() must skip disposing it on an individual unequip. */
   texture: Texture | null;
 }
 
-// Keyed by stem alone (globally, not per-race) - a resolved stem is already
-// a unique, self-describing name ("BELFEMALE_ARMOR_UPPER_084",
+// Keyed by stem alone (globally, not per cdnBase) - a resolved stem is
+// already a unique, self-describing name ("BELFEMALE_ARMOR_UPPER_084",
 // "ACCRETIA_DEFAULT_HELMET_000", ...), so re-equipping the same item (on
 // the same character, or switching back after wearing something else)
-// never re-fetches the archive entry or re-parses/re-decodes it - only the
-// (per-equip, per-skeleton) three.js objects in buildObjectsFromParsedMesh
-// below are ever rebuilt. Same pooling shape as weaponMeshPoolCache, and
-// for the same reason: on-demand loading (see getRaceArmorArchives) must
-// not mean "re-parse from scratch" every time something already seen once
-// gets equipped again.
+// never re-fetches or re-parses/re-decodes it - only the (per-equip,
+// per-skeleton) three.js objects in buildObjectsFromParsedMesh below are
+// ever rebuilt. Same pooling shape as weaponMeshPoolCache, and for the same
+// reason: on-demand fetching must not mean "re-parse from scratch" every
+// time something already seen once gets equipped again.
 const bodyMeshParseCache = new Map<string, ParsedBodyMesh | null>();
 
-function parseBodyMeshEntry(
-  stem: string,
-  meshArchives: (RfsArchive | null)[],
-  texArchives: (RfsArchive | null)[],
-): ParsedBodyMesh | null {
+async function fetchBodyMeshEntry(stem: string, cdnBase: string): Promise<ParsedBodyMesh | null> {
   const cached = bodyMeshParseCache.get(stem);
   if (cached !== undefined) return cached;
 
-  const meshHit = findEntryInArchives(meshArchives, `${stem}.msh`);
-  if (!meshHit) {
-    console.warn(`No "${stem}.msh" entry in any Mesh archive`);
+  let meshBuffer: ArrayBuffer;
+  try {
+    meshBuffer = await fetchBuffer(`${cdnBase}/mesh/${stem}.msh`);
+  } catch (err) {
+    console.warn(`No "${stem}.msh" on the CDN (${cdnBase}):`, err);
     bodyMeshParseCache.set(stem, null);
     return null;
   }
-  const meshBuffer = readRfsEntry(meshHit.archive, meshHit.entry);
 
-  // Cloak textures are a naming outlier: their archives (AKT00.RFS) name
-  // entries "..._WEAPON_CLOAK_..." while the matching mesh stem (resolved
-  // via resolveCloakMeshStem) is "..._ARMOR_CLOAK_..." - verified against
-  // the real archive contents, not a guess. Harmless to try generically for
-  // every stem (not just cloak's): body-part stems are only ever looked up
-  // against their own race's Tex archives, which don't contain a
-  // "_WEAPON_"-substituted name for anything real, so this fallback simply
-  // finds nothing there instead of matching something wrong.
-  const texHit =
-    findEntryInArchives(texArchives, `${stem}.RFT`) ??
-    (stem.includes('_ARMOR_') ? findEntryInArchives(texArchives, `${stem.replace('_ARMOR_', '_WEAPON_')}.RFT`) : null);
+  // Cloak textures are a naming outlier: their source archive (AKT00.RFS)
+  // named entries "..._WEAPON_CLOAK_..." while the matching mesh stem
+  // (resolved via resolveCloakMeshStem) is "..._ARMOR_CLOAK_..." - verified
+  // against the real archive contents, not a guess, and preserved as-is
+  // through extraction (scripts/extract_rfs.py doesn't rename anything).
+  // Harmless to try generically for every stem (not just cloak's):
+  // body-part stems never have a real "_WEAPON_"-substituted counterpart on
+  // the CDN, so this fallback just 404s there instead of matching wrong.
   let texture: Texture | null = null;
-  if (texHit) {
+  try {
+    let texBuffer: ArrayBuffer;
     try {
-      texture = decodeRftTexture(readRfsEntry(texHit.archive, texHit.entry));
-      texture.userData.pooled = true;
+      texBuffer = await fetchBuffer(`${cdnBase}/tex/${stem}.dds`);
     } catch (err) {
-      console.warn(`Texture decode failed for ${stem}:`, err);
+      if (!stem.includes('_ARMOR_')) throw err;
+      texBuffer = await fetchBuffer(`${cdnBase}/tex/${stem.replace('_ARMOR_', '_WEAPON_')}.dds`);
     }
+    texture = decodeRftTexture(texBuffer);
+    texture.userData.pooled = true;
+  } catch (err) {
+    console.warn(`No usable texture for ${stem}:`, err);
   }
 
   let objects: RfMeshObject[];
   try {
     objects = parseMesh(meshBuffer);
   } catch (err) {
-    console.warn(`Failed to parse "${stem}.msh" (entry size ${meshHit.entry.size} bytes):`, err);
+    console.warn(`Failed to parse "${stem}.msh":`, err);
     bodyMeshParseCache.set(stem, null);
     return null;
   }
@@ -746,128 +735,53 @@ function parseBodyMeshEntry(
 }
 
 /**
- * Builds the ready-to-attach three.js object(s) for one named mesh entry
- * (a body part, or an equipped item's mesh) inside a race's Mesh/Tex RFS
- * archives. Shared by the initial default-body build and by equipping a
- * specific body-part item onto a slot later, so both go through identical
- * mesh-building logic. Each parameter is searched in order (default archive
- * first, then the per-race armor archives, when the caller passes those -
- * see getRaceArmorArchives) since a resolved stem doesn't say which
- * specific archive actually holds it. The actual fetch+parse is pooled by
- * stem (see parseBodyMeshEntry above) - only the per-call, per-skeleton
- * three.js build below ever redoes work for an already-seen stem.
+ * Builds the ready-to-attach three.js object(s) for one named mesh entry (a
+ * body part, an equipped item's mesh, or a cloak). Shared by the initial
+ * default-body build and by equipping a specific body-part/cloak item onto
+ * a slot later, so both go through identical mesh-building logic. `cdnBase`
+ * picks which CDN folder to fetch from - characterCdnBase(raceGender) for
+ * body parts (covers both the default appearance and real armor tiers, see
+ * CHARACTER_CDN_BASE's doc comment), CLOAK_CDN_BASE for cloaks. The actual
+ * fetch+parse is pooled by stem (see fetchBodyMeshEntry above) - only the
+ * per-call, per-skeleton three.js build below ever redoes work for an
+ * already-seen stem.
  */
-export function buildMeshPartObjects(
-  stem: string,
-  meshArchives: (RfsArchive | null)[],
-  texArchives: (RfsArchive | null)[],
-  built: BuiltSkeleton,
-): Object3D[] {
-  const parsed = parseBodyMeshEntry(stem, meshArchives, texArchives);
+export async function buildMeshPartObjects(stem: string, cdnBase: string, built: BuiltSkeleton): Promise<Object3D[]> {
+  const parsed = await fetchBodyMeshEntry(stem, cdnBase);
   if (!parsed) return [];
 
   return buildObjectsFromParsedMesh(parsed.objects, parsed.texture, built, stem);
 }
 
-const WEAPON_MESH_BASE = '/game-assets/item/Weapon/Mesh';
-const WEAPON_TEX_BASE = '/game-assets/item/Weapon/Tex';
+// Weapon meshes/textures used to live packed inside a fixed list of RFS
+// archives, searched in order until one contained the wanted stem (see
+// docs/rf-format-notes.md and git history for that approach). They're now
+// pre-extracted (scripts/extract_rfs.py) and hosted as loose files on a
+// CDN, one request per stem instead of a multi-archive fetch/parse search -
+// itemResource.json's own FileName is already the exact stem, so no lookup
+// table is needed on this end at all. Textures are pre-decrypted to plain
+// .dds at extraction time; decodeRftTexture still works unchanged on them
+// (its XOR-unlock step is a no-op once the real "DDS " magic is already
+// readable at offset 0).
+const WEAPON_CDN_BASE = 'https://rfscdn.ketikart.com/rfs/weapons';
 
-// Weapon meshes/textures are packed into these RFS archives, same as
-// player body parts - NOT loose files (itemResource.json's PathName/
-// TexutrePath point at a bare directory for most entries, with no archive
-// name encoded, so which of these actually holds a given item isn't
-// knowable ahead of time; see loadWeaponMeshObjects). Discovered by
-// listing public/game-assets/item/Weapon/{Mesh,Tex} - there's no
-// client-side directory listing API, so this has to be a fixed list, same
-// as RACE_CONFIGS' archive names elsewhere in this file. Ordered with the
-// common numbered archives first (WEM00 in particular - confirmed to hold
-// COM_WEAPON_*, the everyday weapon prefix) since a hit there resolves
-// fastest for the common case; the named ones after are smaller, more
-// specialized sets (siege kits, event/PvP weapons, elf-only weapons, ...).
-const WEAPON_MESH_ARCHIVE_NAMES = [
-  'WEM00', 'WEM01', 'WEM02', 'WEM03', 'WEM04', 'WEM05', 'WEM06', 'WEM07', 'WEM08', 'WEM09', 'WEM10', 'WEM11', 'WEM12',
-  'WEVM00', 'GEM00', 'NEM00', 'ELFWPM01', 'PVPWP', 'ORI70', 'ORI70SIEG', 'SIEGEORISS', '75siegeMesh', 'ori6770w',
-];
-const WEAPON_TEX_ARCHIVE_NAMES = [
-  'WET00', 'WET01', 'WET02', 'WET03', 'WET04', 'WET05', 'WET06', 'WET07', 'WET08', 'WET09', 'WET10', 'WET11', 'WET12', 'WET13',
-  'WEVT00', 'GET00', 'NET55', 'ELFWPT01', 'PVPWP', 'ORI70', 'ORI70SIEG', 'SIEGEORISS', 'ori6770',
-];
+// Body-part (character/player/{Mesh,Tex}) and cloak (item/Armor/{Mesh,Tex})
+// archives went through the same pre-extraction (scripts/extract_rfs.py)
+// as weapons above, for the same reason: a resolved stem used to mean
+// searching a fixed list of archives (the per-race DEFAULT + 15 armor-tier
+// archives for a body part, or the small race-agnostic cloak archive set)
+// until one contained it - now it's a direct fetch by stem, no search.
+// Body-part extraction folded the DEFAULT{code} archive into the same
+// per-race CDN folder as the armor tiers (both were searched in that same
+// [DEFAULT, ...tiers] priority order at runtime, so a stem-name collision
+// between them was never possible), so one CDN base per race covers both
+// the base appearance and every real armor item.
+const CHARACTER_CDN_BASE = 'https://rfscdn.ketikart.com/rfs/character';
+export const CLOAK_CDN_BASE = 'https://rfscdn.ketikart.com/rfs/cloak';
 
-// Lazily fetched and cached per archive name (not just per race like
-// raceAssetCache) - equipping one weapon only needs the one or two archives
-// that actually hold that item, not this whole ~150MB set; each individual
-// lookup only awaits as many archives as it takes to find its own hit - see
-// findInNamedArchives. Promises are
-// cached up front (same reasoning as raceAssetCache above), so two
-// concurrent lookups that need the same archive share one fetch instead of
-// racing separate ones; a failed load resolves to null (not a rejection) so
-// it's cached as "confirmed absent" rather than retried forever. Shared with
-// cloak archive loading below (own cache instances, same generic helpers).
-const weaponMeshArchiveCache = new Map<string, Promise<RfsArchive | null>>();
-const weaponTexArchiveCache = new Map<string, Promise<RfsArchive | null>>();
-
-function loadNamedArchive(
-  base: string,
-  name: string,
-  cache: Map<string, Promise<RfsArchive | null>>,
-): Promise<RfsArchive | null> {
-  let cached = cache.get(name);
-  if (!cached) {
-    cached = fetchRfsArchive(`${base}/${name}.RFS`).catch((err: unknown) => {
-      console.warn(`Failed to load archive "${name}":`, err);
-      return null;
-    });
-    cache.set(name, cached);
-  }
-  return cached;
-}
-
-/** Searches a fixed list of archives in order for one named entry, fetching (and caching) only as many as it takes to find a hit. */
-async function findInNamedArchives(
-  archiveNames: string[],
-  base: string,
-  cache: Map<string, Promise<RfsArchive | null>>,
-  entryName: string,
-): Promise<{ archive: RfsArchive; entry: RfsEntry } | null> {
-  for (const name of archiveNames) {
-    const archive = await loadNamedArchive(base, name, cache);
-    if (!archive) continue;
-    const entry = findRfsEntry(archive, entryName);
-    if (entry) return { archive, entry };
-  }
-  return null;
-}
-
-const CLOAK_MESH_BASE = '/game-assets/item/Armor/Mesh';
-const CLOAK_TEX_BASE = '/game-assets/item/Armor/Tex';
-// Discovered the same way WEAPON_MESH_ARCHIVE_NAMES was - listing
-// public/game-assets/item/Armor/{Mesh,Tex} directly, no client-side listing
-// API. Only 4 mesh archives but 2 tex archives; buildMeshPartObjects
-// searches whichever archives are actually loaded regardless, so a texture
-// living in a differently-named archive than its mesh isn't a problem.
-const CLOAK_MESH_ARCHIVE_NAMES = ['AKM00', 'NewCloakM', 'PHBP01', 'XMC'];
-const CLOAK_TEX_ARCHIVE_NAMES = ['AKT00', 'NewCloakT'];
-const cloakMeshArchiveCache = new Map<string, Promise<RfsArchive | null>>();
-const cloakTexArchiveCache = new Map<string, Promise<RfsArchive | null>>();
-
-/**
- * Cloak meshes (see resolveCloakMeshStem in resource.ts) live in this small,
- * fixed set of race-agnostic archives under item/Armor/ - not the per-race
- * character/player/Mesh armor archives (RaceAssets.armorMeshArchives),
- * which was the wrong place: verified zero "_CLOAK_" entries there, for any
- * race. Small enough (4 mesh + 2 tex) to just fetch every archive up front
- * rather than search incrementally like loadWeaponMeshObjects does for its
- * much larger 12+13-archive set - buildMeshPartObjects does its own
- * per-entry search across whatever's returned here anyway.
- */
-export function loadCloakArchives(): Promise<{
-  meshArchives: (RfsArchive | null)[];
-  texArchives: (RfsArchive | null)[];
-}> {
-  return Promise.all([
-    Promise.all(CLOAK_MESH_ARCHIVE_NAMES.map((name) => loadNamedArchive(CLOAK_MESH_BASE, name, cloakMeshArchiveCache))),
-    Promise.all(CLOAK_TEX_ARCHIVE_NAMES.map((name) => loadNamedArchive(CLOAK_TEX_BASE, name, cloakTexArchiveCache))),
-  ]).then(([meshArchives, texArchives]) => ({ meshArchives, texArchives }));
+/** Per-race base URL for body-part mesh/tex (both the default appearance and real armor items - see CHARACTER_CDN_BASE above). */
+export function characterCdnBase(raceGender: RaceGender): string {
+  return `${CHARACTER_CDN_BASE}/${RACE_CONFIGS[raceGender].meshTexCode}`;
 }
 
 // Weapon meshes' rigid sub-objects have a parentName that names a bone
@@ -929,22 +843,21 @@ function loadParsedWeaponMesh(stem: string): Promise<ParsedWeaponMesh | null> {
   let cached = weaponMeshPoolCache.get(stem);
   if (!cached) {
     cached = (async (): Promise<ParsedWeaponMesh | null> => {
-      const meshHit = await findInNamedArchives(WEAPON_MESH_ARCHIVE_NAMES, WEAPON_MESH_BASE, weaponMeshArchiveCache, `${stem}.msh`);
-      if (!meshHit) {
-        console.warn(`No "${stem}.msh" entry in any weapon Mesh archive`);
+      let meshBuffer: ArrayBuffer;
+      try {
+        meshBuffer = await fetchBuffer(`${WEAPON_CDN_BASE}/mesh/${stem}.msh`);
+      } catch (err) {
+        console.warn(`No "${stem}.msh" on the weapon CDN:`, err);
         return null;
       }
-      const meshBuffer = readRfsEntry(meshHit.archive, meshHit.entry);
 
       let texture: Texture | null = null;
-      const texHit = await findInNamedArchives(WEAPON_TEX_ARCHIVE_NAMES, WEAPON_TEX_BASE, weaponTexArchiveCache, `${stem}.RFT`);
-      if (texHit) {
-        try {
-          texture = decodeRftTexture(readRfsEntry(texHit.archive, texHit.entry));
-          texture.userData.pooled = true;
-        } catch (err) {
-          console.warn(`Texture decode failed for ${stem}:`, err);
-        }
+      try {
+        const texBuffer = await fetchBuffer(`${WEAPON_CDN_BASE}/tex/${stem}.dds`);
+        texture = decodeRftTexture(texBuffer);
+        texture.userData.pooled = true;
+      } catch (err) {
+        console.warn(`No usable texture for ${stem}:`, err);
       }
 
       let objects: RfMeshObject[];
@@ -969,8 +882,8 @@ function loadParsedWeaponMesh(stem: string): Promise<ParsedWeaponMesh | null> {
  * character's own pose) - see loadWeaponReferenceSkeleton above for why
  * the *placement math* needs a different, fixed skeleton instead. Most
  * weapon items reference a model variant not present in this asset drop,
- * so an empty result (mesh not found in any weapon archive) is common -
- * callers should treat that as "no visual mesh available," not an error.
+ * so an empty result (mesh not found on the weapon CDN) is common - callers
+ * should treat that as "no visual mesh available," not an error.
  * The actual fetch+parse is pooled by stem (see loadParsedWeaponMesh) -
  * loaded on demand here, not warmed ahead of time, so the first equip of a
  * given weapon has a real (background, non-blocking) load delay; every
@@ -1000,64 +913,19 @@ export function getRaceAssets(raceGender: RaceGender): Promise<RaceAssets> {
   return loadRaceAssets(raceGender);
 }
 
-/** The 3 armor categories x 5 tiers RFSInfo.dat lists per race, e.g. "BFR00".."BFR40", "BFW00".."BFW40", "BFF00".."BFF40" for Bell_Female. */
-const ARMOR_CATEGORIES = ['R', 'W', 'F'] as const;
-const ARMOR_TIERS = ['00', '10', '20', '30', '40'] as const;
-
-function armorArchiveNames(meshTexCode: string): string[] {
-  const names: string[] = [];
-  for (const category of ARMOR_CATEGORIES) {
-    for (const tier of ARMOR_TIERS) names.push(`${meshTexCode}${category}${tier}`);
-  }
-  return names;
-}
-
 function loadRaceAssets(raceGender: RaceGender, onFileLoaded?: () => void): Promise<RaceAssets> {
   const cached = raceAssetCache.get(raceGender);
   if (cached) return cached;
 
   const race = RACE_CONFIGS[raceGender];
-  const trackedFetchBuffer = (url: string) =>
-    fetchBuffer(url).then((buffer) => {
-      onFileLoaded?.();
-      return buffer;
-    });
-  const trackedFetchRfsArchive = (url: string) =>
-    fetchRfsArchive(url).then((archive) => {
-      onFileLoaded?.();
-      return archive;
-    });
-
-  // Only the character's own default body - small (~6MB/race) and needed
-  // the instant a character mounts, so this is the one thing worth staying
-  // eager for. Real armor-tier archives (~90MB/race) are loaded lazily
-  // instead, on whichever race's first actual equip needs them - see
-  // getRaceArmorArchives.
-  const promise = Promise.all([
-    trackedFetchBuffer(`${ASSET_BASE}/Bone/${race.boneFile}.bn`),
-    trackedFetchRfsArchive(`${ASSET_BASE}/Mesh/DEFAULT${race.meshTexCode}.RFS`),
-    trackedFetchRfsArchive(`${ASSET_BASE}/Tex/DEFAULT${race.meshTexCode}.RFS`),
-    trackedFetchRfsArchive(`${ASSET_BASE}/Ani/${race.aniCode}ETA.RFS`),
-    // COA carries the per-weapon-token COMBAT_STAND clip MOA doesn't have
-    // at all, plus the plain (non-directional) combat walk/run every race
-    // needs - so it's still the primary weapon-ani archive. But COA's own
-    // BW/FW/LF/RT-directional walk/run entries turn out to be Accretia-only
-    // (confirmed by direct count: zero across Bell/Cora's COA archives,
-    // despite this comment previously claiming otherwise) - MOA is what
-    // actually carries that directional set for every *other* race, with
-    // full token-for-token coverage matching COA's plain tokens. So both
-    // archives are fetched; see getWeaponClip's COA-then-MOA fallback for
-    // directional walk/run lookups.
-    trackedFetchRfsArchive(`${ASSET_BASE}/Ani/${race.aniCode}COA.RFS`),
-    trackedFetchRfsArchive(`${ASSET_BASE}/Ani/${race.aniCode}MOA.RFS`),
-  ]).then(([skeletonBuffer, meshArchive, texArchive, aniArchive, weaponAniArchive, weaponMoaArchive]) => ({
-    skeletonBuffer,
-    meshArchive,
-    texArchive,
-    aniArchive,
-    weaponAniArchive,
-    weaponMoaArchive,
-  }));
+  // Everything else (body-part mesh/tex, ETA base clips, and now COA/MOA
+  // weapon-combat clips too - see getWeaponClip) is CDN-fetched by stem/
+  // filename on demand instead - this only needs the skeleton, which every
+  // mounted character requires immediately regardless of equipment.
+  const promise = fetchBuffer(`${ASSET_BASE}/Bone/${race.boneFile}.bn`).then((skeletonBuffer) => {
+    onFileLoaded?.();
+    return { skeletonBuffer };
+  });
   // Cache the promise up front (not after it resolves) so concurrent callers
   // join it instead of starting their own fetch; a failed load is evicted so
   // a later retry can actually try again rather than replaying the same rejection.
@@ -1066,73 +934,67 @@ function loadRaceAssets(raceGender: RaceGender, onFileLoaded?: () => void): Prom
   return promise;
 }
 
-interface RaceArmorArchives {
-  meshArchives: (RfsArchive | null)[];
-  texArchives: (RfsArchive | null)[];
-}
-
-const raceArmorArchiveCache = new Map<RaceGender, Promise<RaceArmorArchives>>();
-
-/**
- * Lazily fetches (once per race, cached forever after - same reasoning as
- * raceAssetCache) the real armor-tier archives (character/player/{Mesh,Tex}/
- * {code}{R,W,F}{00,10,20,30,40}.RFS - 15 each, ~90MB/race) - everything
- * resolveItemMeshStem() resolves for a real armor item lives in one of
- * these, never in getRaceAssets()'s DEFAULT_* archive. Not part of
- * loadRaceAssets/preloadAllRaces any more - eagerly fetching this for
- * every race up front was most of the slow startup (~450MB before anyone
- * even reached the login screen); on-demand per race, triggered by
- * CharacterController's equip methods only when an item actually needs it,
- * fixes that without changing what's ultimately available.
- *
- * Individual archives resolve to `null` on failure/absence (confirmed real
- * gap: Accretia has no Face tier-1/tier-2 textures) rather than rejecting
- * the whole race - findEntryInArchives skips nulls.
- */
-export function getRaceArmorArchives(raceGender: RaceGender): Promise<RaceArmorArchives> {
-  let cached = raceArmorArchiveCache.get(raceGender);
-  if (!cached) {
-    const race = RACE_CONFIGS[raceGender];
-    const armorNames = armorArchiveNames(race.meshTexCode);
-    const fetchOptional = (url: string) =>
-      fetchRfsArchive(url).catch((err: unknown) => {
-        console.warn(`Armor archive "${url}" unavailable, skipping:`, err);
-        return null;
-      });
-    cached = Promise.all([
-      Promise.all(armorNames.map((name) => fetchOptional(`${ASSET_BASE}/Mesh/${name}.RFS`))),
-      Promise.all(armorNames.map((name) => fetchOptional(`${ASSET_BASE}/Tex/${name}.RFS`))),
-    ]).then(([meshArchives, texArchives]) => ({ meshArchives, texArchives }));
-    raceArmorArchiveCache.set(raceGender, cached);
-    cached.catch(() => raceArmorArchiveCache.delete(raceGender));
-  }
-  return cached;
-}
-
 const ALL_RACES = Object.values(RaceGender).filter((v): v is RaceGender => typeof v === 'number');
-/** bone, mesh, tex, ani, weapon-ani, weapon-moa - the small default-body set. Armor tiers/weapons are no longer eagerly preloaded, see getRaceArmorArchives/loadParsedWeaponMesh. */
-const FILES_PER_RACE = 6;
+
+// The six base-appearance slots' mesh tokens and how many pre-made variants
+// each has - mirrors items.ts's ALL_MODEL_TYPES/MODEL_TYPE_TO_PART_TOKEN/
+// BASE_APPEARANCE_VARIANT_COUNT, duplicated as plain strings/a number
+// rather than imported: items.ts already imports RaceGender from this
+// file, so importing back from items.ts here would make the two modules
+// circular.
+const DEFAULT_APPEARANCE_PART_TOKENS = ['HELMET', 'FACE', 'UPPER', 'LOWER', 'GLOVES', 'SHOES'];
+const DEFAULT_APPEARANCE_VARIANT_COUNT = 5;
 
 /**
- * Fetches and caches every race's default-body assets up front, so
- * switching races later never blocks on the network. Reports progress in
- * units of "files fetched" (6 per race: bone, mesh, tex, ani, weapon-ani,
- * weapon-moa), not races, for a smoother readout. Deliberately excludes
- * armor-tier archives and weapon meshes - those are loaded on demand
- * instead (see getRaceArmorArchives, loadParsedWeaponMesh), so this stays
- * fast regardless of how much equipment data exists.
+ * Prefetches every default body-part appearance (all 6 base slots x 5
+ * pre-made variants each, e.g. "BELFEMALE_DEFAULT_HELMET_000" through
+ * "..._004") for one race, straight into bodyMeshParseCache via the exact
+ * same fetch+parse path a real equip uses (see fetchBodyMeshEntry) - just
+ * run ahead of time so mounting a character, or cycling hairstyle/face/body
+ * options during character creation, never has to wait on the network.
+ */
+function preloadDefaultAppearance(raceGender: RaceGender, onFileLoaded?: () => void): Promise<void> {
+  const cdnBase = characterCdnBase(raceGender);
+  const nameToken = RACE_CONFIGS[raceGender].nameToken;
+  const stems: string[] = [];
+  for (const token of DEFAULT_APPEARANCE_PART_TOKENS) {
+    for (let variant = 0; variant < DEFAULT_APPEARANCE_VARIANT_COUNT; variant++) {
+      stems.push(`${nameToken}_DEFAULT_${token}_${String(variant).padStart(3, '0')}`);
+    }
+  }
+  return Promise.all(
+    stems.map((stem) =>
+      fetchBodyMeshEntry(stem, cdnBase).then(() => {
+        onFileLoaded?.();
+      }),
+    ),
+  ).then(() => undefined);
+}
+
+/** bone, plus one unit per default-appearance stem (6 slots x 5 variants) - see loadRaceAssets/preloadDefaultAppearance. Real armor/weapon/cloak items and weapon-combat animations are CDN-fetched by stem/filename on demand instead, not part of this preload at all. */
+const FILES_PER_RACE = 1 + DEFAULT_APPEARANCE_PART_TOKENS.length * DEFAULT_APPEARANCE_VARIANT_COUNT;
+
+/**
+ * Fetches and caches every race's skeleton AND every default body-part
+ * appearance up front, so switching races later - or a fresh character
+ * mounting for the first time - never blocks on the network for anything
+ * it's guaranteed to need. Reports progress in units of "files fetched,"
+ * not races, for a smoother readout. Real armor/weapon/cloak items are
+ * still CDN-fetched by stem on demand instead (see characterCdnBase,
+ * loadParsedWeaponMesh), so this stays proportional to the fixed
+ * default-appearance set regardless of how much equipment data
+ * exists.
  */
 export async function preloadAllRaces(onProgress?: (loaded: number, total: number) => void): Promise<void> {
   const total = ALL_RACES.length * FILES_PER_RACE;
   let loaded = 0;
   onProgress?.(loaded, total);
+  const onFileLoaded = () => {
+    loaded += 1;
+    onProgress?.(loaded, total);
+  };
   await Promise.all(
-    ALL_RACES.map((race) =>
-      loadRaceAssets(race, () => {
-        loaded += 1;
-        onProgress?.(loaded, total);
-      }),
-    ),
+    ALL_RACES.map((race) => Promise.all([loadRaceAssets(race, onFileLoaded), preloadDefaultAppearance(race, onFileLoaded)])),
   );
 }
 
@@ -1148,7 +1010,7 @@ export async function preloadAllRaces(onProgress?: (loaded: number, total: numbe
  */
 export async function loadCharacter(raceGender: RaceGender = RaceGender.Bell_Female): Promise<RfCharacter> {
   const race = RACE_CONFIGS[raceGender];
-  const { skeletonBuffer, aniArchive } = await loadRaceAssets(raceGender);
+  const { skeletonBuffer } = await loadRaceAssets(raceGender);
 
   const rfSkeleton = parseSkeleton(skeletonBuffer);
   const built = buildThreeSkeleton(rfSkeleton);
@@ -1161,14 +1023,17 @@ export async function loadCharacter(raceGender: RaceGender = RaceGender.Bell_Fem
 
   const mixer = new AnimationMixer(group);
   const clips: Record<string, AnimationClip> = {};
+  const aniCdnFolder = `${ANI_CDN_BASE}/${race.aniCode}ETA`;
   const baseEntries = Object.entries(animationFileNames(race.nameToken)).map(([key, fileName]) => ({ key, fileName }));
-  loadClipsInto(clips, aniArchive, baseEntries, bindPoseByBone);
-  // Directional backward/strafe walk/run - see LocomotionDirection. Loaded
-  // eagerly alongside the base clips (same already-fetched ETA archive, six
-  // small extra entries) rather than lazily like weapon clips, since every
-  // race always has these and CharacterController needs them the instant
-  // WASD/joystick strafing starts, not after an await.
-  loadClipsInto(clips, aniArchive, directionalAnimationFileNames(race.nameToken), bindPoseByBone);
+  await Promise.all([
+    loadClipsInto(clips, aniCdnFolder, baseEntries, bindPoseByBone),
+    // Directional backward/strafe walk/run - see LocomotionDirection. Loaded
+    // eagerly alongside the base clips (same CDN folder, six small extra
+    // files) rather than lazily like weapon clips, since every race always
+    // has these and CharacterController needs them the instant WASD/
+    // joystick strafing starts, not after an await.
+    loadClipsInto(clips, aniCdnFolder, directionalAnimationFileNames(race.nameToken), bindPoseByBone),
+  ]);
 
   return { group, builtSkeleton: built, mixer, clips };
 }
@@ -1254,27 +1119,27 @@ export async function getWeaponClip(
   if (cached) return cached;
 
   const race = RACE_CONFIGS[raceGender];
-  const { weaponAniArchive, weaponMoaArchive } = await getRaceAssets(raceGender);
-  const archives = direction ? [weaponAniArchive, weaponMoaArchive] : [weaponAniArchive];
+  const folders = direction
+    ? [`${ANI_CDN_BASE}/${race.aniCode}COA`, `${ANI_CDN_BASE}/${race.aniCode}MOA`]
+    : [`${ANI_CDN_BASE}/${race.aniCode}COA`];
   const segments = direction ? [`${DIRECTION_SEGMENT_PREFIX[direction]}${kind.toUpperCase()}`] : WEAPON_CLIP_SEGMENTS[kind];
 
-  let aniEntry: RfsEntry | null = null;
+  let buffer: ArrayBuffer | null = null;
   let fileName = '';
-  let sourceArchive = weaponAniArchive;
-  search: for (const archive of archives) {
+  search: for (const folder of folders) {
     for (const segment of segments) {
       fileName = `${race.nameToken}_COMBAT_${segment}_${weaponToken}_NONE_01_00.ANI`;
-      aniEntry = findRfsEntry(archive, fileName);
-      if (aniEntry) {
-        sourceArchive = archive;
+      try {
+        buffer = await fetchBuffer(`${folder}/${aniCdnFileName(fileName)}`);
         break search;
+      } catch {
+        // Not present in this folder/segment - try the next one (COA before MOA, FW before plain).
       }
     }
   }
-  if (!aniEntry) return null;
+  if (!buffer) return null;
 
   try {
-    const buffer = readRfsEntry(sourceArchive, aniEntry);
     const bindPoseByBone = await getBindPoseByBoneAsync(raceGender);
     const clip = buildAnimationClip(key, parseAnimation(buffer), bindPoseByBone);
     character.clips[key] = clip;

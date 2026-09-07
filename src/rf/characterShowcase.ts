@@ -1,4 +1,4 @@
-import { getRaceArmorArchives, loadCloakArchives, RaceGender } from './character';
+import { RaceGender } from './character';
 import { loadShowcaseCandidates, loadSlotItems, ModelType } from './items';
 import type { ItemDefinition } from './items';
 
@@ -80,28 +80,4 @@ export async function loadShowcaseLoadout(raceGender: RaceGender): Promise<Showc
     if (fallback.length > 0) results.push({ modelType, candidates: fallback });
   }
   return results;
-}
-
-/**
- * Warms the mesh archives every race's showcase loadout needs, so
- * CharacterCreateRaceScene's equip calls hit an already-populated cache
- * instead of each kicking off its own fetch - called as soon as the player
- * heads toward character creation (see CharacterSelectScreen), well before
- * the showcase scene itself needs the data. Deliberately NOT part of the
- * app's startup preload (preloadAllRaces) - that was made lazy/on-demand on
- * purpose (see character.ts's RaceAssets doc comment) specifically to keep
- * startup fast, and this would undo that for players who never create a
- * character this session.
- */
-export function preloadShowcaseAssets(): void {
-  loadShowcaseConfig()
-    .then((config) => {
-      for (const raceKey of Object.keys(config)) {
-        const race = Number(raceKey) as RaceGender;
-        if (!(race in RaceGender)) continue;
-        void getRaceArmorArchives(race);
-      }
-      void loadCloakArchives();
-    })
-    .catch((err: unknown) => console.error('Failed to preload showcase assets:', err));
 }
