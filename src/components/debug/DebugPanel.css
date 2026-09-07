@@ -227,6 +227,45 @@
   word-break: break-word;
 }
 
+.debug-panel-weapon-edit-grade {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding: 0.5rem 0.6rem;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.25);
+}
+
+.debug-panel-weapon-edit-grade-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.debug-panel-weapon-edit-grade-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  color: #9aa4b2;
+  font: 500 0.68rem system-ui, sans-serif;
+}
+
+.debug-panel-weapon-edit-grade-field input {
+  width: 4.2rem;
+  padding: 0.25rem 0.35rem;
+  border-radius: 4px;
+  border: 1px solid #444;
+  background: #22252b;
+  color: #eee;
+  font: 500 0.75rem ui-monospace, monospace;
+}
+
+.debug-panel-weapon-edit-grade-readonly {
+  color: #666;
+  font: 500 0.68rem ui-monospace, monospace;
+  word-break: break-word;
+}
+
 .debug-panel-weapon-edit-mode {
   position: static;
   left: auto;

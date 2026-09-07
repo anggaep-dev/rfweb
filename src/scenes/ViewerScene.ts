@@ -5,6 +5,7 @@ import { AssetController } from '../controllers/AssetController';
 import { BotController } from '../controllers/BotController';
 import { CameraController } from '../controllers/CameraController';
 import { CharacterController } from '../controllers/CharacterController';
+import type { WeaponDebugInfo } from '../controllers/CharacterController';
 import { SceneController } from '../controllers/SceneController';
 import { classifyLocomotionDirection } from '../rf/character';
 import type { RaceGender } from '../rf/character';
@@ -47,6 +48,8 @@ export interface WeaponEditState {
   original: WeaponEditTransform;
   /** The live transform as the gizmo is dragged - the "after" side. */
   current: WeaponEditTransform;
+  /** Every other debug-relevant weapon variable (item fields, glow/grade overlay parameters) - see CharacterController.getWeaponDebugInfo. Snapshotted alongside the transform, not re-read every frame - none of it changes without a re-equip, which already re-triggers syncWeaponEditTarget/emitWeaponEditState. */
+  debug: WeaponDebugInfo | null;
 }
 
 export interface ViewerSceneCallbacks {
@@ -286,6 +289,7 @@ export class ViewerScene implements AppScene {
       mode: this.weaponEditMode,
       original: toTransform(this.weaponEditOriginal.position, this.weaponEditOriginal.quaternion),
       current: toTransform(this.weaponEditTarget.position, this.weaponEditTarget.quaternion),
+      debug: this.characterController.getWeaponDebugInfo(),
     });
   }
 

@@ -124,6 +124,8 @@ export interface ItemDefinition {
   civil: string;
   /** Required character level to use this item, 0 if the item's file doesn't carry the field at all (faceItem.json - see loadShowcaseCandidates' doc comment). */
   levelLim: number;
+  /** weaponItem.json only ("Grade" field, 0-9 seen) - selects a Chef/GradeEffect/ cosmetic overlay (see gradeEffect.ts); undefined for every other slot's item file, which doesn't carry this field at all. */
+  grade?: number;
 }
 
 interface RawItemEntry {
@@ -159,6 +161,8 @@ interface RawItemEntry {
    * "everything 0" case), so it gets the same treatment.
    */
   IsExist?: string | number;
+  // weaponItem.json only - a plain small JSON number (0-9 seen), no string/number split to handle here.
+  Grade?: number;
 }
 
 /**
@@ -210,6 +214,7 @@ async function fetchSlotItems(modelType: ModelType): Promise<ItemDefinition[]> {
       model: String(entry.Model),
       civil: String(entry.Civil),
       levelLim: entry.LevelLim === undefined ? 0 : Number(entry.LevelLim),
+      grade: entry.Grade,
     });
   }
   return items;

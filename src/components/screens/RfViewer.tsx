@@ -11,6 +11,7 @@ import type { CamMode } from '../../controllers/CameraController';
 import type { BattleMode, MoveMode } from '../../controllers/CharacterController';
 import { useKeyboardMove } from '../../hooks/useKeyboardMove';
 import { RaceGender } from '../../rf/character';
+import type { GradeLiveValues } from '../../rf/gradeEffect';
 import { ALL_EQUIP_SLOTS, SLOT_LABELS, loadUsableSlotItems } from '../../rf/items';
 import type { ModelType, ItemDefinition } from '../../rf/items';
 import type { SceneManager } from '../../scenes/SceneManager';
@@ -285,6 +286,9 @@ export default function RfViewer({ sceneManager, initialRaceGender, onExit }: Rf
   }, []);
   const handleWeaponEditReset = useCallback(() => viewerSceneRef.current?.resetWeaponEditTransform(), []);
   const handleWeaponEditClose = useCallback(() => setShowWeaponEdit(false), []);
+  const handleGradeLiveChange = useCallback((patch: Partial<GradeLiveValues>) => {
+    viewerSceneRef.current?.characterController.setWeaponGradeLiveValues(patch);
+  }, []);
 
   // Depends only on slotItems (needed to resolve the picked id back to an
   // ItemDefinition) - that only changes on an actual item-load/race-switch
@@ -486,6 +490,7 @@ export default function RfViewer({ sceneManager, initialRaceGender, onExit }: Rf
           onModeChange={handleWeaponEditModeChange}
           onReset={handleWeaponEditReset}
           onClose={handleWeaponEditClose}
+          onGradeLiveChange={handleGradeLiveChange}
         />
       )}
 

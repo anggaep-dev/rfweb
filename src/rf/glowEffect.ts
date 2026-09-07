@@ -281,7 +281,13 @@ export interface GlowOverlay {
   objects: Object3D[];
   /** Non-empty only when at least one section used movementMode 2 (scrolling) - see animateGlowOverlay in the controller. */
   scrollingMaterials: { material: MeshBasicMaterial; speedByte: number }[];
+  /** The resolved .eff path this came from, or null for the common "no registered effect" case - debug display only (WeaponEditPanel). */
+  effPath: string | null;
+  /** The specific .eff section (of possibly several - see EffSection) whose glowTexture was actually used - debug display only. */
+  section: EffSection | null;
 }
+
+const EMPTY_GLOW_OVERLAY: GlowOverlay = { objects: [], scrollingMaterials: [], effPath: null, section: null };
 
 /**
  * Builds a glow overlay for an already-built, already-attached equipped
@@ -294,14 +300,14 @@ export interface GlowOverlay {
  */
 export async function buildGlowOverlay(modelId: string, sourceObjects: Object3D[]): Promise<GlowOverlay> {
   const effPath = await resolveGlowEffectPath(modelId);
-  if (!effPath) return { objects: [], scrollingMaterials: [] };
+  if (!effPath) return EMPTY_GLOW_OVERLAY;
 
   const sections = await loadEffFile(effPath);
   const glowSection = sections.find((s) => s.glowTexture);
-  if (!glowSection?.glowTexture) return { objects: [], scrollingMaterials: [] };
+  if (!glowSection?.glowTexture) return EMPTY_GLOW_OVERLAY;
 
   const texture = await loadChefTexture(glowSection.glowTexture);
-  if (!texture) return { objects: [], scrollingMaterials: [] };
+  if (!texture) return EMPTY_GLOW_OVERLAY;
 
   const objects: Object3D[] = [];
   const scrollingMaterials: { material: MeshBasicMaterial; speedByte: number }[] = [];
@@ -342,7 +348,7 @@ export async function buildGlowOverlay(modelId: string, sourceObjects: Object3D[
     });
   }
 
-  return { objects, scrollingMaterials };
+  return { objects, scrollingMaterials, effPath, section: glowSection };
 }
 
 /** Disposes a glow overlay's own meshes/materials (not the shared geometry/texture, which belong to the source objects and texture cache respectively). */

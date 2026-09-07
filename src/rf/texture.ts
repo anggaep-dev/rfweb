@@ -110,6 +110,57 @@ function rgb565ToRgb888(c: number): [number, number, number] {
   return [(r << 3) | (r >> 2), (g << 2) | (g >> 4), (b << 3) | (b >> 2)];
 }
 
+/**
+ * three.js's DDSLoader only recognizes 32bpp RGBA and 24bpp RGB as
+ * "uncompressed" (see its own source - anything else falls into an
+ * `else` branch that just logs "Unsupported FourCC code" and returns
+ * empty mipmaps) - it has no support at all for 16bpp uncompressed RGB565,
+ * which a real Chef/ file (GradeEffect/Cgrade.dds) turned out to use
+ * (confirmed via its raw DDS_PIXELFORMAT header: RGB flag set, no FourCC,
+ * RGBBitCount=16, masks R=0xf800/G=0x7e0/B=0x1f/A=0 - exactly RGB565, no
+ * alpha channel at all). DDSLoader silently failing here isn't a
+ * classify-alpha-wrong situation - decodeRftTexture's caller never gets a
+ * texture back at all, so the grade overlay this was for renders as
+ * nothing rather than something visibly wrong. Only this one confirmed
+ * real bit layout is handled - returns null (falls through to the normal
+ * "unsupported, throw" path) for anything else, rather than guessing at
+ * unverified mask combinations (RGB555, ARGB4444, ...) no real file here
+ * has been seen to use.
+ */
+function tryDecodeRgb565Uncompressed(buffer: ArrayBuffer): DdsMipmap | null {
+  const view = new DataView(buffer);
+  if (view.getUint32(0, true) !== DDS_MAGIC) return null;
+
+  const headerSize = view.getUint32(4, true);
+  const height = view.getUint32(12, true);
+  const width = view.getUint32(16, true);
+
+  const pfOffset = 4 + 72; // DDS_HEADER's own DDS_PIXELFORMAT sub-struct starts 72 bytes into the 124-byte header, right after the 4-byte magic
+  const DDPF_RGB = 0x40;
+  const pfFlags = view.getUint32(pfOffset + 4, true);
+  const rgbBitCount = view.getUint32(pfOffset + 12, true);
+  const rMask = view.getUint32(pfOffset + 16, true);
+  const gMask = view.getUint32(pfOffset + 20, true);
+  const bMask = view.getUint32(pfOffset + 24, true);
+  const aMask = view.getUint32(pfOffset + 28, true);
+  if (!(pfFlags & DDPF_RGB) || rgbBitCount !== 16 || rMask !== 0xf800 || gMask !== 0x7e0 || bMask !== 0x1f || aMask !== 0) {
+    return null;
+  }
+
+  const dataOffset = 4 + headerSize;
+  const pixelData = new DataView(buffer, dataOffset);
+  const rgba = new Uint8ClampedArray(width * height * 4);
+  for (let i = 0; i < width * height; i++) {
+    const c = pixelData.getUint16(i * 2, true);
+    const [r, g, b] = rgb565ToRgb888(c);
+    rgba[i * 4] = r;
+    rgba[i * 4 + 1] = g;
+    rgba[i * 4 + 2] = b;
+    rgba[i * 4 + 3] = 255; // no alpha channel in this format - fully opaque, same as DDSLoader's own loadRGBMip does for 24bpp
+  }
+  return { data: rgba as unknown as Uint8Array, width, height };
+}
+
 function writeTexel(out: Uint8ClampedArray, outW: number, outH: number, x: number, y: number, r: number, g: number, b: number, a: number) {
   if (x >= outW || y >= outH) return;
   const o = (y * outW + x) * 4;
@@ -357,11 +408,15 @@ export function decodeRftTexture(rawBuffer: ArrayBuffer): Texture {
   // DDSLoader itself doesn't recognize every DDS variant (16-bit RGB seen
   // among Chef/'s glow textures, for one - it logs "Unsupported FourCC
   // code" and returns its empty placeholder object rather than throwing).
-  // Surface that as a real, catchable error here instead of continuing on
-  // to a confusing "reading .data of undefined" crash a few lines down -
-  // callers already treat a failed texture load as "commonly missing,"
-  // same as any other unavailable asset in this codebase.
+  // One confirmed real case (RGB565, no alpha - see tryDecodeRgb565Uncompressed)
+  // is decoded manually here instead; anything else DDSLoader can't parse
+  // still surfaces as a real, catchable error instead of continuing on to a
+  // confusing "reading .data of undefined" crash a few lines down - callers
+  // already treat a failed texture load as "commonly missing," same as any
+  // other unavailable asset in this codebase.
   if (ddsData.mipmaps.length === 0) {
+    const rgb565 = tryDecodeRgb565Uncompressed(ddsBuffer);
+    if (rgb565) return buildDataTexture(rgb565, classifyAlpha(rgb565.data));
     throw new Error(`DDSLoader could not parse this DDS (unsupported variant, format=${String(format)})`);
   }
 

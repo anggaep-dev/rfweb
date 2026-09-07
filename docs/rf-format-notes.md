@@ -455,6 +455,43 @@ the real client for this - `UNUSE` is what plays on removal) aren't wired
 up; neither is `ATTACK` (no attack/combat action exists anywhere in this
 app yet to trigger it from).
 
+**Flying is a player-toggled mode gated on any cloak being equipped**
+(`CharacterController.isFlying`/`setFlying()`), independent of the
+automatic Booster-cloak-run-speed mechanic above (`isBoosterEquipped`) -
+the two aren't the same feature, just both cloak-related. Turning it on
+with no cloak equipped is a no-op that returns `false` so the caller (the
+"Fly" button in `RfViewer.tsx`) can show a "must equip a cloak" notice.
+While on, `getDesiredLocomotionClip()`/`getIdleClip()` resolve to `fly`
+regardless of the walk/run toggle or whether anything is actually moving -
+covering all 5 real clips found in the `ETA` archive (see the `ETA` row in
+the Ani-archive-suffix table above): plain `fly` for both idling and moving
+mostly-forward (same simplification walk/run already make for their own
+unused `FWWALK`/`FWRUN` forward variant - the character always turns to
+face its travel direction, so the plain clip already looks right), plus
+the real `BWFLY`/`LTFLY`/`RTFLY` clips for backward/left/right, resolved
+through the same `resolveClipName()` directional machinery walk/run use
+(see `directionalFlyAnimationFileNames()` in `character.ts`). Movement
+speed while flying is a fixed value (`FLY_SPEED_MULTIPLIER` in
+`CharacterController.ts`) independent of the walk/run toggle entirely -
+not a multiplier layered on top of walk or run speed like
+`BOOSTER_SPEED_MULTIPLIER` is - since the real client's cloak flight speed
+isn't tied to the ground locomotion toggle either.
+
+**A `clampWhenFinished` `LoopOnce` action left running after it finishes
+keeps contributing weight to the mixer** - a real three.js gotcha, not a
+project-specific bug, but one this cloak state machine hit directly: the
+`EQUIP` action stays "running" (frozen on its last frame) even after its
+`'finished'` event fires, so starting `USE`'s loop afterward without
+stopping `EQUIP` first left both actions blending together, damping the
+idle sway down to near-invisible instead of replacing it outright (the
+mixer was confirmed advancing every frame with correct clip durations -
+the clips just weren't looking like they were doing anything). Fix: call
+`equipAction.stop()` (and, symmetrically, `mixer.stopAllAction()` before
+starting `UNUSE`) at each state-machine transition in
+`applyCloakAnimation`/`equipCloak` - same pattern `playCloakAnimationState`
+(the manual clip-preview dropdown) already used for its own single-clip
+playback.
+
 Neither table's `PathName`/`TexutrePath` reliably names which archive
 actually holds the mesh - most `itemResource.json` weapon entries just say
 the bare `.\ITEM\WEAPON\MESH\` directory with no archive hint at all. So
@@ -562,7 +599,7 @@ real entry names (not documented anywhere client-side that we've found):
 
 | Suffix | Contents |
 |---|---|
-| `ETA` | `PEACE` (unarmed) stand/walk/run/sit/fly + `BW/FW/LF/RT` directional variants; common/corpse/dead poses. Currently the only archive `loadCharacter()` fetches for the base `stand`/`walk`/`run`/`sit` clips. |
+| `ETA` | `PEACE` (unarmed) stand/walk/run/sit/fly + `BW/FW/LF/RT` directional variants for walk/run - fly has the same 4-direction set too, but its "left" segment is spelled `LT` (`"...LTFLY..."`), not `LF` like walk/run's; a real per-clip-type naming quirk in the source data, not a typo (see `FLY_DIRECTION_SEGMENT_PREFIX` in `character.ts`). Common/corpse/dead poses. The only archive `loadCharacter()` fetches for the base `stand`/`walk`/`run`/`sit`/`fly` clips (plain and directional). |
 | `ATA` | `COMBAT_ATTACK_{weapon}_{TOP\|MIDDLE\|BOTTOM}` - melee/ranged attack swings. |
 | `COA` | Non-directional `COMBAT_{WALK\|RUN}_{weapon token}_NONE_01_00` locomotion on every race, **plus** `COMBAT_STAND_{weapon token}_NONE_01_00` (per-weapon-type idle - MOA doesn't have this at all) - and, **Accretia only**, the same set again with a `BW\|FW\|LF\|RT` directional prefix. The primary archive `getWeaponClip()` fetches (plain form + STAND, always); see `MOA` for where the other 4 races' directional walk/run actually lives. |
 | `MOA` | The directional walk/run counterpart for the 4 races `COA` doesn't cover directionally (Bell/Cora, both genders) - full `COMBAT_{BW\|FW\|LF\|RT}{WALK\|RUN}_{weapon token}_NONE_01_00`, token-for-token matching `COA`'s plain-form coverage for that race - **plus** 8 redundant `PEACE_{BW\|FW\|LF\|RT}{WALK\|RUN}_NONE_NONE` entries already covered by `ETA`, and **no** `COMBAT_STAND` at all. Previously assumed to be a redundant subset of `COA` and skipped entirely (wrong - see "Directional (backward/strafe) locomotion" above for how this was actually caught); `getWeaponClip()` now fetches this too and tries it as a fallback after `COA` for any directional lookup. |
@@ -879,6 +916,94 @@ actual long axis; `aura.R3E` is a thin ~1-unit flat quad), and UVs that
 stay within `[0,1]`. No visual/rendered confirmation yet (that needs the
 `.spt` spawner - see below), but the numbers check out.
 
+### `.mst` material script (`src/rf/materialScript.ts`)
+
+Plain text, **not** the `.spt`/`.R3E` particle-burst path above - a
+different, more general Chef/ mechanism for giving a `.R3E` mesh's material
+groups (or a standalone overlay like weapon-grade below) a real animated
+material: UV scroll/scale/rotate, texture-sheet flipbook animation, alpha
+flicker. Used throughout `Chef/` (every `70LV_Weapon/`, `70LV_ARMOR/`,
+`MangTeau_*`, `Mob*` effect subfolder has one), not just the grade-overlay
+case this project actually wires up so far.
+
+**Encoding**: EUC-KR, not utf-8/ascii - every real file opens with a Korean
+comment line (`;모든 레이어 명령은 R3레퍼런스 참조.` - "all layer commands refer to
+the R3 reference"); decode with `new TextDecoder('euc-kr')` before parsing,
+or that comment (and anything after a multi-byte character lands mid-scan)
+garbles.
+
+**Two shapes, same layer syntax**:
+```
+*MATERIAL_NUM 1          <- index file (MainMaterial.mst) - lists sibling
+{                            .mst files by name + a numeric slot id.
+1_-_Default_0	0            Not parsed by this project (materialScript.ts
+}                            only handles the per-material files it points at).
+
+;모든 레이어 명령은 R3레퍼런스 참조.   <- a per-material file: optional header
+light_map	FALSE                (light_map/layer_num - absent entirely in
+layer_num	1                    the simplest real files, e.g. GradeEffect's
+layer 0                          - see below), then one or more numbered
+{                                layer blocks.
+	type 3
+	map_name .\Chef\GradeEffect\Agrade.dds	;env5.bmp	;aurad5.DDS
+	alpha	100
+	color	255 255 255
+	uv_env 1
+	ani_alpha_flicker	2
+	ani_alpha_flicker_start	0
+	ani_alpha_flicker_end	2
+}
+```
+`layer N`'s own number is redundant with array order (every real file
+checked numbers 0, 1, 2... in order) - not separately tracked.
+`map_name` lines often carry trailing `;`-commented alternate filenames the
+original artist tried (dev artifacts, same convention `.eff`'s embedded
+path-prefix noise and `.spt`'s disabled-key comments use) - stripped by the
+same comment handling as `particleTemplate.ts`. `alpha`/`color` are 0-255,
+same scale as `.eff`'s glow color - not a 0-100 percentage despite some
+real files (e.g. Agrade's `alpha 100`) using round numbers that could look
+like one. Per-layer keys beyond the basics: `uv_env` (sphere/environment-
+mapped UVs - a cheap fake-reflection look, conceptually similar to
+`applySurfaceShine`'s matcap technique), `uv_scale`/`uv_scale_end`/
+`uv_scale_speed`, `uv_scroll_u`/`uv_scroll_v` (already a plain real-world
+UV-units/second rate, unlike `.eff`'s exponential "speed byte" encoding -
+no decoding needed), `uv_rotate`, `ani_tex_frame`/`ani_tex_speed`
+(texture-sheet flipbook animation), `ani_alpha_flicker`/`_start`/`_end`.
+
+**Weapon-grade overlay** (`Chef/GradeEffect/`, `src/rf/gradeEffect.ts`) -
+the first real use of this format wired into the app: `weaponItem.json`'s
+`Grade` field (0-9 seen across real rows) selects a per-tier cosmetic
+overlay, but only grades 1-4 have a file here - `Agrade`/`Bgrade`/`Cgrade`/
+`Dgrade.mst`+`.dds` (grade 0 = "Common", no overlay; grades 5-9 are rarer
+named-unique weapons, e.g. "Archon's Authority", that don't reach any
+GradeEffect file - unconfirmed whether they instead get their own effect
+through the regular `ItemEffectList`→`EffectFileList`→`.eff` chain, or
+something else; out of scope for now). These are the simplest real
+`.mst` files - no header, no `MainMaterial.mst` indirection, just one bare
+`layer 0 { ... }` block each. `buildGradeOverlay` renders it the same way
+`buildGlowOverlay` renders a `.eff` glow (additive-blended sibling mesh per
+renderable, skinned meshes rebound to the same skeleton) - only the
+layer's static appearance (map/alpha/color), `uv_scroll_u`/`_v`, and
+`ani_alpha_flicker`/`_start`/`_end` are actually animated (see
+`GradeLiveValues` in `gradeEffect.ts` - live-editable at runtime via
+`CharacterController.setWeaponGradeLiveValues`, surfaced as number inputs
+in `WeaponEditPanel.tsx`'s "%wpedit" panel for tuning these
+educated-guess approximations by eye); `uv_env`/`uv_scale*`/`uv_rotate`/
+`ani_tex_frame*` are parsed but rendered static, a deliberate v1
+simplification matching how `glowEffect.ts`'s own non-scrolling movement
+modes already render static.
+
+**`Grade` doesn't always match a weapon's real rarity tier** - confirmed on
+a real item: "Intense Beam Great Hammer" (`iwmab40`) has `Grade: 1` in
+`weaponItem.json`, which correctly resolves to `Agrade` per the mapping
+above - but was expected (by name-tier convention) to be a higher grade.
+The resolution code is doing exactly what the field says; this is a data
+accuracy gap in `weaponItem.json` itself (or a misunderstanding of what
+this particular field encodes for this row), not a bug in
+`gradeLetter()`/`buildGradeOverlay`. Don't "fix" the 1-4→A-D mapping in
+response to a single item looking wrong without re-checking against
+several more real items first.
+
 ### Implementation status
 
 **Built**:
@@ -901,6 +1026,14 @@ stay within `[0,1]`. No visual/rendered confirmation yet (that needs the
   both, confirmed against real ids from both `helmetItem.json` and
   `weaponItem.json`), and a weapon's glow overlay follows the base weapon
   mesh's own Peace/War visibility (`applyWeaponVisibility`).
+- `src/rf/materialScript.ts`: `.mst` text parser (see the format section
+  above) - verified against all 4 real `Chef/GradeEffect/*.mst` files plus
+  a fully-headered general-case file (`70LV_Weapon/AXE/144p/1_-_Default_0
+  .mst`). `src/rf/gradeEffect.ts`: weaponItem.json `Grade` (1-4) →
+  `buildGradeOverlay()`, wired into `CharacterController.equipWeapon` the
+  same way `buildGlowOverlay` is (own `equippedGradeOverlays` bookkeeping,
+  own `updateGradeAnimation()` for the scrolling case, same Peace/War
+  visibility gate) - independent of glow, a weapon can carry both at once.
 - `src/rf/r3e.ts`: static-geometry parsing only, verified against real
   files as described above.
 - `src/rf/particleTemplate.ts`: `.spt` text parser - see the format
@@ -1079,6 +1212,19 @@ stay within `[0,1]`. No visual/rendered confirmation yet (that needs the
   noise) across Bell/Cora Male/Female, down from the 2-7° the
   parent-based version left. Simpler code, too - no grandparent bone
   lookup needed at all.
+- **`CharacterController.ts` used `buildGlowOverlay`/`disposeGlowOverlay`/
+  `applySurfaceShine`/`GlowOverlay` (glow overlay + surface shine, both
+  wired into every equip path) with no import for any of them anywhere in
+  the file** - found while adding the grade-overlay feature (which needed
+  to sit right next to this code). A real `ReferenceError` on the very
+  first equip that reaches `applyGlowOverlay`/`applySurfaceShineFor`,
+  every time - not a hypothetical, `git show HEAD` confirms this was
+  already the committed state, not something this session's own edits
+  caused. Fixed by adding `import { applySurfaceShine, buildGlowOverlay,
+  disposeGlowOverlay } from '../rf/glowEffect'` (+ `import type {
+  GlowOverlay }`) alongside the new `gradeEffect.ts` import. Worth a
+  rebuild+retest of any equip slot to confirm glow/shine actually render
+  now, since this means neither had ever actually run.
 - **The `%wpedit` gizmo (`ViewerScene.syncWeaponEditTarget`) must
   re-attach every frame, not just once when `%wpedit 1` is sent** -
   equipping a *different* weapon while the gizmo is already attached to

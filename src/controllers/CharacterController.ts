@@ -13,6 +13,11 @@ import {
   weaponClipKey,
 } from '../rf/character';
 import type { CloakAnimationRig, LocomotionDirection, RfCharacter } from '../rf/character';
+import { applyGradeLiveValues, buildGradeOverlay, clamp01, disposeGradeOverlay } from '../rf/gradeEffect';
+import type { GradeLiveValues, GradeOverlay } from '../rf/gradeEffect';
+import type { MaterialLayer } from '../rf/materialScript';
+import { applySurfaceShine, buildGlowOverlay, disposeGlowOverlay } from '../rf/glowEffect';
+import type { GlowOverlay } from '../rf/glowEffect';
 import { ALL_MODEL_TYPES, MODEL_TYPE_TO_PART_TOKEN, ModelType } from '../rf/items';
 import type { ItemDefinition } from '../rf/items';
 import { resolveCloakMeshStem, resolveItemMeshStem, resolveWeaponMesh } from '../rf/resource';
@@ -24,6 +29,8 @@ export const WALK_SPEED_RADIUS_PER_SEC = 0.9;
 const RUN_SPEED_MULTIPLIER = 1.8;
 /** How much faster a "Booster" cloak (see equipCloak's isBoosterEquipped doc comment) makes running - like RUN_SPEED_MULTIPLIER, the real client's value isn't in this data set: cloakItem.json's BoostSpd field looked promising but isn't booster-specific (it's "9" for 1263 of 1572 cloak rows, including plenty of non-booster capes), so this is a reasonable-looking approximation instead. Only applies while running, not walking - matches how the original client's booster is described as a run-speed item. */
 const BOOSTER_SPEED_MULTIPLIER = 1.35;
+/** Cloak flight's own fixed speed (see setFlying/isFlying) - independent of the walk/run toggle entirely, not just a multiplier layered on top of one like BOOSTER_SPEED_MULTIPLIER is. No real value for this exists in the data set either; picked to read as "faster than a boosted run" while airborne. */
+const FLY_SPEED_MULTIPLIER = 2.2;
 const TURN_SPEED_RAD_PER_SEC = Math.PI * 2.2;
 // The model's authored "forward" faces the opposite way from three.js's
 // lookAt convention (-Z), so the computed facing needs a 180 degree
@@ -54,6 +61,37 @@ export type EquipResult = 'equipped' | 'default' | 'unavailable' | 'no-character
 export type BattleMode = 'peace' | 'war';
 /** Which locomotion clip (and speed) click-to-move uses - independent of BattleMode, which only decides *whether* the combat variant of walk/run/stand plays. */
 export type MoveMode = 'walk' | 'run';
+
+/**
+ * Every debug-relevant variable about the currently-equipped weapon in one
+ * place - item catalog fields, resolved animation token/mesh stem, and both
+ * cosmetic overlay systems' raw resolved parameters (glow's .eff section,
+ * grade's parsed .mst layer) - see getWeaponDebugInfo. Built for
+ * WeaponEditPanel's "copy for chat" readout rather than any rendering
+ * logic; `glow`/`grade` being null means "no effect registered for this
+ * item" (the common case), not missing data.
+ */
+export interface WeaponDebugInfo {
+  item: ItemDefinition;
+  token: string | null;
+  stem: string | null;
+  glow: {
+    effPath: string;
+    surfaceTexture: string | null;
+    glowTexture: string | null;
+    movementMode: number;
+    speedByte: number;
+  } | null;
+  grade:
+    | {
+        letter: string;
+        /** Live-editable - see GradeLiveValues/setWeaponGradeLiveValues. Starts as a copy of the parsed .mst's values, then reflects whatever's been live-edited since. */
+        live: GradeLiveValues;
+        /** Parsed straight from the .mst layer, read-only display - none of these are wired to rendering yet (see gradeEffect.ts's buildGradeOverlay doc comment), unlike `live`'s fields. */
+        readOnly: Pick<MaterialLayer, 'type' | 'mapName' | 'uvEnv' | 'uvScale' | 'uvScaleEnd' | 'uvScaleSpeed' | 'uvRotate' | 'aniTexFrame' | 'aniTexSpeed'>;
+      }
+    | null;
+}
 
 /**
  * Live state for one equipped cloak's own animation rig (see
@@ -143,6 +181,9 @@ export class CharacterController {
    * explicitly wherever equippedObjects[slot] is replaced.
    */
   private equippedGlowOverlays: Partial<Record<ModelType, GlowOverlay>> = {};
+
+  /** weaponItem.json's Grade-driven Chef/GradeEffect/ cosmetic overlay (see gradeEffect.ts) - only ever populated for ModelType.Weapon (no other item file carries a Grade field), same disposal/lifecycle reasoning as equippedGlowOverlays above. */
+  private equippedGradeOverlays: Partial<Record<ModelType, GradeOverlay>> = {};
 
   /**
    * Which of the 5 pre-made DEFAULT_{PART}_00{0-4} variants each base slot
@@ -256,6 +297,66 @@ export class CharacterController {
     return this.currentWeaponItem ? { item: this.currentWeaponItem, token: this.currentWeaponToken, stem: this.currentWeaponStem } : null;
   }
 
+  /** See WeaponDebugInfo - null when unarmed. `glow`/`grade` are only populated once their respective fire-and-forget applyGlowOverlay/applyGradeOverlay have actually resolved (both fast, same-tick-or-next in practice), and stay null forever for the common case of an item with no registered effect. */
+  getWeaponDebugInfo(): WeaponDebugInfo | null {
+    if (!this.currentWeaponItem) return null;
+    const glowOverlay = this.equippedGlowOverlays[ModelType.Weapon];
+    const gradeOverlay = this.equippedGradeOverlays[ModelType.Weapon];
+    return {
+      item: this.currentWeaponItem,
+      token: this.currentWeaponToken,
+      stem: this.currentWeaponStem,
+      glow:
+        glowOverlay?.effPath && glowOverlay.section
+          ? {
+              effPath: glowOverlay.effPath,
+              surfaceTexture: glowOverlay.section.surfaceTexture,
+              glowTexture: glowOverlay.section.glowTexture,
+              movementMode: glowOverlay.section.movementMode,
+              speedByte: glowOverlay.section.speedByte,
+            }
+          : null,
+      grade:
+        gradeOverlay?.letter && gradeOverlay.layer && gradeOverlay.liveValues
+          ? {
+              letter: gradeOverlay.letter,
+              live: gradeOverlay.liveValues,
+              readOnly: {
+                type: gradeOverlay.layer.type,
+                mapName: gradeOverlay.layer.mapName,
+                uvEnv: gradeOverlay.layer.uvEnv,
+                uvScale: gradeOverlay.layer.uvScale,
+                uvScaleEnd: gradeOverlay.layer.uvScaleEnd,
+                uvScaleSpeed: gradeOverlay.layer.uvScaleSpeed,
+                uvRotate: gradeOverlay.layer.uvRotate,
+                aniTexFrame: gradeOverlay.layer.aniTexFrame,
+                aniTexSpeed: gradeOverlay.layer.aniTexSpeed,
+              },
+            }
+          : null,
+    };
+  }
+
+  /** Live-editable grade-overlay values for the currently-equipped weapon, or null if it has no grade overlay - see GradeLiveValues/setWeaponGradeLiveValues. */
+  getWeaponGradeLiveValues(): GradeLiveValues | null {
+    return this.equippedGradeOverlays[ModelType.Weapon]?.liveValues ?? null;
+  }
+
+  /**
+   * Debug/tuning tool (WeaponEditPanel): overrides any subset of the
+   * currently-equipped weapon's grade-overlay values, taking effect
+   * immediately (opacity/color right away via applyGradeLiveValues; uv
+   * scroll/alpha-flicker on the very next updateGradeAnimation tick, since
+   * that reads liveValues fresh every frame) - lets a real value be found
+   * by eye and reported back rather than guessed at from the source .mst
+   * alone. No-op if the current weapon has no grade overlay at all.
+   */
+  setWeaponGradeLiveValues(patch: Partial<GradeLiveValues>): void {
+    const overlay = this.equippedGradeOverlays[ModelType.Weapon];
+    if (!overlay?.liveValues) return;
+    applyGradeLiveValues(overlay, { ...overlay.liveValues, ...patch });
+  }
+
   /** The currently-equipped weapon's rendered rigid part (e.g. "W00" - see buildObjectsFromParsedMesh), or null when unarmed. Every real weapon checked so far resolves to exactly one non-empty sub-object, so the first is returned; a weapon with more than one visible part would only expose the first here. Debug-only (the %wpedit gizmo attaches to this directly - its .position/.quaternion already ARE the local offset from the bone it's rigidly parented to, the same values the placement math in character.ts computes). */
   getEquippedWeaponObject(): Object3D | null {
     return this.equippedObjects[ModelType.Weapon]?.[0] ?? null;
@@ -319,13 +420,15 @@ export class CharacterController {
     }
   }
 
-  /** A wielded weapon (and its glow overlay, if it has one) is only ever visible in War mode - see setBattleMode/equipWeapon. */
+  /** A wielded weapon (and its glow/grade overlays, if it has any) is only ever visible in War mode - see setBattleMode/equipWeapon. */
   private applyWeaponVisibility(): void {
     const visible = this.battleMode === 'war';
     const weaponObjects = this.equippedObjects[ModelType.Weapon];
     if (weaponObjects) for (const obj of weaponObjects) obj.visible = visible;
     const glowOverlay = this.equippedGlowOverlays[ModelType.Weapon];
     if (glowOverlay) for (const obj of glowOverlay.objects) obj.visible = visible;
+    const gradeOverlay = this.equippedGradeOverlays[ModelType.Weapon];
+    if (gradeOverlay) for (const obj of gradeOverlay.objects) obj.visible = visible;
   }
 
   private disposeGlowOverlayFor(modelType: ModelType): void {
@@ -333,6 +436,13 @@ export class CharacterController {
     if (!overlay) return;
     disposeGlowOverlay(overlay);
     delete this.equippedGlowOverlays[modelType];
+  }
+
+  private disposeGradeOverlayFor(modelType: ModelType): void {
+    const overlay = this.equippedGradeOverlays[modelType];
+    if (!overlay) return;
+    disposeGradeOverlay(overlay);
+    delete this.equippedGradeOverlays[modelType];
   }
 
   /**
@@ -367,6 +477,34 @@ export class CharacterController {
   }
 
   /**
+   * Best-effort, fire-and-forget: resolves and attaches a Chef/GradeEffect/
+   * weapon-grade overlay (see gradeEffect.ts) for a just-equipped item, if
+   * its Grade field (weaponItem.json only) maps to one - grade 0 ("Common")
+   * and every other slot's items never do. Same staleness-check/lifecycle
+   * pattern as applyGlowOverlay above (a separate overlay+bookkeeping map,
+   * not folded into it, since a weapon can have both a glow *and* a grade
+   * overlay at once - they're independent Chef/ mechanisms).
+   */
+  private async applyGradeOverlay(
+    modelType: ModelType,
+    item: ItemDefinition | null,
+    character: RfCharacter,
+    sourceObjects: Object3D[],
+  ): Promise<void> {
+    if (!item) return; // defaults/unequips have no catalog entry to look up a grade for
+
+    const overlay = await buildGradeOverlay(item.grade, sourceObjects);
+    if (this.character !== character || this.equippedObjects[modelType] !== sourceObjects) {
+      disposeGradeOverlay(overlay); // superseded mid-await - character swapped, or this slot got equipped again
+      return;
+    }
+    if (overlay.objects.length === 0) return;
+
+    this.equippedGradeOverlays[modelType] = overlay;
+    if (modelType === ModelType.Weapon) this.applyWeaponVisibility();
+  }
+
+  /**
    * Best-effort, fire-and-forget: applies a Chef/ surface-shine effect (see
    * applySurfaceShine's doc comment) for a just-equipped item, if it has
    * one registered. Unlike applyGlowOverlay, no staleness check or
@@ -389,6 +527,29 @@ export class CharacterController {
         if (!texture) continue;
         const speedFactor = 2 ** (speedByte - GLOW_SPEED_BASE_BYTE);
         texture.offset.x = (texture.offset.x + speedFactor * GLOW_SCROLL_UV_PER_SEC * delta) % 1;
+      }
+    }
+  }
+
+  /** Advances every currently-active grade overlay's uv-scroll and alpha-flicker by one frame, reading straight from its (possibly live-edited - see setWeaponGradeLiveValues) liveValues every time rather than a value baked in at build time. scrollU/scrollV are already plain UV-units/second, unlike updateGlowAnimation's exponential speed-byte decode. */
+  private updateGradeAnimation(delta: number): void {
+    for (const overlay of Object.values(this.equippedGradeOverlays)) {
+      const values = overlay.liveValues;
+      if (!values || overlay.materials.length === 0) continue;
+
+      overlay.phase = (overlay.phase + delta * values.aniAlphaFlicker) % 1;
+      const baseOpacity = clamp01(values.alpha / 255);
+      const minOpacity = clamp01(baseOpacity * values.aniAlphaFlickerStart);
+      const maxOpacity = clamp01(baseOpacity * values.aniAlphaFlickerEnd);
+      const t = (Math.sin(overlay.phase * Math.PI * 2) + 1) / 2; // 0..1, one full cycle per "aniAlphaFlicker" seconds - a no-op (always baseOpacity) when min===max
+      const opacity = minOpacity + (maxOpacity - minOpacity) * t;
+
+      for (const material of overlay.materials) {
+        material.opacity = opacity;
+        const texture = material.map;
+        if (!texture) continue;
+        texture.offset.x = (texture.offset.x + values.uvScrollU * delta) % 1;
+        texture.offset.y = (texture.offset.y + values.uvScrollV * delta) % 1;
       }
     }
   }
@@ -737,6 +898,7 @@ export class CharacterController {
         delete this.equippedObjects[ModelType.Weapon];
       }
       this.disposeGlowOverlayFor(ModelType.Weapon);
+      this.disposeGradeOverlayFor(ModelType.Weapon);
       this.currentWeaponToken = null;
       this.currentWeaponItem = null;
       this.currentWeaponStem = null;
@@ -765,6 +927,7 @@ export class CharacterController {
       }
     }
     this.disposeGlowOverlayFor(ModelType.Weapon);
+    this.disposeGradeOverlayFor(ModelType.Weapon);
 
     for (const obj of newObjects) {
       if (!obj.parent) character.group.add(obj);
@@ -774,6 +937,7 @@ export class CharacterController {
     this.currentWeaponItem = item;
     this.currentWeaponStem = weaponMesh.stem;
     void this.applyGlowOverlay(ModelType.Weapon, item, character, newObjects);
+    void this.applyGradeOverlay(ModelType.Weapon, item, character, newObjects);
     void this.applySurfaceShineFor(item, newObjects);
 
     // Only actually visible in War mode - see setBattleMode. The combat
@@ -1006,12 +1170,13 @@ export class CharacterController {
     // they're still valid for the new character.
     this.helmetBaseObjects = [];
     this.helmetBaseVariant = null;
-    // Not individually disposed here - every glow overlay mesh is a
+    // Not individually disposed here - every glow/grade overlay mesh is a
     // descendant of prevGroup (parented to either the group itself or one
     // of its bones), so the disposeObject3D(prevGroup) traversal above
     // already freed them; this just drops the now-stale bookkeeping so
     // update()/applyWeaponVisibility() stop iterating dangling entries.
     this.equippedGlowOverlays = {};
+    this.equippedGradeOverlays = {};
     // Same reasoning as equippedGlowOverlays above - the cloak rig plays
     // directly on the cloak's own objects, which are descendants of
     // prevGroup, already freed by disposeObject3D(prevGroup); this just
@@ -1061,8 +1226,9 @@ export class CharacterController {
     return { box, center, radius };
   }
 
-  /** Base movement speed for the current moveMode, including the booster multiplier while running with a Booster cloak equipped (see isBoosterEquipped) - callers scale by input intensity themselves where relevant (moveDirection's analog magnitude; click-to-move is always full speed). */
+  /** Base movement speed - flying (see isFlying) has its own fixed speed that ignores the walk/run toggle entirely, not a multiplier layered on top of whichever one is selected; otherwise the current moveMode's speed, including the booster multiplier while running with a Booster cloak equipped (see isBoosterEquipped). Callers scale by input intensity themselves where relevant (moveDirection's analog magnitude; click-to-move is always full speed). */
   private getCurrentSpeed(): number {
+    if (this.isFlying) return this.walkSpeed * FLY_SPEED_MULTIPLIER;
     if (this.moveMode !== 'run') return this.walkSpeed;
     const runSpeed = this.walkSpeed * RUN_SPEED_MULTIPLIER;
     return this.isBoosterEquipped ? runSpeed * BOOSTER_SPEED_MULTIPLIER : runSpeed;
@@ -1175,6 +1341,7 @@ export class CharacterController {
     character.mixer.update(delta);
     this.checkForPoseAnomalies(character);
     this.updateGlowAnimation(delta);
+    this.updateGradeAnimation(delta);
     if (this.cloakAnimation) this.updateCloakSway(this.cloakAnimation, delta);
     for (const departing of this.departingCloakAnimations) this.updateCloakSway(departing, delta);
 
@@ -1279,6 +1446,7 @@ export class CharacterController {
     this.cloakAnimation = null;
     this.departingCloakAnimations = [];
     this.equippedGlowOverlays = {};
+    this.equippedGradeOverlays = {};
     this.helmetBaseObjects = [];
     this.helmetBaseVariant = null;
   }
