@@ -227,6 +227,24 @@
   word-break: break-word;
 }
 
+.debug-panel-weapon-edit-upgrade {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  color: #9aa4b2;
+  font: 500 0.75rem system-ui, sans-serif;
+}
+
+.debug-panel-weapon-edit-upgrade select {
+  padding: 0.25rem 0.4rem;
+  border-radius: 4px;
+  border: 1px solid #444;
+  background: #22252b;
+  color: #eee;
+  font: 500 0.75rem ui-monospace, monospace;
+}
+
 .debug-panel-weapon-edit-grade {
   display: flex;
   flex-direction: column;
@@ -295,6 +313,107 @@
 }
 
 .debug-panel-weapon-edit-copy:hover {
+  background: #2c3038;
+}
+
+/* %efedit's per-socket inspector (EffectEditPanel) - positioned on the
+   opposite side from %wpedit's own panel (top-left) since both can be
+   open at once. */
+.debug-panel-effect-edit {
+  position: absolute;
+  right: var(--space-4);
+  top: 5rem;
+  width: 22rem;
+  max-width: calc(100vw - 2rem);
+  max-height: calc(100vh - 8rem);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  background: rgba(16, 19, 27, 0.85);
+  border: 1px solid var(--border-chrome);
+  padding: var(--space-2) var(--space-3);
+  border-radius: 2px;
+  pointer-events: auto;
+}
+
+.debug-panel-effect-edit-eff {
+  color: #ccc;
+  font: 500 0.72rem ui-monospace, monospace;
+  word-break: break-word;
+}
+
+.debug-panel-effect-edit-empty {
+  color: #9aa4b2;
+  font: 500 0.75rem system-ui, sans-serif;
+}
+
+.debug-panel-effect-edit-section {
+  padding: 0.4rem 0.5rem;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.25);
+  color: #9aa4b2;
+  font: 500 0.68rem ui-monospace, monospace;
+  word-break: break-word;
+}
+
+.debug-panel-effect-edit-particle {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding: 0.5rem 0.6rem;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.25);
+}
+
+.debug-panel-effect-edit-label {
+  color: #ccc;
+  font: 600 0.72rem ui-monospace, monospace;
+  word-break: break-word;
+}
+
+.debug-panel-effect-edit-entity {
+  color: #9aa4b2;
+  font: 500 0.68rem ui-monospace, monospace;
+  word-break: break-word;
+}
+
+.debug-panel-effect-edit-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.debug-panel-effect-edit-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  color: #9aa4b2;
+  font: 500 0.68rem system-ui, sans-serif;
+}
+
+.debug-panel-effect-edit-field input {
+  width: 4.4rem;
+  padding: 0.25rem 0.35rem;
+  border-radius: 4px;
+  border: 1px solid #444;
+  background: #22252b;
+  color: #eee;
+  font: 500 0.75rem ui-monospace, monospace;
+}
+
+.debug-panel-effect-edit-copy {
+  padding: 0.4rem 0.8rem;
+  border-radius: 6px;
+  border: 1px solid #444;
+  background: #22252b;
+  color: #eee;
+  font: 500 0.8rem system-ui, sans-serif;
+  cursor: pointer;
+  align-self: flex-start;
+}
+
+.debug-panel-effect-edit-copy:hover {
   background: #2c3038;
 }
 
@@ -396,4 +515,8 @@
   background: rgba(20, 22, 26, 0.6);
   padding: 0.4rem 0.6rem;
   border-radius: 6px;
+  /* %efedit's per-socket click inspector reports multi-line text (one .eff
+     section / .spt entity per line) - without this, newlines collapse and
+     the whole thing renders as one unreadable run-on line. */
+  white-space: pre-wrap;
 }

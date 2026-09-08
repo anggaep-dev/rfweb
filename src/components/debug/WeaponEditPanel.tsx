@@ -11,7 +11,13 @@ export interface WeaponEditPanelProps {
   onClose: () => void;
   /** Fires on every keystroke in a grade-overlay input below - see CharacterController.setWeaponGradeLiveValues. No-op (never called) while the current weapon has no grade overlay, since the inputs aren't rendered at all in that case. */
   onGradeLiveChange: (patch: Partial<GradeLiveValues>) => void;
+  /** Simulated +N upgrade level (see CharacterController.setDebugWeaponUpgradeLevel) - weaponItem.json's real per-item upgrade level isn't tracked anywhere else in this project, so this dropdown is the only way to see how a weapon's Chef/ effect (glow/socket-glow/surface-shine) changes across PatternList.txt's upgrade-level columns. */
+  upgradeLevel: number;
+  onUpgradeLevelChange: (level: number) => void;
 }
+
+/** PatternList.txt only distinguishes +0 / +1-3 / +4 / +5-7 (see glowEffect.ts's patternColumnForUpgradeLevel) - every level in the dropdown, not just those 4, since a real item's own upgrade level can still be any of +0..+7 even though several map to the same resolved column. */
+const UPGRADE_LEVELS = [0, 1, 2, 3, 4, 5, 6, 7];
 
 function formatVec3(v: readonly [number, number, number], fractionDigits: number): string {
   return `[${v.map((n) => n.toFixed(fractionDigits)).join(', ')}]`;
@@ -36,19 +42,25 @@ function fmt(v: unknown): string {
  * "Copy for chat" always reflects whatever's currently in the input boxes,
  * not just the value from whenever the weapon was last (re-)equipped.
  */
-function buildDebugText(debug: WeaponDebugInfo | null, gradeLiveOverride: GradeLiveValues | null): string {
+function buildDebugText(debug: WeaponDebugInfo | null, gradeLiveOverride: GradeLiveValues | null, upgradeLevel: number): string {
   if (!debug) return 'Item: (unarmed - no catalog entry)';
 
-  const { item, token, stem, glow, grade } = debug;
+  const { item, token, stem, glow, grade, effectSockets, particleSocketCount, particlesSpawned } = debug;
   const lines = [
     `Item: ${item.name} (${item.id}) model=${item.model} grade=${fmt(item.grade)} civil=${item.civil} levelLim=${item.levelLim}`,
     `Token: ${fmt(token)}  Stem: ${fmt(stem)}`,
+    `Simulated upgrade level: +${upgradeLevel} (see CharacterController.setDebugWeaponUpgradeLevel - not this item's real data, weaponItem.json doesn't carry an upgrade level field anywhere else in this project)`,
+    `Effect sockets: ${effectSockets.socketCount} found, ${effectSockets.socketsWithGlow} carrying a glow billboard`,
+    `Particle sockets ("P0N"): ${particleSocketCount} found - a separate, coexisting attachment convention from Effect sockets above, not every weapon has these`,
+    `Particles spawned: ${particlesSpawned} (real .eff ParticleID -> Chef/Particle.ini -> .spt resolution - see glowEffect.ts's resolveWeaponParticles; 0 just means this item registers no particle data, the common case)`,
   ];
 
   lines.push(
     glow
-      ? `Glow (.eff): effPath=${glow.effPath} surfaceTexture=${fmt(glow.surfaceTexture)} glowTexture=${fmt(glow.glowTexture)} movementMode=${glow.movementMode} speedByte=${glow.speedByte} (0x${glow.speedByte.toString(16)})`
-      : 'Glow (.eff): none registered',
+      ? `Glow (.eff, whole-mesh): effPath=${glow.effPath} surfaceTexture=${fmt(glow.surfaceTexture)} glowTexture=${fmt(glow.glowTexture)} movementMode=${glow.movementMode} speedByte=${glow.speedByte} (0x${glow.speedByte.toString(16)})`
+      : effectSockets.socketsWithGlow > 0
+        ? 'Glow (.eff, whole-mesh): none - handled per-socket instead (see Effect sockets above)'
+        : 'Glow (.eff): none registered',
   );
 
   if (grade) {
@@ -65,7 +77,7 @@ function buildDebugText(debug: WeaponDebugInfo | null, gradeLiveOverride: GradeL
   return lines.join('\n');
 }
 
-function buildCopyText(state: WeaponEditState, gradeLiveOverride: GradeLiveValues | null): string {
+function buildCopyText(state: WeaponEditState, gradeLiveOverride: GradeLiveValues | null, upgradeLevel: number): string {
   const posDelta = delta(state.original.position, state.current.position);
   const rotDelta = delta(state.original.eulerDeg, state.current.eulerDeg);
   return [
@@ -74,7 +86,7 @@ function buildCopyText(state: WeaponEditState, gradeLiveOverride: GradeLiveValue
     formatBlock('Edited (gizmo)', state.current, 4),
     `Delta: pos=${formatVec3(posDelta, 4)} rotDeg=${formatVec3(rotDelta, 1)}`,
     '',
-    buildDebugText(state.debug, gradeLiveOverride),
+    buildDebugText(state.debug, gradeLiveOverride, upgradeLevel),
   ].join('\n');
 }
 
@@ -123,7 +135,15 @@ function GradeNumberField({
  * found by eye instead of guessed at from the source file alone; "Copy for
  * chat" carries whatever's currently in these inputs.
  */
-export default function WeaponEditPanel({ state, onModeChange, onReset, onClose, onGradeLiveChange }: WeaponEditPanelProps) {
+export default function WeaponEditPanel({
+  state,
+  onModeChange,
+  onReset,
+  onClose,
+  onGradeLiveChange,
+  upgradeLevel,
+  onUpgradeLevelChange,
+}: WeaponEditPanelProps) {
   const [copied, setCopied] = useState(false);
   const [gradeLive, setGradeLive] = useState<GradeLiveValues | null>(null);
 
@@ -152,7 +172,7 @@ export default function WeaponEditPanel({ state, onModeChange, onReset, onClose,
 
   const handleCopy = () => {
     if (!state) return;
-    void navigator.clipboard.writeText(buildCopyText(state, gradeLive)).then(() => setCopied(true));
+    void navigator.clipboard.writeText(buildCopyText(state, gradeLive, upgradeLevel)).then(() => setCopied(true));
   };
 
   const updateGradeLive = (patch: Partial<GradeLiveValues>) => {
@@ -188,6 +208,17 @@ export default function WeaponEditPanel({ state, onModeChange, onReset, onClose,
               Reset
             </button>
           </div>
+
+          <label className="debug-panel-weapon-edit-upgrade">
+            Simulated upgrade level
+            <select value={upgradeLevel} onChange={(e) => onUpgradeLevelChange(Number(e.target.value))}>
+              {UPGRADE_LEVELS.map((level) => (
+                <option key={level} value={level}>
+                  +{level}
+                </option>
+              ))}
+            </select>
+          </label>
 
           {grade && gradeLive && (
             <div className="debug-panel-weapon-edit-grade">
@@ -246,7 +277,7 @@ export default function WeaponEditPanel({ state, onModeChange, onReset, onClose,
             </div>
           )}
 
-          <pre className="debug-panel-weapon-edit-readout">{buildCopyText(state, gradeLive)}</pre>
+          <pre className="debug-panel-weapon-edit-readout">{buildCopyText(state, gradeLive, upgradeLevel)}</pre>
 
           <button type="button" className="debug-panel-weapon-edit-copy" onClick={handleCopy}>
             {copied ? 'Copied!' : 'Copy for chat'}

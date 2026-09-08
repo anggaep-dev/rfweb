@@ -788,6 +788,109 @@ record per socket. `parseEffFile` (glowEffect.ts) returns a section with
 both texture fields `null` for these rather than treating them as
 malformed.
 
+**Confirmed on a real weapon** (`COM_WEAPON_TMACE_156.msh`, parsed
+directly): two 0-vertex sub-objects literally named `effect1`/`effect2`,
+both parented to `W00` (the weapon's own visible mesh) - alongside several
+other 0-vertex `Dummy_*` sub-objects (`Dummy_Arms_L`, `Dummy_Shield_L`,
+`Dummy_ONEGUNS_R01/02`, ...) that are a *different* mechanism (equip-mesh
+mounting points, most with `parentName == "NULL"` - i.e. not attached to
+anything in this file at all - unrelated to `.eff` placement, don't treat
+them as effect sockets too). Since `buildObjectsFromParsedMesh`
+(`character.ts`) already builds *every* sub-object as a real (if geometry-
+less) `Object3D`, correctly positioned/parented, these sockets need no new
+placement math - `CharacterController.getEquippedWeaponEffectSockets()`
+is just a `/^effect\d*$/i` name filter over the weapon's already-built
+flat object list. `%efedit 1/0` (`ViewerScene.setEffectEditEnabled`)
+visualizes them with a small `AxesHelper` per socket. `.eff` record ↔
+specific socket resolution IS now wired up for the per-socket glow path
+(`buildSocketGlow`, see the confirmed socket-label finding just below) -
+`buildGlowOverlay`/`applySurfaceShine`'s whole-mesh path still assumes a
+single main attach point, unchanged.
+
+**Confirmed: each `.eff` record's own internal tail label exactly
+name-matches a real `.msh` socket name.** Every record - not just the
+texture-less "placeholder" ones described above - carries a short ASCII
+label at a **fixed offset, 0x98**, independent of the variable-length
+texture-name fields earlier in the record (`EffSection.socketLabel` in
+`glowEffect.ts`). Verified against a real file+mesh pair:
+`Eff/Weapon/Unick/Unick_TSWORDlv1.EFF` has 5 records whose labels read
+exactly `EFFECT1`, `EFFECT2`, `P01`, `P02`, `P03` - a byte-for-byte,
+case-insensitive match against `COM_WEAPON_TSWORD_003.msh`'s 5 real socket
+names (see the `P01`/`P02`/... section above). This directly answers "what
+wires a specific socket to a specific `.eff` section" for weapons that
+have per-socket labels: **the `.eff` file itself**, not `.spt`/`.mst` -
+`buildSocketGlow` now pairs each glow-bearing section to the live socket
+of the same name (case-insensitive) first, falling back to plain array
+order only for sections with no label or an unmatched one (e.g. "Man
+Eater"'s own main glow record, which has real texture data but no socket
+label at all - not every real record carries one).
+
+Finding this required fixing a real bug in `readNextString` (the shared
+string-scan helper both the texture-name fields and this label use): its
+hardcoded minimum-length filter (`MIN_STRING_LENGTH = 4`, meant to reject
+short runs of coincidentally-printable padding bytes as false positives)
+was silently discarding genuine 3-character labels like `"P01"`, always
+returning `null` for them even though the bytes were correctly positioned
+and readable. Fixed by giving `readNextString` an optional `minLength`
+parameter, passed as `2` specifically for this label read (the texture-
+name reads keep the original default of 4).
+
+The `.spt`-level question - which specific `Unick_up/C_W_<TYPE>/<N>p/`
+numbered folder a given item+upgrade-level should use for its *particle*
+(as opposed to its glow) - is a separate, still-unconfirmed mystery. The
+labeled records found so far (`EFFECT1`/`EFFECT2`/`P01`/`P02`/`P03`) carry
+no texture/particle-file reference at all in this weapon's case, so the
+socket-label mechanism only explains glow-to-socket wiring, not
+particle-file selection.
+
+**Not every real glow texture is authored as a clean "black background,
+additive-safe" sprite - confirmed by decoding two real textures
+pixel-for-pixel and comparing.** `Chef/Tex/env_t01.dds` (TSWORD's real
+glow, movement mode 2/scrolling) is a fire ring on pure black - additive
+blending hides its square edge cleanly. `Chef/Tex/recall02.dds` ("The
+End"/`COM_WEAPON_DAXE_011`'s real glow, resolved via the same real
+ItemEffectList→PatternList→EffectFileList chain at both +0 and the
+simulated +7, so this isn't a data-resolution bug or an upgrade-level
+simulation artifact) is a filled reddish "portal plate" with **fully
+opaque (255) alpha and no near-black margin at all** - additively
+blending it onto a flat quad showed the whole square as a visible,
+hard-edged patch instead of a clean aura (reported as "dds is not
+rendering like TSWORD"). Not a decode bug either - DDSLoader/DXT5
+decoding is correct for both (verified by dumping each decoded texture
+straight to a PNG and comparing side by side). Fixed generically in
+`buildSocketGlow` with a shared procedural radial-falloff `alphaMap`
+(`getSocketGlowRadialMask` in `glowEffect.ts`) applied to every
+socket-glow billboard regardless of the source texture's own edge
+content - hides the square silhouette unconditionally rather than
+special-casing textures by name or classified alpha, and only ever dims
+edges further so it doesn't regress already-clean sprites like
+`env_t01.dds`. `buildGlowOverlay`'s whole-mesh path is unaffected (it
+projects the glow texture onto the weapon's own real surface UVs, not a
+flat billboard quad, so a square-silhouette mask wouldn't apply there).
+
+**A second, separate attachment convention: `P01`/`P02`/... ("Particle"?)**
+- found by inspecting a real weapon mesh directly in Blender (the vendored
+reference addon's own `.msh` importer), not by this project's own byte
+analysis. Confirmed by parsing the real file directly:
+`COM_WEAPON_TSWORD_003.msh` (the mesh "Man Eater" and several other
+low-level swords resolve to) has **both** `effect1`/`effect2` **and**
+`P01`/`P02`/`P03`/`P04`, all parented to the same real mesh sub-object -
+two coexisting conventions, neither replacing the other. Not universal:
+`COM_WEAPON_DSWORD_200.msh` and `COM_WEAPON_TMACE_156.msh` only have
+`effectN`, no `P0N` at all. This project originally guessed `effectN` was
+glow-only and `P0N` the real particle anchor - **since confirmed wrong**:
+a `.eff` record's own explicit socket-name field (`EffSection.
+socketLabel`/`Particle_name` - see the confirmed particle-wiring section
+below) determines which live socket its glow texture and/or particle ids
+target, and that can be either convention regardless of content
+(`Unick_DAXElv7.EFF`'s particle-bearing records are labeled `EFFECT1`/
+`EFFECT3` as often as `P01`-`P04`) - no more "prefer P0N, fall back to
+effectN" guessing needed; `CharacterController.getEquippedWeaponEffect
+Sockets`/`getEquippedWeaponParticleSockets` (the `/^effect\d*$/i` and
+`/^p\d+$/i` name filters) are just combined into one list and handed to
+`resolveWeaponParticles`, which does the real per-record name matching.
+`%efedit`'s markers still show both kinds together.
+
 ### `.spt` particle template - full key reference
 
 Plain text, not binary - e.g.:
@@ -841,6 +944,27 @@ end
 | `time <t>` block | A keyframe at t seconds; any of `alpha`/`zrot`/`color`/`scale` inside it overrides that attribute from that time onward (sparse - a block only needs to list the attributes it changes, per the "not exactly all commands" example: the `time 1`/`time 3` blocks above omit `scale`/others they don't touch that keyframe). |
 | `end` | Terminates the particle definition - required. |
 
+**Real keys beyond the tutorial's own reference above, confirmed by
+scanning every key across all 1045 real `.spt` files in this project and
+diffing against what `particleTemplate.ts` modeled at the time** (this
+found the gaps below - not guesswork):
+
+| Key | Meaning |
+|---|---|
+| `start_power x y z` | An initial per-axis launch velocity, independent of `gravity` - confirmed real (`Chef/Unick_up/C_W_TSWORD/400p.spt`'s `start_power 2 0 0`). Each axis independently `rand()`-able. |
+| `power x y z` (inside a `time <t>` block) | `start_power`'s per-keyframe counterpart - the drift velocity in effect *during* that portion of the particle's life, not just at spawn (469 occurrences across real files - the single most common key this project hadn't modeled). Confirmed real, including mixed fixed/`rand()` axes on the same line (`power 0.2 rand(-2,2) -5`). Unlike every other keyframe field here (which are held/interpolated directly), `power` is a velocity - its effect on position is the *integral* of that velocity over time, not its instantaneous value (see particleSystem.ts's ResolvedKeyframe/sampleKeyframes for the closed-form trapezoidal integration this project uses: `power` is assumed to vary linearly between keyframes, same as every other field, and the displacement it contributes is the exact integral of that linear velocity curve). |
+| `creat_time_epsilon` / `create_time_epsilon` | Per-instance spawn-time stagger, in seconds - both spellings are real (25 of the ~1000 real files checked use the correctly-spelled `create_time_epsilon`; missing this silently dropped their stagger entirely, since the two spellings were never treated as aliases before). |
+| `start_yrot`, `start_xrot` | `start_zrot`'s counterparts on the other two axes. `start_yrot` is confirmed real (`Chef/50LV_WEAPON/791p.spt`); no real file uses `start_xrot`, accepted defensively the same way. |
+| `yrot`, `xrot` (inside a `time <t>` block) | `zrot`'s per-keyframe counterparts - held/interpolated directly, same as zrot always was (not integrated like `power` - these are orientations, not velocities). Applied as additional local rotations on top of the camera-facing billboard orientation for billboarded templates (same technique zrot already used), or directly via `Object3D.rotation.set(x, y, z)` for `no_billboard` templates. |
+
+Every other unmodeled key found in that same scan (`start_time_range`,
+`always_live`, the `flicker`/`flicker_alpha`/`flicker_time` sub-system,
+`y_billboard`/`z_billboard`, `check_collision`/`elasticity`/
+`special_id`) is either genuinely rare (a handful of files) or a real
+typo in the original game data itself (`sclae`, `star_zrot`, `ccolor`,
+`zrot_rand(-20,20)` used as a literal key name, ...) that even the real
+client almost certainly also silently ignored - not chased further here.
+
 ### `.R3E` particle-shape mesh (`src/rf/r3e.ts`)
 
 Unlike everything else in this doc, this format wasn't reverse-engineered
@@ -848,9 +972,13 @@ from scratch - the user pointed at a reference Blender addon already
 vendored into this repo
 (`extra/cbb-rf-online-addon-main/cbb_rf_online_addon/r3e.py` +
 `rf_shared.py`/`utils.py`) with a working importer. `r3e.ts` is a direct
-port of its field layout and math, scoped to static geometry only (see
-below) - not an independent derivation, so trust the Python source over
-this summary if they ever disagree.
+port of its field layout and math - not an independent derivation, so
+trust the Python source over this summary if they ever disagree. The
+Python reference's own `SCALE_FACTOR` constant (applied to every vertex
+and animated-object position after axis conversion) is `1` - i.e. no
+additional scale beyond the coordinate conversion below, confirming the
+"already reads as sane real-world scale" note further down isn't missing
+a scale factor.
 
 **Container**: `u32 version` (113 in every file seen - the parser only
 warns, doesn't reject, on a mismatch) + `u32 identity` (unused) + a
@@ -891,12 +1019,60 @@ everything else scales with mesh complexity.
   u16 animatedObjectId, i16[3] bboxMin, i16[3] bboxMax}`/entry (22 bytes).
   `materialId == -1` groups are skipped entirely (no material = not
   rendered); `animatedObjectId != 0` marks a group as belonging to a
-  separately-animated sub-part rather than the static mesh.
-- **Object**/**Track**: per-material-group animation (keyframed position/
-  rotation/scale for a moving sub-part, e.g. an orbiting piece) - present
-  in the format, **not parsed** by `r3e.ts` (see scope note above the
-  format section). Skippable without misaligning anything else since every
-  chunk is independently offset-addressed.
+  separately-animated sub-part rather than the static/root mesh - see
+  Object/Track below. `parseR3E` returns one `R3EGroup` per real
+  (non -1) MatGroup, tagged with its `materialId` (for picking the right
+  `.mst`/`MainMaterial.mst` layer per part - not wired up anywhere yet,
+  but the data survives the parse now) and `animatedObjectId`, rather than
+  flattening every group into one undifferentiated triangle soup (the
+  `vertices`/`uvs` top-level fields still do that flattening too, as a
+  convenience for the common single-material case - see
+  `particleSystem.ts`).
+- **Object**: one entry per animated sub-part (88 bytes: `u16 flag, u16
+  parent` [1-based index into this same array; 0 = parented to the entity
+  root, not another animated object], `i32 frames, i32 posCount, i32
+  rotCount, i32 scaleCount, vec3f bindScale, quat bindScaleRot [XYZW,
+  raw], vec3f bindPosition [raw], quat bindQuaternion [XYZW, raw], u32
+  posOffset, u32 rotOffset, u32 scaleOffset` [byte offsets into the
+  sibling Track blob]). **Now parsed** (`r3e.ts`'s `R3EAnimatedObject`) -
+  previously this project silently *dropped every group with a nonzero
+  animatedObjectId entirely*, not just its animation: confirmed a real,
+  live bug by scanning all 146 real `.R3E` files in this project - 4 of
+  them (`70LV_Weapon/{KNIFE/NTT/BLADE,SPEAR/NTT/55spear,SWORD/NTT/blade}`
+  + `RSTAFF/ntt/blade`, all weapon energy-blade glow shapes, `frames=30`
+  each) have a real animated sub-part whose geometry was invisible outright.
+  Fixed by baking each such group's bind-pose transform
+  (`vertex.multiply(bindScale).applyQuaternion(bindQuaternion).add(
+  bindPosition)`, all in this file's own already-converted three.js space)
+  directly into its vertices at parse time - the part now renders in its
+  resting position, just without keyframe playback (see Track below).
+  Structurally verified sane (no NaN/errors across all 146 files, plausible
+  bind-position magnitude given the weapon's own ~10-20-unit local scale
+  for these particular files - the blade sliver itself spans ~14 units)
+  but **not yet visually confirmed** - the reference addon's own handling
+  of this field is written differently (`animated_object.pos`/`.quat` are
+  assigned to a Blender object's transform *without* going through its own
+  Unity→Blender conversion step, unlike every other position/rotation in
+  that file) and per that file's own admission untested against a
+  real animated part, so this project's choice to convert them anyway (for
+  internal consistency with its own already-converted vertices) is a
+  judgment call, not a confirmed-correct port - revisit if it looks wrong
+  once actually rendered.
+- **Track**: raw keyframe bytes for whichever animated objects have
+  `posCount`/`rotCount`/`scaleCount` > 0, sliced via their own
+  `posOffset`/`rotOffset`/`scaleOffset` into this one shared blob per the
+  reference importer: position keyframes are 16 bytes each (`f32 frame,
+  vec3f pos`, raw/unconverted, then `*SCALE_FACTOR`), rotation 20 bytes
+  (`f32 frame, quat XYZW`, only Z negated - a partial, not full, Unity
+  conversion in the reference), scale 32 bytes (`f32 frame, vec3f scale,
+  quat XYZW` - a magnitude applied along an arbitrary rotated axis, not a
+  plain per-axis scale). **Not parsed/played back yet** - all 4 real
+  animated-object files found so far have `posCount=0, rotCount=0` and
+  only `scaleCount=7` (a pulsing-size effect, matching "energy blade"
+  intuition), so bind-pose-only rendering (see Object above) covers them
+  reasonably even without this; revisit once scale keyframe playback (the
+  only kind confirmed to actually occur in this data set so far) is worth
+  the additional work.
 
 **Coordinate space**: R3E's source engine used a Y-up, left-handed
 authoring space (the reference addon labels it "Unity"), not the Z-up,
@@ -907,14 +1083,18 @@ telescopes down to a plain Z-negation for vectors - matching the
 well-known "Unity ≈ three.js with Z flipped" relationship as a sanity
 check on the derivation.
 
-**Verified**: parsed 8 real files spanning every distinct shape in
-`Chef/`'s particle set (a 2-triangle flat `aura.R3E` "glow quad" template,
-up through a 152-triangle hammer glow mesh) - every one produced a sane
-triangle count, a bounding box shaped like its name implies (the bow/
-blade/spear meshes are all elongated along one axis matching the weapon's
-actual long axis; `aura.R3E` is a thin ~1-unit flat quad), and UVs that
-stay within `[0,1]`. No visual/rendered confirmation yet (that needs the
-`.spt` spawner - see below), but the numbers check out.
+**Verified**: parsed every real `.R3E` file findable in this project's
+`Chef/` (146 files, spanning the full range from a 2-triangle flat
+`aura.R3E` "glow quad" template up through multi-hundred-triangle
+weapon/shield meshes) - zero parse errors, zero NaN in any output vertex,
+a bounding box shaped like its name implies wherever checked by hand (the
+bow/blade/spear meshes are all elongated along one axis matching the
+weapon's actual long axis; `aura.R3E` is a thin ~1-unit flat quad), and
+UVs that stay within `[0,1]`. Also how the animated-object bug above was
+found - the previous, smaller 8-file spot-check happened not to include
+any of the 4 real files that actually exercise it. No visual/rendered
+confirmation yet (that needs a live browser session - see the `.spt`/
+`%particletest` proof-of-concept below), but the numbers check out.
 
 ### `.mst` material script (`src/rf/materialScript.ts`)
 
@@ -1085,11 +1265,408 @@ several more real items first.
   path this section built. Unconfirmed which subsystem actually uses
   `Entity.ini` or how a `.eff` (or anything else) would pick an `INDEX`
   into it - noted for whenever that gets picked back up.
-- `.R3E`'s VColor chunk and the Object/Track (animated sub-part) chunks -
-  see the format section above.
-- `.rpk` - the archive format some of `Chef/` ships wrapped in. This
-  project's copy came already unpacked into loose files, so `.rpk` support
-  has turned out to be unnecessary so far.
+- `.R3E`'s VColor chunk (per-vertex color - not read at all) and the
+  Track chunk's actual keyframe playback (Object's own bind-pose transform
+  *is* now parsed and applied - see the format section above) - real
+  scale-only keyframe data (`scaleCount > 0`) is confirmed to exist on 4
+  real files, so this is worth revisiting once bind-pose-only rendering
+  has been visually checked against those.
+- `.rpk` - see the dedicated section below. Not fully unnecessary after
+  all: this project's copy has 17 real `ChefEntityN.rpk` files (up to
+  14.8MB) that were never unpacked, despite the earlier assumption here
+  that everything Chef/-side had already been extracted to loose files.
+
+### `.rpk` archive - real per-weapon energy-effect bundles
+
+Found while chasing why a flat billboard glow (the `.eff` chain above)
+doesn't match the real client's look for a weapon with an elemental/beam
+effect. **Not reverse-engineered from scratch** - a complete, working
+reader already exists in the vendored Blender addon
+(`extra/cbb-rf-online-addon-main/cbb_rf_online_addon/bsp.py`, using
+`utils.py`'s `Serializer`) - this project just never used it. Header
+(little-endian throughout):
+
+```
+f32  version                (1.0 in every file checked)
+u32  fileAmount (N)
+u32[N] offsetIndices        (unused for a flat listing - indirection for
+                              something this project hasn't needed yet)
+i32[N] offsets               (byte offset from end-of-header, parallel to
+                              the entries below by plain index, NOT via
+                              offsetIndices)
+N × {
+  fixedString(52, euc-kr) name   (no extension = a folder marker, not a
+                                   real file - see below)
+  i32   size                      (negative = "infer from the next
+                                   sibling folder's own size" - only seen
+                                   in practice, not fully derived here)
+  u16   reserved
+  u16   childCount                (direct children only, for folder
+                                   entries - verified exactly: a
+                                   childCount=14 folder was followed by
+                                   precisely 14 direct entries before the
+                                   next sibling)
+  u32   offsetIndicesIndex        (unused for a flat listing)
+}
+```
+Entries are stored in depth-first order: a folder (no extension) pushes a
+path segment and its next `childCount` entries (recursively, since a
+child can itself be a folder) belong under it; a real file's byte range is
+`offsets[i] + (file position right after the last entry record)`.
+Verified byte-for-byte on two real files: a 152-byte one (a single empty
+folder, no payload - header alone accounts for the whole file) and a
+14.8MB one (305 entries, `i_axe_lv18_beamaxe/{entity.r3e,entity.r3m,
+entity.r3t}`-shaped bundles matching the reference reader's own output
+shape).
+
+**What's actually packed**: real per-weapon-type "beam"/"elemental"
+weapon effect bundles (`entity.r3e` + `entity.r3m` + `entity.r3t` -
+i.e. a genuinely shaped glow mesh, not a flat texture) under names like
+`i_axe_lv18_beamaxe`, `i_mace_lv40_beamgreathammer`, plus the same
+`Unick_up/C_W_<TYPE>/<N>p/` structure already found loose on disk
+elsewhere (see below) - some of it apparently duplicated between the
+packed `.rpk` and already-unpacked loose files, some (the plain
+`i_<type>_lv<N>_beam<name>` bundles) only in the `.rpk`.
+
+**`.r3m` (material) and `.r3t` (texture container) are now implemented**
+(`src/rf/r3m.ts`/`r3t.ts`) - ported from the reference addon's own working
+code (`RFShared.get_materials_from_r3m_filestream`/
+`get_color_texture_dictionary_from_r3t_filestream` in `rf_shared.py`) and
+verified byte-exact against a real file that happens to have both
+material systems side by side (`Chef/Unick_up/C_W_TSWORD/400p/aura.r3m`/
+`.r3t`, which also has a loose `.mst`/`.dds` pair): the `.r3m`'s own
+material name matches that folder's `.mst` filename exactly, and
+decrypting the `.r3t`'s embedded texture header produces byte-identical
+output to the loose `.dds` file's own real header. Confirmed this is
+**not a rare fallback but the primary material system for the majority of
+real particle entities**: scanning every real `.R3E` entity folder this
+project has (712), only 135 (19%) have a `MainMaterial.mst` at all - the
+other 577 (81%, all `.rpk`-sourced - see above) have `.r3m`/`.r3t`
+instead, never both by accident, with one notable exception (400p, used
+here specifically to cross-validate the new reader against a known-good
+`.mst` result rather than trusting it blind).
+
+Binary layout, little-endian (see r3m.ts/r3t.ts's own doc comments for
+the full byte-level breakdown): `.r3m` is `f32 version, u32
+materialAmount`, then per material `u32 layerNum, u32 flag, i32
+detailSurface, f32 detailScale, fixedString(128, euc-kr) name`, then
+`layerNum` fixed 46-byte `TextureLayer` records (only `textureId`, a
+signed i32 at relative offset 2, is modeled - the rest is real per-layer
+animation data, the same *kind* `.mst` layers already carry, just with no
+consumer here yet). `.r3t` is `f32 version, u32 textureAmount`, then
+`textureAmount` fixed 128-byte euc-kr names, then per texture `u32 size`
+followed by `size` bytes of a **complete, self-contained DDS file** whose
+first 128 bytes are individually XOR-"encrypted" with the *exact same*
+128-byte password this project's own `.RFT` character textures already
+use (`RFT_PASSWORD_BYTES` in `texture.ts`) whenever they don't already
+start with the literal `"DDS "` magic - confirmed identical, not just
+similar, so `.r3t` texture data is decoded by handing its raw bytes
+straight to the already-existing `decodeRftTexture` with no new crypto
+code at all. `textureId` in a real `.r3m` layer is a 1-based index into
+this same-order array.
+
+Wired into `particleSystem.ts`'s `loadR3EMaterialTexture`: tries the
+`.mst` chain first (throwing, not returning null, specifically when
+`MainMaterial.mst` itself is entirely absent), falling back to `.r3m`/
+`.r3t` only in that case. Verified end-to-end post-wiring: a previously
+texture-less rpk-only particle (`Unick_up/C_W_DAXE/183p`, no `.mst` at
+all) now resolves a real 128×128 texture; re-scanning every real entity
+folder in this project confirms all 572 `.r3m`/`.r3t`-only folders now
+resolve a real texture with zero parse errors - 707 of 712 (99.3%)
+particle entities now have working material data, up from 135 (19%)
+before this. The 5 remaining have neither system at all - genuinely
+incomplete source data, not a parsing gap.
+
+**Real bug found and fixed: most equipped items' particle data was
+rpk-only, and this project's runtime only ever fetches loose files.**
+Reported as "many particle is broken" - confirmed by cross-referencing
+every particle id any real `.eff` file in this project references (938
+distinct ids) against what's actually present as a loose file: only 171
+were, 767 (82%) existed only packed inside one of the 17 local
+`Chef/ChefEntityN.rpk` archives - any weapon/cloak whose particle data
+fell in that 767 silently 404s and never renders anything, no error
+surfaced. `scripts/extract_rpk.mjs` (new) extracts every `Particle.ini`-
+referenced `.spt` (and, by parsing each one's own `entity_file` line, its
+`.r3e`/`.r3m`/`.r3t` bundle too) straight from these archives into loose
+files under `Chef/`, using the exact same directory layout/casing the
+rest of this project's fetch-based loaders already expect - after running
+it, only 12 of the 938 item-relevant particle ids remain genuinely absent
+from this project's entire dataset (not recoverable from any local file).
+Idempotent and safe to re-run any time new items are added to the
+resolution chain - skips whatever's already present.
+
+Byte-exact extraction needed reverse-engineering two things the archive's
+own header doesn't spell out (docs and the reference Blender addon both
+stop at "here's the directory listing"):
+- **A file's real byte length isn't its own declared `size` field** -
+  every real `.r3t`/`.spt` entry checked has a *negative* size, and a
+  folder has a *positive* one; neither generalizes into something
+  extraction can rely on directly (a folder's `size` looked at first like
+  it double-encoded "start offset of my first child + 1", until a real
+  counter-example turned up: a folder with no immediate file child, whose
+  `size` was plain `0`, not a usable offset at all). What does work
+  regardless: `offsets[i]` (the header's own per-index parallel array) is
+  a real, valid byte offset for every FILE entry and exactly `-1` for
+  every FOLDER entry, with no exception found across all 17 archives - so
+  a file's real end boundary is found by scanning forward past however
+  many consecutive `-1`-offset folder markers follow it (however deep,
+  crossing subfolder boundaries if needed) until the next real file's own
+  valid `offsets[]` value turns up, or the archive ends.
+- **The very first entry in every archive is a literal `.`/`.\` root
+  marker, not a real path segment** - naively embedding it while
+  reconstructing each entry's full path (folder segments are prefixed
+  depth-first) produces phantom `.\/`-prefixed paths that don't match
+  what anything else in this project would ever request; it must
+  contribute an empty prefix to its own children instead of its literal
+  name.
+
+Both were found by writing byte-exact extractions and either eyeballing
+the output (a 0-byte `.spt` where a substantial real particle template
+was expected) or checking the result against the project's own real
+parsers (`parseR3E` on an extracted `entity.r3e` - matches this doc's
+earlier "146-file, zero-error" verification pass exactly).
+
+**Follow-on bug, found from a real browser network-tab report**: a real
+weapon's own request for "`.../C_W_RMACE/178p/aura.R3E`" (uppercase
+extension, taken verbatim from that `.spt`'s own `entity_file` line) 404s
+even though `178p/aura.r3e` (lowercase) genuinely exists on disk - not a
+missing file, a **casing bug in `extract_rpk.mjs` itself**: its `.r3e`/
+`.r3m`/`.r3t` sibling-extraction loop always wrote a hardcoded lowercase
+extension, regardless of what case the referencing `.spt` actually uses
+(real files go either way, e.g. `400p.spt`'s own reference is
+`aura.R3E`). Fixed two ways: the extraction script now derives sibling
+extension casing from the `.spt`'s own reference instead of hardcoding
+it (belt-and-suspenders, doesn't need every already-extracted file
+re-written to matter - Windows' case-insensitive filesystem means
+`existsNonEmpty` already treats a prior lowercase extraction as
+"present" either way); and, more importantly, `particleSystem.ts`'s
+`loadR3EGeometry`/`loadParticleTemplate` (previously a plain `fetch`,
+the one real gap left in this file - `loadR3EMaterialTexture` already
+used it for `.mst`/textures) now go through the same
+`fetchChefAssetCaseInsensitive` fallback every other Chef/ asset load in
+this project already uses, fixing this class of mismatch generically
+rather than per-file. Verified end-to-end: `ParticleEffect.load()` on
+this exact `.spt` now successfully attaches real geometry (the
+still-separate, already-documented `.r3m`/`.r3t`-not-parsed-yet gap
+means it renders untextured, not invisible - not a regression, not this
+bug).
+
+**SOLVED - which specific bundle a given equipped item+upgrade-level uses
+for its particle.** The missing link turned out to live inside the `.eff`
+file itself, not in `.spt`/`.mst` or any numbered-folder naming
+convention. Confirmed via a real binary struct definition for `.eff`
+(`eff.strs`, a community 010-editor-style template, supplied directly by
+the user) that named two fields this project's own byte analysis hadn't
+identified:
+
+- **`ParticleID1`/`ParticleID2`/`ParticleID3`** (u32, at fixed offsets
+  0x60/0x70/0x80 within each 176-byte `.eff` record) - each nonzero value
+  is a 1-based index into `Chef/Particle.ini`'s own `[PARTICLEn]` blocks
+  (`INDEX = n` / `PARTICLE = <client path>`; `MAXPARTICLE=1174` in that
+  file's own header matches the highest id seen across every one of this
+  project's 1151 real `.eff` files - confirmed by scanning all of them).
+  Looking up that index gives the real `.spt` path directly - no folder-
+  number guessing needed. A record can carry up to 3 simultaneous ids
+  (confirmed on `Unick_DAXElv7.EFF`).
+- **`Particle_name`** - the same 20-byte field this project already parses
+  as `EffSection.socketLabel` (see the `P01`/`P02` section above) - names
+  which live socket (by exact, case-insensitive name match) the record's
+  particle(s) should spawn at. Not exclusive to `P0N` sockets as
+  previously guessed: `Unick_DAXElv7.EFF`'s particle-bearing records are
+  labeled `EFFECT1`/`EFFECT3` as often as `P01`-`P04`.
+
+**Verified end-to-end on real data**: `Unick_TSWORDlv1.EFF` (Man Eater,
+model `A10103`, upgrade level 1) has one `EFFECT1`-labeled record with
+`ParticleID2 = 400`; `Particle.ini`'s `PARTICLE400` block is literally
+`.\Chef\Unick_up\C_W_TSWORD\400p.spt` - the exact file this project had
+previously been hardcoding as an unconfirmed guess. `Unick_DAXElv7.EFF`
+("The End", model `A1090B`, upgrade level 7) resolves its own six labeled
+records to a full, weapon-specific particle set: `Chef/Unick_up/C_W_DAXE/
+{183-188,392}p.spt`, spread across `effect1`/`effect3`/`P01`-`P04` with up
+to 3 particles sharing one socket. The same weapon at upgrade level 0
+(`Unick_DAXElv0.EFF`, a single static-glow-only record) correctly resolves
+to zero particles - it really doesn't have any at that level, not a
+parsing gap.
+
+Implemented in `glowEffect.ts`: `EffSection.particleIds` (parsed
+alongside `socketLabel`), `resolveParticlePath(index)` (loads/caches
+`Particle.ini`), and `resolveWeaponParticles(modelId, sockets,
+upgradeLevel)` (resolves the item's `.eff`, filters to particle-bearing
+sections, pairs them to live sockets via the same `pairSectionsToSockets`
+name-matching+fallback helper `buildSocketGlow` uses, then resolves each
+section's particle ids to real `.spt` paths). `CharacterController`'s
+`weaponParticles` (formerly the hardcoded `debugSocketParticle` proof-of-
+concept) now spawns one real `ParticleEffect` per resolved (socket, `.spt`
+path) pair instead of one fixed file at one guessed socket - on by
+default (`debugSocketParticleWanted` starts `true`, and `equipWeapon`
+re-resolves and re-attaches on every equip/upgrade-level change), with
+`%particletest 0/1` in RfViewer still available as an explicit manual
+override and `%particlescale <n>` to override the scale factor below live.
+
+**SOLVED - the "character is ~1-2 units tall" assumption behind the
+original scale guess was simply wrong; `.spt` position/drift units need
+NO scale correction at all (`DEBUG_SOCKET_PARTICLE_SCALE = 1`).**
+Reported as "the real game's aura fully covers the blade, ours is a tiny
+disconnected blob" - the previous guess (0.05) was under-scaling `.spt`
+offsets by ~20x, collapsing what should be a wide flame-trail spread down
+to a tight cluster near the socket. Confirmed by direct measurement, not
+another guess:
+- `COM_WEAPON_TSWORD_003.msh`'s own visible mesh spans **28.46 raw
+  units** along its blade's long axis (bounding-box size `[1.19, 10.81,
+  28.46]` in its own local space) - `.spt` files are authored by the same
+  original toolchain to be used *with* `.msh` data, so there's no reason
+  to expect them to use a different unit convention, and every number
+  checks out under that assumption: `400p.spt`'s own "pos box -19 0.3 0"
+  (spawn point) and its combined `gravity 2 0 0`/`start_power 2 0 0`
+  drift (spreading 20 staggered instances across roughly a 12-unit range
+  over the template's own 1.75s effective loop) are entirely reasonable
+  numbers *relative to a 28-unit-long blade* - roughly 40-70% of its
+  length, matching a flame trail that runs along a good portion of the
+  blade, not the width of a room.
+- Nothing in the skeleton/weapon pipeline ever rescales that raw space
+  down to some smaller "scene" convention: every real bone's own parsed
+  `localScale` is identity (verified across all 30 of Accretia's real
+  bones, via `Chef`'s already-local `character/player/Bone/Accretia.bn`)
+  ,`buildThreeSkeleton` copies bone position/rotation/scale through with
+  no conversion factor (`skeleton.ts`), and `CameraController.
+  frameOnCharacter` sizes the camera **proportionally to the character's
+  own computed bounding radius** (`camera.position` at `radius * 1.4`,
+  near/far at `radius/100`/`radius*100`) rather than assuming any fixed
+  "normal" character size. The whole scene adapts to whatever raw scale
+  the mesh/skeleton data naturally has - that data is never rescaled to
+  fit some assumed scene convention.
+- This also explains why the already-working, already-confirmed-correct
+  per-socket glow billboard (`SOCKET_GLOW_SIZE = 0.5` in `glowEffect.ts`,
+  no scale compensation at all) looks right: a socket's own local space
+  already **is** properly-scaled scene space, so anything else parented
+  there (a glow quad, or a particle group) needs no extra factor either.
+
+`DEBUG_SOCKET_PARTICLE_SCALE` is now `1` (no scaling) - a real, derived
+value, not a starting guess to keep hand-tuning; still exposed live via
+`%particlescale <n>` for any case this reasoning doesn't cover.
+
+**Follow-on bug, found from real-game-vs-app screenshot comparison
+*after* the scale fix above landed: `.spt` position/drift vectors were
+never run through the 3ds-Max-to-three.js axis conversion every other
+spatial value in this project already gets.** Reported as "the aura sits
+disconnected off to the side, not surrounding the weapon" - confirmed by
+building the real weapon socket + particle end-to-end and measuring the
+actual gap: `400p.spt`'s own `pos box -19 0.3 0`, applied **raw** in
+`effect1`'s own local space, put the particle **27.81 raw units** away
+from the nearest point on the weapon's own mesh (`COM_WEAPON_TSWORD_003`
+spans only ±14.2 on its own long axis - the particle landed miles past
+the tip in empty space). `coords.ts`'s `convertVec3` (`(x, y, z) → (-x, z,
+y)`, the same 3ds Max Z-up → three.js Y-up change of basis `.msh`/`.bn`/
+`.ani` data already goes through before this project ever uses it) had
+never been applied to `.spt` values anywhere in `particleSystem.ts` -
+`posBox`/`gravity`/`startPower`/keyframe `power` were all being read as
+if they were already in three.js space. Applying it drops the gap from
+27.81 to **6.31 raw units** - now on the *thin* axes of the blade (which
+is only ±0.59/±5.4 wide/tall but ±14.2 long), i.e. the particle lands
+just to the side of the blade's own paper-thin cross-section rather than
+nowhere near it at all - a plausible "aura with some real volume around a
+thin mesh," not a disconnected blob. Verified via the real `ParticleEffect`
+class end-to-end (a real Object3D socket built from the same real
+`objectMatrix` `character.ts`'s own mesh-building code uses), not just
+the isolated vector math.
+
+Fixed in `particleSystem.ts`: `resolvePower` (feeds `startPower`/keyframe
+`power`), `spawnPos` (feeds `posBox`), and `update()`'s own per-frame
+`gravity` read all now go through `convertVec3` instead of a raw `Vector3`
+construction. Rotation angles (`start_zrot`/`zrot`/`xrot`/`yrot`) are
+**not** touched by this fix - those are scalar angles applied to a
+billboard's own local spin (already camera-facing, not a world-space
+direction), a conceptually different case with no evidence yet that it's
+broken the same way; revisit only if a real file surfaces a case that
+looks wrong.
+
+**Third follow-on bug, found from a real in-game comparison after both
+fixes above landed: a multi-instance template with no `creat_time_epsilon`
+moves/pulses as one synchronized blob instead of reading as continuous
+fire.** Reported directly (a weapon's own particle "should stay still,
+look like burning fire nonstop" but instead visibly travels and snaps
+back). Root cause: `createTimeEpsilon` was this project's *only* source
+of per-instance stagger (`phaseOffset = rand(0, createTimeEpsilon)`) - a
+template that never sets that key (common; confirmed real on `Chef/
+PVP_Item/COM_WEAPON_TSPEAR_117/773p.spt`, `num 24`, no `creat_time_epsilon`
+key at all) gets `phaseOffset = 0` for literally every instance, meaning
+all 24 copies share the exact same age at all times - they drift together
+as one clump and all snap back to the spawn point simultaneously the
+moment the loop wraps, instead of the intended "always some fresh
+instances near the spawn point, replacing ones that have drifted away and
+faded" continuous-emission look. Fixed by giving every multi-instance
+template an even baseline stagger (`phaseOffset = i/num * liveTime`)
+regardless of whether it also sets `createTimeEpsilon` - that key's own
+random roll is now *additional* jitter layered on top of the baseline,
+not the sole source of stagger. Verified numerically: `773p.spt`'s own 24
+instances now spread continuously across their own drift range instead of
+occupying one identical point; `400p.spt` (which already had a real
+`creat_time_epsilon 5` and was already confirmed correct) is unaffected -
+still well-distributed, no regression.
+
+While reconciling this project's own byte analysis against `eff.strs`,
+the `.eff` texture-name parsing was also corrected: `surfaceTexture`/
+`glowTexture`/`socketLabel` had been read via a scan-for-printable-ASCII
+heuristic (skipping 0xCD padding runs, guessing a variable boundary) on
+the assumption that the two name fields "floated" based on each other's
+length. `eff.strs` confirms they don't - `DDS1`/`DDS2`/`DDS_DIR` are
+three fixed, adjacent 20-byte slots starting at 0x03, and the socket-name
+field (`Particle_name` per the struct) is a fourth independent 20-byte
+slot at 0x98, both now read as simple fixed-offset, NUL-terminated
+strings (`readFixedString` in `glowEffect.ts`) - simpler and more robust
+than the old scanning approach, with identical results on every real file
+re-verified. The struct also names a fourth field, `EntityID` (u32 at
+0x90) - confirmed real (nonzero on 152 of this project's 1151 real `.eff`
+files, always on a section labeled `W00`, the weapon's own main mesh
+object, never on an effectN/P0N socket) but not modeled here yet - no
+consumer for it, revisit if a real feature needs it.
+
+**Not weapon-only: cloaks carry the exact same `.eff`-driven particle
+mechanism, confirmed on a real item.** `cloakItem.json`'s "Premium
+Booster"/"Blood Booster[N Grade]" cloaks (Model `700600`) resolve through
+the same real `ItemEffectList→PatternList→EffectFileList` chain (every
+pattern column returns the same final index, 260, so the upgrade level
+doesn't matter for this item) to `Chef/Eff/Armor/BELMALE_A_CLOAK.EFF`,
+whose 5 particle-bearing sections are labeled `BALL00`-`BALL03`/`P03` - **a
+third socket-naming convention**, alongside weapons' `effectN`/`P0N`, that
+this project hadn't seen before. Resolving `ParticleID1`/`ParticleID2` on
+those sections through `Particle.ini` gives real, cloak-specific paths:
+`Chef/Armor/BELMALE_A_CLOAK/{417,418,423,424}p.spt`. Since a third
+(unpredicted) naming convention exists, `CharacterController`'s particle
+resolution doesn't filter candidate sockets by any name pattern at all for
+this purpose - it passes literally every one of the slot's own equipped
+sub-objects to `resolveWeaponParticles` and relies entirely on
+`EffSection.socketLabel`'s exact name match (see `pairSectionsToSockets`)
+to pick the right one. Verified this doesn't cause false positives: fed a
+mix of real labels plus made-up unrelated dummy names (`Dummy_Unrelated`,
+`W00`) into the resolver, only the real labels matched, the extras came
+back untouched - confirming the fallback (array-order pairing for
+unlabeled sections) isn't a real risk here, since every particle-bearing
+section found across every real file checked so far (weapon and cloak
+alike) already carries an exact label. `CharacterController.slotParticles`
+(a `Partial<Record<ModelType, ParticleEffect[]>>`, replacing what was
+previously weapon-only `weaponParticles`) and `trySpawnSlotParticles`
+generalize the whole spawn/dispose/toggle lifecycle across both `Weapon`
+and `Cloak` slots; `getEquippedWeaponEffectSockets`/`getEquippedWeapon
+ParticleSockets` (the `effectN`/`P0N` name filters) are unaffected -
+they're still weapon-only and still used for the glow-billboard path
+(`buildSocketGlow`), which cloaks continue to render via the whole-mesh
+`buildGlowOverlay` path unchanged.
+
+(`ParticleEffect` DOES now load the entity's own real material - see
+`loadR3EMaterialTextureCached` in `particleSystem.ts`, which resolves
+`MainMaterial.mst` → the named per-material `.mst` → its `map_name`
+texture via the same `.mst`/DDS decoding used elsewhere in this file.)
+
+While investigating this, `particleTemplate.ts` gained two more real,
+previously-unmodeled `.spt` keys confirmed on this same `400p.spt`:
+`start_power` (an initial per-axis launch velocity - see
+`ParticleTemplate.startPower`'s own doc comment for how this project
+models it, the same simple linear-in-age drift `gravity` already uses,
+just a second independent term) and `creat_time_epsilon` (a per-instance
+spawn-time stagger, without which every instance of a multi-instance
+template pulsed through the exact same keyframe at the exact same moment
+- see `ParticleEffect.update`'s own doc comment).
 
 ## Known bugs already fixed here (don't reintroduce)
 

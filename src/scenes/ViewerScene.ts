@@ -1,11 +1,11 @@
-import { Euler, Quaternion, Raycaster, Vector2, Vector3 } from 'three';
+import { AxesHelper, Euler, Mesh, MeshBasicMaterial, Quaternion, Raycaster, SphereGeometry, Vector2, Vector3 } from 'three';
 import type { Object3D, PerspectiveCamera, WebGLRenderer } from 'three';
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
 import { AssetController } from '../controllers/AssetController';
 import { BotController } from '../controllers/BotController';
 import { CameraController } from '../controllers/CameraController';
 import { CharacterController } from '../controllers/CharacterController';
-import type { WeaponDebugInfo } from '../controllers/CharacterController';
+import type { EffectSocketInspection, WeaponDebugInfo } from '../controllers/CharacterController';
 import { SceneController } from '../controllers/SceneController';
 import { classifyLocomotionDirection } from '../rf/character';
 import type { RaceGender } from '../rf/character';
@@ -16,6 +16,13 @@ const UP_AXIS = new Vector3(0, 1, 0);
 /** How often the FPS/memory readout refreshes - every frame would be unreadable and wasteful to re-render for. */
 const STATS_UPDATE_INTERVAL_SEC = 0.5;
 const BYTES_PER_MB = 1024 * 1024;
+/** AxesHelper size (three.js units) for each %efedit socket marker - big enough to actually spot against a weapon mesh at normal camera distance (0.08, then 0.3, both turned out too small to see/click in practice). */
+const EFFECT_EDIT_MARKER_SIZE = 0.6;
+/** Radius of the visible+clickable sphere at each %efedit socket marker's own origin - an AxesHelper alone is just 3 thin lines, too easy to miss with the mouse; this is both a bigger visual anchor and the actual raycast target onPointerUp checks against (see syncEffectEditMarkers/onPointerUp). */
+const EFFECT_EDIT_HIT_SPHERE_RADIUS = 0.12;
+/** Shared across every %efedit marker's own hit sphere - a small constant resource, never disposed (same "cheap, permanent, reused" reasoning as this file's other shared three.js constants), not per-marker/per-sync-call state. */
+const EFFECT_EDIT_HIT_GEOMETRY = new SphereGeometry(EFFECT_EDIT_HIT_SPHERE_RADIUS, 8, 6);
+const EFFECT_EDIT_HIT_MATERIAL = new MeshBasicMaterial({ color: 0xffee00, transparent: true, opacity: 0.6, depthTest: false });
 
 /** Chrome-only, non-standard - not in the DOM lib types. Absent on other engines. */
 interface PerformanceMemoryInfo {
@@ -59,6 +66,10 @@ export interface ViewerSceneCallbacks {
   onStatsUpdate?: (stats: ViewerDebugStats) => void;
   /** Fires whenever the %wpedit gizmo's target/transform changes - null while disabled or unarmed. */
   onWeaponEditChange?: (state: WeaponEditState | null) => void;
+  /** Fires whenever %efedit's found sockets change (an equip, or toggling on/off) - the found "effectN" socket names, an empty array if the current weapon has none, or null while disabled. */
+  onEffectEditChange?: (socketNames: string[] | null) => void;
+  /** Fires when a %efedit socket marker is clicked - the gathered .eff/.spt/.mst/.dds info for that socket plus whatever real particle effect(s) are currently running there (see CharacterController.EffectSocketInspection), or null if gathering it failed outright (unarmed by the time it resolved, etc). Not fired for a plain click-to-move click - see onPointerUp. */
+  onEffectSocketInfo?: (inspection: EffectSocketInspection | null) => void;
 }
 
 /**
@@ -102,6 +113,18 @@ export class ViewerScene implements AppScene {
   private weaponEditMode: 'translate' | 'rotate' = 'translate';
   private weaponEditTarget: Object3D | null = null;
   private weaponEditOriginal: { position: Vector3; quaternion: Quaternion } | null = null;
+
+  // %efedit - see setEffectEditEnabled. Plain AxesHelper + a small visible
+  // sphere per marker (no TransformControls - there can be several
+  // sockets at once, unlike the one weapon transform %wpedit edits),
+  // parented directly to each socket so they inherit its transform for
+  // free. The sphere is both a bigger visual anchor (AxesHelper alone is
+  // 3 thin lines, easy to miss) and the actual raycast target
+  // onPointerUp checks against - clicking one reports that socket's real
+  // .eff/.spt/.mst/.dds data (see getSocketDebugInfo).
+  private effectEditEnabled = false;
+  private effectEditMarkers: { helper: AxesHelper; hitSphere: Mesh; socket: Object3D }[] = [];
+  private effectEditSockets: Object3D[] = [];
 
   constructor(renderer: WebGLRenderer, private initialRaceGender: RaceGender, callbacks: ViewerSceneCallbacks = {}) {
     this.renderer = renderer;
@@ -181,15 +204,31 @@ export class ViewerScene implements AppScene {
     switch (name.toLowerCase()) {
       case 'addbot': {
         const requested = Number.parseInt(args[0] ?? '1', 10);
-        const added = await this.botController.spawnBots(requested);
-        return `Spawned ${added} bot${added === 1 ? '' : 's'} (${this.botController.count} total).`;
+        // Optional: "%addbot <count> <weaponNameFilter> <upgradeLevel>" -
+        // e.g. "%addbot 3 crimson 7" forces each bot's weapon slot to a
+        // random race-eligible item whose name contains "crimson"
+        // (case-insensitive substring, not required to be a full/exact
+        // name - see BotController.spawnBots), simulated at +7 upgrade
+        // (see CharacterController.setDebugWeaponUpgradeLevel) - built for
+        // stress-testing real weapons with heavy multi-section .eff
+        // particle data (a high upgrade level's own PatternList.txt column
+        // often resolves a `.eff` with several more particle-bearing
+        // sections than +0 does - see docs/rf-format-notes.md) without
+        // hand-equipping one weapon at a time via the Equip panel.
+        const weaponNameFilter = args[1];
+        const weaponUpgradeLevel = args[2] !== undefined ? Number.parseInt(args[2], 10) : undefined;
+        const added = await this.botController.spawnBots(requested, {
+          weaponNameFilter,
+          weaponUpgradeLevel: Number.isFinite(weaponUpgradeLevel) ? weaponUpgradeLevel : undefined,
+        });
+        return `Spawned ${added} bot${added === 1 ? '' : 's'} (${this.botController.count} total)${weaponNameFilter ? ` - weapon filter "${weaponNameFilter}"${weaponUpgradeLevel !== undefined ? ` at +${weaponUpgradeLevel}` : ''}` : ''}.`;
       }
       case 'clearbots': {
         const removed = this.botController.clearBots();
         return `Removed ${removed} bot${removed === 1 ? '' : 's'}.`;
       }
       default:
-        return `Unknown command "%${name}". Try %addbot <count> or %clearbots.`;
+        return `Unknown command "%${name}". Try %addbot <count> [weaponNameFilter] [upgradeLevel] or %clearbots.`;
     }
   }
 
@@ -293,8 +332,73 @@ export class ViewerScene implements AppScene {
     });
   }
 
+  /**
+   * %efedit 1/0 - a first step toward a real .eff placement editor: makes
+   * the currently-equipped weapon's own "effectN" dummy sockets (see
+   * CharacterController.getEquippedWeaponEffectSockets) visible via a small
+   * AxesHelper on each one, since a bare Object3D pivot otherwise renders
+   * nothing at all. These are already correctly positioned/parented by
+   * buildObjectsFromParsedMesh (same rigid-attach math as the weapon mesh
+   * itself) - nothing to compute here, purely visualization for now.
+   */
+  setEffectEditEnabled(enabled: boolean): void {
+    this.effectEditEnabled = enabled;
+    if (!enabled) {
+      this.clearEffectEditMarkers();
+      this.callbacks.onEffectEditChange?.(null);
+      return;
+    }
+    this.syncEffectEditMarkers();
+  }
+
+  private clearEffectEditMarkers(): void {
+    for (const { helper, hitSphere } of this.effectEditMarkers) {
+      helper.parent?.remove(helper);
+      helper.dispose();
+      // hitSphere shares EFFECT_EDIT_HIT_GEOMETRY/_MATERIAL with every
+      // other marker - only remove it from the scene graph, never dispose
+      // those (see their own doc comment).
+      hitSphere.parent?.remove(hitSphere);
+    }
+    this.effectEditMarkers = [];
+    this.effectEditSockets = [];
+  }
+
+  /**
+   * Re-attaches markers to whatever CharacterController.
+   * getEquippedWeaponEffectSockets()/getEquippedWeaponParticleSockets()
+   * currently return combined (both are real, coexisting attachment
+   * conventions - see the latter's own doc comment), if that set has
+   * changed since the last sync - called once from
+   * setEffectEditEnabled(true) and every frame from update() while
+   * editing is on, same reasoning as syncWeaponEditTarget (re-equipping a
+   * *different* weapon disposes the old socket objects out from under any
+   * markers still parented to them).
+   */
+  private syncEffectEditMarkers(): void {
+    const sockets = [
+      ...this.characterController.getEquippedWeaponEffectSockets(),
+      ...this.characterController.getEquippedWeaponParticleSockets(),
+    ];
+    const unchanged =
+      sockets.length === this.effectEditSockets.length && sockets.every((socket, i) => socket === this.effectEditSockets[i]);
+    if (unchanged) return;
+
+    this.clearEffectEditMarkers();
+    this.effectEditSockets = sockets;
+    for (const socket of sockets) {
+      const helper = new AxesHelper(EFFECT_EDIT_MARKER_SIZE);
+      socket.add(helper);
+      const hitSphere = new Mesh(EFFECT_EDIT_HIT_GEOMETRY, EFFECT_EDIT_HIT_MATERIAL);
+      socket.add(hitSphere);
+      this.effectEditMarkers.push({ helper, hitSphere, socket });
+    }
+    this.callbacks.onEffectEditChange?.(sockets.map((socket) => socket.name));
+  }
+
   update(delta: number): void {
     if (this.weaponEditEnabled) this.syncWeaponEditTarget();
+    if (this.effectEditEnabled) this.syncEffectEditMarkers();
 
     if (this.moveInput) {
       const { x, y } = this.moveInput;
@@ -318,7 +422,9 @@ export class ViewerScene implements AppScene {
 
     const { arrived } = this.characterController.update(delta);
     if (arrived) this.sceneController.hideTargetMarker();
-    this.botController.update(delta);
+    this.characterController.updateSocketGlowBillboards(this.cameraController.camera, delta);
+    this.characterController.updateDebugSocketParticle(this.cameraController.camera, delta);
+    this.botController.update(delta, this.cameraController.camera);
 
     const character = this.characterController.getCharacter();
     this.cameraController.update(delta, {
@@ -360,6 +466,42 @@ export class ViewerScene implements AppScene {
     this.pointerDownPos = { x: event.clientX, y: event.clientY };
   }
 
+  /**
+   * %efedit's own click handler: raycasts against every current socket
+   * marker's hit sphere (see EFFECT_EDIT_HIT_GEOMETRY's own doc comment)
+   * and, on a hit, fires off getSocketDebugInfo for it - fire-and-forget,
+   * same reasoning as every other async-then-callback pattern in this
+   * file (weaponEditTarget etc), since the click itself is synchronous
+   * but resolving real .eff/.spt/.mst/.dds data isn't. `raycaster` must
+   * already be set up (setFromCamera) by the caller. Returns whether a
+   * marker was actually hit, so onPointerUp can skip its own
+   * click-to-move handling for the same click.
+   */
+  private handleEffectEditClick(): boolean {
+    const hit = this.raycaster.intersectObjects(
+      this.effectEditMarkers.map((marker) => marker.hitSphere),
+      false,
+    )[0];
+    if (!hit) return false;
+
+    const marker = this.effectEditMarkers.find((m) => m.hitSphere === hit.object);
+    if (!marker) return false;
+
+    const socket = marker.socket;
+    this.characterController.getSocketDebugInfo(socket).then(
+      (info) => {
+        if (this.disposed) return;
+        this.callbacks.onEffectSocketInfo?.(
+          info ? { info, liveEffects: this.characterController.getSocketParticleEffects(socket) } : null,
+        );
+      },
+      () => {
+        if (!this.disposed) this.callbacks.onEffectSocketInfo?.(null);
+      },
+    );
+    return true;
+  }
+
   onPointerUp(event: PointerEvent): void {
     const down = this.pointerDownPos;
     this.pointerDownPos = null;
@@ -369,8 +511,6 @@ export class ViewerScene implements AppScene {
     if (!down) return;
     const movedPx = Math.hypot(event.clientX - down.x, event.clientY - down.y);
     if (movedPx > CLICK_DRAG_TOLERANCE_PX) return; // was a camera drag, not a click
-    if (this.cameraController.getMode() !== 'third') return; // click-to-move only makes sense in 3rd person
-    if (!this.characterController.getCharacter()) return;
 
     const rect = this.renderer.domElement.getBoundingClientRect();
     this.pointerNdc.set(
@@ -378,6 +518,12 @@ export class ViewerScene implements AppScene {
       -((event.clientY - rect.top) / rect.height) * 2 + 1,
     );
     this.raycaster.setFromCamera(this.pointerNdc, this.cameraController.camera);
+
+    if (this.effectEditEnabled && this.handleEffectEditClick()) return;
+
+    if (this.cameraController.getMode() !== 'third') return; // click-to-move only makes sense in 3rd person
+    if (!this.characterController.getCharacter()) return;
+
     const hit = new Vector3();
     if (this.raycaster.ray.intersectPlane(this.sceneController.groundPlane, hit)) {
       this.characterController.moveTo(hit);
@@ -388,6 +534,7 @@ export class ViewerScene implements AppScene {
   dispose(): void {
     this.disposed = true;
     this.assetController.cancelPending();
+    this.clearEffectEditMarkers();
     this.sceneController.scene.remove(this.transformControls.getHelper());
     this.transformControls.dispose();
     this.cameraController.dispose();

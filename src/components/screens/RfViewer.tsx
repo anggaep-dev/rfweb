@@ -2,22 +2,25 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import BasePartPanel from '../debug/BasePartPanel';
 import CommandConsole from '../debug/CommandConsole';
 import DebugPanel from '../debug/DebugPanel';
+import EffectEditPanel from '../debug/EffectEditPanel';
 import EquipPanel from '../debug/EquipPanel';
 import FullscreenButton from '../hud/FullscreenButton';
 import MobileControls from '../hud/MobileControls';
 import StatsPanel from '../debug/StatsPanel';
 import WeaponEditPanel from '../debug/WeaponEditPanel';
 import type { CamMode } from '../../controllers/CameraController';
-import type { BattleMode, MoveMode } from '../../controllers/CharacterController';
+import type { BattleMode, EffectSocketInspection, MoveMode } from '../../controllers/CharacterController';
 import { useKeyboardMove } from '../../hooks/useKeyboardMove';
 import { RaceGender } from '../../rf/character';
 import type { GradeLiveValues } from '../../rf/gradeEffect';
 import { ALL_EQUIP_SLOTS, SLOT_LABELS, loadUsableSlotItems } from '../../rf/items';
 import type { ModelType, ItemDefinition } from '../../rf/items';
+import type { ParticleEffect, ParticleLiveValues } from '../../rf/particleSystem';
 import type { SceneManager } from '../../scenes/SceneManager';
 import type { ViewerDebugStats, WeaponEditState } from '../../scenes/ViewerScene';
 import { ViewerScene } from '../../scenes/ViewerScene';
 import './RfViewer.css';
+
 
 export interface RfViewerProps {
   sceneManager: SceneManager;
@@ -84,6 +87,27 @@ export default function RfViewer({ sceneManager, initialRaceGender, onExit }: Rf
   // gizmo's live transform for WeaponEditPanel's readout.
   const [showWeaponEdit, setShowWeaponEdit] = useState(false);
   const [weaponEditState, setWeaponEditState] = useState<WeaponEditState | null>(null);
+  // WeaponEditPanel's upgrade-level dropdown - simulates weaponItem.json's
+  // real per-item upgrade level (not tracked anywhere else in this project -
+  // see CharacterController.setDebugWeaponUpgradeLevel) to preview how the
+  // resolved Chef/ effect changes across PatternList.txt's columns.
+  const [weaponUpgradeLevel, setWeaponUpgradeLevel] = useState(0);
+
+  // %efedit 1/0 - visual markers on the equipped weapon's own "effectN"/
+  // "P0N" dummy sockets (see ViewerScene.setEffectEditEnabled). Clicking
+  // one resolves its real .eff/.spt/.mst data plus whatever real particle
+  // effect is currently running there, shown/live-tunable in
+  // EffectEditPanel below - see ViewerScene.onEffectSocketInfo.
+  const [showEffectEdit, setShowEffectEdit] = useState(false);
+  const [effectSocketInspection, setEffectSocketInspection] = useState<EffectSocketInspection | null>(null);
+
+  // %particletest 1/0 - debug/proof-of-concept only (see
+  // CharacterController.setDebugSocketParticleEnabled): a real, hardcoded
+  // .spt weapon-aura particle attached to the equipped weapon's first
+  // effect socket, to compare against the flat billboard glow. On by
+  // default (the controller's own debugSocketParticleWanted starts true and
+  // auto-reattaches on every weapon equip) - no local mirror of that state
+  // is kept here, the %particletest command below just forwards to it.
 
   const [raceGender, setRaceGender] = useState<RaceGender>(initialRaceGender);
   const raceGenderRef = useRef<RaceGender>(initialRaceGender);
@@ -133,6 +157,15 @@ export default function RfViewer({ sceneManager, initialRaceGender, onExit }: Rf
       onWeaponEditChange: (state) => {
         if (!disposed) setWeaponEditState(state);
       },
+      onEffectEditChange: (socketNames) => {
+        if (disposed || !socketNames) return;
+        setCommandFeedback(
+          socketNames.length > 0 ? `Effect sockets found: ${socketNames.join(', ')}` : 'No "effectN" sockets on this weapon.',
+        );
+      },
+      onEffectSocketInfo: (inspection) => {
+        if (!disposed) setEffectSocketInspection(inspection);
+      },
     });
     viewerSceneRef.current = viewerScene;
     // Resource disposal is SceneManager's job once this scene is superseded
@@ -166,6 +199,12 @@ export default function RfViewer({ sceneManager, initialRaceGender, onExit }: Rf
   useEffect(() => {
     viewerSceneRef.current?.characterController.setMoveMode(moveMode);
   }, [moveMode]);
+
+  useEffect(() => {
+    viewerSceneRef.current?.setEffectEditEnabled(showEffectEdit);
+    if (!showEffectEdit) setEffectSocketInspection(null);
+  }, [showEffectEdit]);
+
 
   useEffect(() => {
     viewerSceneRef.current?.characterController.setDebugBoosterEnabled(isBoosterOn);
@@ -202,6 +241,7 @@ export default function RfViewer({ sceneManager, initialRaceGender, onExit }: Rf
     setMoveMode('walk');
     setIsBoosterOn(false);
     setIsFlying(false);
+    setWeaponUpgradeLevel(0);
     // CharacterController.mount() resets baseAppearance to {} (all variant 0)
     // for the same "fresh character" reason - see its own reset block.
     setBaseAppearance({});
@@ -288,6 +328,14 @@ export default function RfViewer({ sceneManager, initialRaceGender, onExit }: Rf
   const handleWeaponEditClose = useCallback(() => setShowWeaponEdit(false), []);
   const handleGradeLiveChange = useCallback((patch: Partial<GradeLiveValues>) => {
     viewerSceneRef.current?.characterController.setWeaponGradeLiveValues(patch);
+  }, []);
+  const handleUpgradeLevelChange = useCallback((level: number) => {
+    setWeaponUpgradeLevel(level);
+    viewerSceneRef.current?.characterController.setDebugWeaponUpgradeLevel(level);
+  }, []);
+  const handleEffectSocketClose = useCallback(() => setEffectSocketInspection(null), []);
+  const handleParticleLiveChange = useCallback((effect: ParticleEffect, patch: Partial<ParticleLiveValues>) => {
+    viewerSceneRef.current?.characterController.setParticleLiveValues(effect, patch);
   }, []);
 
   // Depends only on slotItems (needed to resolve the picked id back to an
@@ -385,6 +433,43 @@ export default function RfViewer({ sceneManager, initialRaceGender, onExit }: Rf
       const show = wpeditMatch[1] === '1';
       setShowWeaponEdit(show);
       setCommandFeedback(`Weapon edit gizmo ${show ? 'shown' : 'hidden'}.`);
+      return;
+    }
+
+    const efeditMatch = /^%efedit\s+([01])$/.exec(trimmed);
+    if (efeditMatch) {
+      const show = efeditMatch[1] === '1';
+      setShowEffectEdit(show);
+      // onEffectEditChange (above) overwrites this with the real socket list
+      // an instant later, once the showEffectEdit effect below actually
+      // calls setEffectEditEnabled - not shown at all on turn-off, since
+      // that fires onEffectEditChange(null), which the handler ignores.
+      setCommandFeedback(show ? 'Effect edit markers on - looking for sockets...' : 'Effect edit markers hidden.');
+      return;
+    }
+
+    const particletestMatch = /^%particletest\s+([01])$/.exec(trimmed);
+    if (particletestMatch) {
+      const on = particletestMatch[1] === '1';
+      const ok = viewerSceneRef.current?.characterController.setDebugSocketParticleEnabled(on) ?? true;
+      setCommandFeedback(
+        on
+          ? ok
+            ? 'Particle test on - real per-weapon .eff/.spt particle data. Use %particlescale <n> to override its scale live (1 = no scaling, the real derived value - see DEBUG_SOCKET_PARTICLE_SCALE).'
+            : 'Particle test armed - no effect/particle socket on the current weapon yet (or unarmed); it will attach automatically once a compatible weapon is equipped.'
+          : 'Particle test off.',
+      );
+      return;
+    }
+
+    const particlescaleMatch = /^%particlescale\s+([\d.]+)$/.exec(trimmed);
+    if (particlescaleMatch) {
+      const scale = Number.parseFloat(particlescaleMatch[1]);
+      if (Number.isFinite(scale)) {
+        const previous = viewerSceneRef.current?.characterController.getDebugSocketParticleScale();
+        viewerSceneRef.current?.characterController.setDebugSocketParticleScale(scale);
+        setCommandFeedback(`Particle test scale set to ${scale} (was ${previous ?? '?'}).`);
+      }
       return;
     }
 
@@ -491,7 +576,13 @@ export default function RfViewer({ sceneManager, initialRaceGender, onExit }: Rf
           onReset={handleWeaponEditReset}
           onClose={handleWeaponEditClose}
           onGradeLiveChange={handleGradeLiveChange}
+          upgradeLevel={weaponUpgradeLevel}
+          onUpgradeLevelChange={handleUpgradeLevelChange}
         />
+      )}
+
+      {status === 'ready' && showEffectEdit && effectSocketInspection && (
+        <EffectEditPanel inspection={effectSocketInspection} onClose={handleEffectSocketClose} onLiveChange={handleParticleLiveChange} />
       )}
 
       {showDebugPanel && (

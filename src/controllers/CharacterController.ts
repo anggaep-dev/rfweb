@@ -1,5 +1,5 @@
 import { Box3, LoopOnce, LoopRepeat, Matrix4, Object3D, Quaternion, SkeletonHelper, Vector3 } from 'three';
-import type { AnimationAction, AnimationClip, Bone, Group, Scene } from 'three';
+import type { AnimationAction, AnimationClip, Bone, Camera, Group, MeshBasicMaterial, Scene } from 'three';
 import { ANI_FPS } from '../rf/animation';
 import {
   CLOAK_CDN_BASE,
@@ -16,13 +16,51 @@ import type { CloakAnimationRig, LocomotionDirection, RfCharacter } from '../rf/
 import { applyGradeLiveValues, buildGradeOverlay, clamp01, disposeGradeOverlay } from '../rf/gradeEffect';
 import type { GradeLiveValues, GradeOverlay } from '../rf/gradeEffect';
 import type { MaterialLayer } from '../rf/materialScript';
-import { applySurfaceShine, buildGlowOverlay, disposeGlowOverlay } from '../rf/glowEffect';
-import type { GlowOverlay } from '../rf/glowEffect';
+import {
+  applySurfaceShine,
+  buildGlowOverlay,
+  buildSocketGlow,
+  describeSocketEffect,
+  disposeGlowOverlay,
+  disposeSocketGlow,
+  resolveWeaponParticles,
+} from '../rf/glowEffect';
+import type { GlowOverlay, SocketEffectInfo, SocketGlow } from '../rf/glowEffect';
 import { ALL_MODEL_TYPES, MODEL_TYPE_TO_PART_TOKEN, ModelType } from '../rf/items';
 import type { ItemDefinition } from '../rf/items';
+import { ParticleEffect, describeParticleEntity } from '../rf/particleSystem';
+import type { ParticleEntityDebugInfo, ParticleLiveValues } from '../rf/particleSystem';
 import { resolveCloakMeshStem, resolveItemMeshStem, resolveWeaponMesh } from '../rf/resource';
 
 const ARRIVE_FRACTION_OF_RADIUS = 0.04;
+/**
+ * A real `.spt`'s own position/drift units (e.g. `400p.spt`'s "pos box
+ * -19 0.3 0") need NO extra scale correction at all - this project
+ * originally guessed a small fudge factor (0.05) on the assumption that a
+ * character is "on the order of 1-2 units tall" and -19 was therefore
+ * huge, but that assumption turned out to be wrong. Confirmed by direct
+ * measurement: `COM_WEAPON_TSWORD_003.msh`'s own visible mesh spans
+ * 28.46 raw units along its blade's own long axis - the *same* raw
+ * coordinate space `.spt` position/gravity/power values are authored in
+ * (both are original-client data meant to be used together) - and
+ * nothing in the skeleton/weapon pipeline ever rescales that raw space
+ * down: every real bone's own parsed scale is identity (verified across
+ * all 30 of Accretia's bones), `buildThreeSkeleton` copies bone
+ * position/scale directly with no conversion, and `CameraController.
+ * frameOnCharacter` sizes the camera *proportionally to the character's
+ * own computed bounding radius* rather than assuming any fixed "normal"
+ * character size - the whole scene adapts to whatever raw scale the
+ * mesh/skeleton data naturally has, rather than that data being
+ * rescaled to fit the scene. So a socket's own local space (parented
+ * weapon sub-objects, `.eff` glow billboards at a flat `SOCKET_GLOW_SIZE
+ * = 0.5`, already confirmed to look correctly proportioned - see
+ * glowEffect.ts) already **is** properly-scaled scene space, with no
+ * extra factor needed for anything else parented there either. 1 (no
+ * scaling) is therefore the real, derived value here - not a starting
+ * guess - still exposed live via setDebugSocketParticleScale/
+ * debugSocketParticleScale for cases this reasoning doesn't cover.
+ */
+const DEBUG_SOCKET_PARTICLE_SCALE = 1;
 /** Exported for OnlineScene - it derives a server-units-to-scene-units scale by matching the server's own walk speed constant against this one. */
 export const WALK_SPEED_RADIUS_PER_SEC = 0.9;
 /** How much faster running is than walking - the actual client's ratio isn't in this data set, so this is a reasonable-looking approximation. */
@@ -91,6 +129,44 @@ export interface WeaponDebugInfo {
         readOnly: Pick<MaterialLayer, 'type' | 'mapName' | 'uvEnv' | 'uvScale' | 'uvScaleEnd' | 'uvScaleSpeed' | 'uvRotate' | 'aniTexFrame' | 'aniTexSpeed'>;
       }
     | null;
+  /** How many "effectN" sockets the weapon's own .msh carries (0 for most items) and how many of them actually got a glow billboard (see glowEffect.ts's buildSocketGlow) - socketsWithGlow < socketCount just means fewer glow-bearing .eff sections than sockets, not an error. When socketsWithGlow > 0, `glow` above is null - see applyGlowOverlay's doc comment on why the two are mutually exclusive. */
+  effectSockets: { socketCount: number; socketsWithGlow: number };
+  /** How many "P0N" sockets the weapon's own .msh carries (see getEquippedWeaponParticleSockets) - a separate, coexisting attachment convention from effectSockets above, found by inspecting a real weapon mesh in Blender. Not every weapon has these. */
+  particleSocketCount: number;
+  /** How many real `.spt` particle instances are currently spawned on this weapon (see slotParticles' own doc comment) - each one resolved from this item's own `.eff` ParticleID fields via Chef/Particle.ini, not a hardcoded stand-in. 0 is the common case (most items register no particle data at all). Cloaks carry the same real mechanism (see slotParticles) but aren't reflected here - this struct is weapon-only debug info. */
+  particlesSpawned: number;
+}
+
+/**
+ * Everything real about one specific weapon socket, gathered on demand
+ * for `%efedit`'s per-socket click inspector - see getSocketDebugInfo.
+ * `sections` is glowEffect.ts's own SocketEffectInfo.sections (`.eff`
+ * data: surface/glow texture names, movement/speed bytes, raw particle
+ * ids); `particles` resolves each of those ids' own `.spt` path one step
+ * further, down to its real material (`.mst` or `.r3m`/`.r3t`) and
+ * texture filename - `entity` is null only when that .spt itself failed
+ * to load or has no entity_file at all, same "commonly missing" meaning
+ * as everywhere else in this file.
+ */
+export interface SocketDebugInfo extends SocketEffectInfo {
+  particles: { sptPath: string; entity: ParticleEntityDebugInfo | null }[];
+}
+
+/**
+ * Everything `%efedit`'s per-socket inspector panel needs for one click:
+ * `info` is the resolved-but-not-necessarily-running `.eff`/`.spt`/`.mst`
+ * data (see getSocketDebugInfo - reports what *should* exist regardless
+ * of whether anything is actually spawned right now), `liveEffects` is
+ * whatever `ParticleEffect` instance(s) are *actually* attached to this
+ * same socket at this moment (see getSocketParticleEffects) - the ones
+ * `%efedit`'s own live-tune controls (getParticleLiveTemplate/
+ * setParticleLiveValues) actually edit. A real `.spt` path in `info` can
+ * have no matching entry here at all (particle test off, or still
+ * mid-load) - the UI falls back to read-only display for that case.
+ */
+export interface EffectSocketInspection {
+  info: SocketDebugInfo;
+  liveEffects: { sptPath: string; effect: ParticleEffect }[];
 }
 
 /**
@@ -185,6 +261,58 @@ export class CharacterController {
   /** weaponItem.json's Grade-driven Chef/GradeEffect/ cosmetic overlay (see gradeEffect.ts) - only ever populated for ModelType.Weapon (no other item file carries a Grade field), same disposal/lifecycle reasoning as equippedGlowOverlays above. */
   private equippedGradeOverlays: Partial<Record<ModelType, GradeOverlay>> = {};
 
+  /** Per-socket glow billboards (see glowEffect.ts's buildSocketGlow) - weapon-only (no other slot has "effectN" attachment sockets), and mutually exclusive with equippedGlowOverlays[Weapon]: applyGlowOverlay uses this instead of the whole-mesh-surface aura whenever the equipped weapon actually has sockets, falling back to the whole-mesh path otherwise. */
+  private equippedSocketGlow: SocketGlow | null = null;
+
+  /**
+   * Debug/test-only (WeaponEditPanel's upgrade-level dropdown - see
+   * setDebugWeaponUpgradeLevel): simulates weaponItem.json's real
+   * per-item upgrade level (+0..+7, not tracked anywhere else in this
+   * project - every other equip path implicitly assumes +0), which
+   * PatternList.txt uses to pick a different .eff for the same item (see
+   * glowEffect.ts's patternColumnForUpgradeLevel). 0 (the default) behaves
+   * identically to every code path that doesn't know this exists.
+   */
+  private debugWeaponUpgradeLevel = 0;
+
+  /**
+   * The currently-equipped item's REAL particle set, per slot (see
+   * particleSystem.ts's ParticleEffect) - one instance per (socket,
+   * .spt path) pair resolved by glowEffect.ts's resolveWeaponParticles,
+   * which reads each `.eff` section's own ParticleID1/2/3 fields and
+   * looks each up in `Chef/Particle.ini` to get a real path (confirmed
+   * end-to-end: `Unick_TSWORDlv1.EFF`'s "EFFECT1"-labeled section
+   * resolves to `Chef/Unick_up/C_W_TSWORD/400p.spt`, the exact file this
+   * project had previously been hardcoding here as an unconfirmed guess -
+   * see docs/rf-format-notes.md). Not weapon-only: cloaks carry the exact
+   * same mechanism (confirmed on the "Premium Booster"/"Blood Booster"
+   * cloak's own real `.eff`, `Chef/Eff/Armor/BELMALE_A_CLOAK.EFF`, whose
+   * particle-bearing sections are labeled "BALL00".."BALL03"/"P03" - a
+   * *third* socket-naming convention alongside weapons' "effectN"/"P0N",
+   * which is why particle-socket candidates for this map are every one of
+   * the slot's own equipped sub-objects (see spawnSlotParticles), not
+   * either weapon-specific name filter). An item with no registered
+   * particle data at all (most items) just leaves its slot unset here -
+   * not every item has one, same as glow.
+   */
+  private slotParticles: Partial<Record<ModelType, ParticleEffect[]>> = {};
+  /** Which socket + resolved .spt path each entry in slotParticles came from - side bookkeeping `spawnSlotParticles` fills in alongside `slotParticles` itself, purely so `%efedit`'s per-socket inspector (getSocketParticleEffects) can find "the effect(s) currently running for socket X" without slotParticles itself needing to change shape (it's iterated elsewhere - setDebugSocketParticleScale, updateDebugSocketParticle - as a flat per-slot array, which stays simplest for those). Cleared alongside its effect in disposeSlotParticles. */
+  private particleEffectMeta = new Map<ParticleEffect, { socket: Object3D; sptPath: string }>();
+  /** Live-tunable via setDebugSocketParticleScale - see DEBUG_SOCKET_PARTICLE_SCALE's own doc comment on why 1 (no scaling) is the actual derived value, not just a starting guess. */
+  private debugSocketParticleScale = DEBUG_SOCKET_PARTICLE_SCALE;
+  /**
+   * User intent, separate from slotParticles' own on/off state - defaults
+   * to true so an item's real particle set is visible out of the box
+   * instead of needing "%particletest 1" typed every session. equipWeapon/
+   * equipCloak each re-check this after building their new item's own
+   * objects so the effect follows whatever's currently equipped
+   * automatically instead of only attaching once. Only
+   * setDebugSocketParticleEnabled's own explicit `enabled` argument
+   * (RfViewer's %particletest command) changes this - re-equipping never
+   * does.
+   */
+  private debugSocketParticleWanted = true;
+
   /**
    * Which of the 5 pre-made DEFAULT_{PART}_00{0-4} variants each base slot
    * (see ALL_MODEL_TYPES) uses when nothing's equipped there - the
@@ -261,6 +389,8 @@ export class CharacterController {
   private readonly lookMatrix = new Matrix4();
   private readonly lookTargetQuat = new Quaternion();
   private readonly worldYawQuat = new Quaternion();
+  /** Reused every frame by updateSocketGlowBillboards rather than allocated per socket per frame - same reasoning as this class's other scratch fields. */
+  private readonly socketGlowParentWorldQuat = new Quaternion();
 
   constructor(
     private readonly scene: Scene,
@@ -334,6 +464,12 @@ export class CharacterController {
               },
             }
           : null,
+      effectSockets: {
+        socketCount: this.getEquippedWeaponEffectSockets().length,
+        socketsWithGlow: this.equippedSocketGlow?.objects.length ?? 0,
+      },
+      particleSocketCount: this.getEquippedWeaponParticleSockets().length,
+      particlesSpawned: this.slotParticles[ModelType.Weapon]?.length ?? 0,
     };
   }
 
@@ -360,6 +496,96 @@ export class CharacterController {
   /** The currently-equipped weapon's rendered rigid part (e.g. "W00" - see buildObjectsFromParsedMesh), or null when unarmed. Every real weapon checked so far resolves to exactly one non-empty sub-object, so the first is returned; a weapon with more than one visible part would only expose the first here. Debug-only (the %wpedit gizmo attaches to this directly - its .position/.quaternion already ARE the local offset from the bone it's rigidly parented to, the same values the placement math in character.ts computes). */
   getEquippedWeaponObject(): Object3D | null {
     return this.equippedObjects[ModelType.Weapon]?.[0] ?? null;
+  }
+
+  /**
+   * Named "effectN" dummy pivot sub-objects on the currently-equipped
+   * weapon's own .msh (e.g. "effect1"/"effect2" on COM_WEAPON_TMACE_156,
+   * confirmed by parsing the real file) - one of two coexisting attachment-
+   * socket naming conventions a real `.eff` section's own label
+   * (EffSection.socketLabel) can name-match against (see
+   * getEquippedWeaponParticleSockets for the other, "P0N"). Both glow
+   * sections (buildSocketGlow) and particle-bearing sections
+   * (resolveWeaponParticles) target sockets from either convention by
+   * name - "effectN" is not glow-only, confirmed on a real weapon
+   * (`Unick_DAXElv7.EFF`'s own particle-bearing sections are labeled
+   * "EFFECT1"/"EFFECT3", not "P0N"). Empty (0-vertex) Object3D nodes,
+   * already correctly positioned/parented by buildObjectsFromParsedMesh -
+   * equippedObjects already holds every sub-object flat (not just visible
+   * ones), so this is just a name filter, nothing to compute. Debug-only
+   * (the %efedit visual markers - see ViewerScene.setEffectEditEnabled -
+   * attach directly to whatever this returns).
+   */
+  getEquippedWeaponEffectSockets(): Object3D[] {
+    return (this.equippedObjects[ModelType.Weapon] ?? []).filter((obj) => /^effect\d*$/i.test(obj.name));
+  }
+
+  /**
+   * Named "P0N" dummy pivot sub-objects on the currently-equipped
+   * weapon's own .msh (e.g. "P01".."P04" on COM_WEAPON_TSWORD_003,
+   * confirmed by parsing the real file, alongside that same weapon's own
+   * "effect1"/"effect2" - the two naming conventions coexist, not one
+   * replacing the other) - found by inspecting a real weapon mesh
+   * directly in Blender. Not exclusively for particles, and not every
+   * weapon has these (confirmed absent on COM_WEAPON_DSWORD_200/
+   * COM_WEAPON_TMACE_156, which only have "effectN") - see
+   * getEquippedWeaponEffectSockets's own doc comment on why a real
+   * `.eff` section can target either convention by name regardless of
+   * whether it carries a glow texture, particle ids, or both. Same "just
+   * a name filter, already-built and correctly placed" reasoning as
+   * getEquippedWeaponEffectSockets.
+   */
+  getEquippedWeaponParticleSockets(): Object3D[] {
+    return (this.equippedObjects[ModelType.Weapon] ?? []).filter((obj) => /^p\d+$/i.test(obj.name));
+  }
+
+  /**
+   * Debug-only: everything real about one specific weapon socket - which
+   * `.eff` section(s) explicitly target it by name, their glow/surface
+   * texture names, and every real `.spt` particle path they resolve to,
+   * each further resolved down to its own real material (`.mst` or
+   * `.r3m`/`.r3t`) and texture filename (see glowEffect.ts's
+   * describeSocketEffect / particleSystem.ts's describeParticleEntity for
+   * how each half is gathered). Built for `%efedit`'s per-socket click
+   * inspector (ViewerScene) - null while unarmed, since there's no
+   * `.eff` chain to resolve at all without an equipped weapon.
+   */
+  async getSocketDebugInfo(socket: Object3D): Promise<SocketDebugInfo | null> {
+    const item = this.currentWeaponItem;
+    if (!item) return null;
+
+    const effInfo = await describeSocketEffect(item.model, socket.name, this.debugWeaponUpgradeLevel);
+    const particles = await Promise.all(
+      effInfo.particlePaths.map(async (sptPath) => ({ sptPath, entity: await describeParticleEntity(sptPath) })),
+    );
+
+    return { ...effInfo, particles };
+  }
+
+  /**
+   * Every currently-running `ParticleEffect` actually attached to one
+   * specific socket right now (see particleEffectMeta's own doc comment)
+   * - not the same thing as getSocketDebugInfo's own `particles` list,
+   * which reports what *should* resolve from the `.eff`/`Particle.ini`
+   * chain regardless of whether anything is actually spawned (e.g.
+   * `%particletest` turned off, or still mid-load). Used by `%efedit`'s
+   * inspector panel to find the live `ParticleEffect` instance(s) a
+   * displayed `.spt` path's live-tune controls should actually edit - the
+   * panel reads each one's current values directly via its own public
+   * `getLiveTemplate()` (see setParticleLiveValues below for the write
+   * side).
+   */
+  getSocketParticleEffects(socket: Object3D): { sptPath: string; effect: ParticleEffect }[] {
+    const result: { sptPath: string; effect: ParticleEffect }[] = [];
+    for (const [effect, meta] of this.particleEffectMeta) {
+      if (meta.socket === socket) result.push({ sptPath: meta.sptPath, effect });
+    }
+    return result;
+  }
+
+  /** Live-tunes one running particle effect's own template values in place - see ParticleEffect.setLiveValues for what rebuilding on every change actually means for the fields involved. Built for `%efedit`'s inspector panel. */
+  setParticleLiveValues(effect: ParticleEffect, patch: Partial<ParticleLiveValues>): void {
+    effect.setLiveValues(patch);
   }
 
   /** Only fires onClipChange when the resolved desired clip actually changes, so continuous per-frame callers (the joystick) don't spam it every frame. */
@@ -429,6 +655,7 @@ export class CharacterController {
     if (glowOverlay) for (const obj of glowOverlay.objects) obj.visible = visible;
     const gradeOverlay = this.equippedGradeOverlays[ModelType.Weapon];
     if (gradeOverlay) for (const obj of gradeOverlay.objects) obj.visible = visible;
+    if (this.equippedSocketGlow) for (const obj of this.equippedSocketGlow.objects) obj.visible = visible;
   }
 
   private disposeGlowOverlayFor(modelType: ModelType): void {
@@ -436,6 +663,12 @@ export class CharacterController {
     if (!overlay) return;
     disposeGlowOverlay(overlay);
     delete this.equippedGlowOverlays[modelType];
+  }
+
+  private disposeSocketGlowForWeapon(): void {
+    if (!this.equippedSocketGlow) return;
+    disposeSocketGlow(this.equippedSocketGlow);
+    this.equippedSocketGlow = null;
   }
 
   private disposeGradeOverlayFor(modelType: ModelType): void {
@@ -456,6 +689,19 @@ export class CharacterController {
    * resolves (not just this.character, unlike other awaits in this class)
    * because a slot can be re-equipped again before this lands without the
    * character itself changing.
+   *
+   * For a weapon whose own .msh actually has "effectN" attachment sockets
+   * (see getEquippedWeaponEffectSockets/glowEffect.ts's buildSocketGlow),
+   * this renders one small glow billboard per socket instead of the usual
+   * whole-mesh-surface aura - a real multi-record .eff carries one
+   * independent glow per attachment point (confirmed on
+   * COM_WEAPON_TMACE_144_1.EFF), so smearing just the first one across the
+   * entire weapon surface (the old, and still the fallback, behavior) is
+   * the less accurate rendering whenever sockets are actually present.
+   * Falls through to the whole-mesh path if the weapon has no sockets, or
+   * the socket build came back empty despite the item having a registered
+   * effect (e.g. its .eff has sections but none carry a glowTexture at
+   * all - buildGlowOverlay would find that out itself below anyway).
    */
   private async applyGlowOverlay(
     modelType: ModelType,
@@ -465,7 +711,26 @@ export class CharacterController {
   ): Promise<void> {
     if (!item) return; // defaults/unequips have no catalog entry to look up a glow effect for
 
-    const overlay = await buildGlowOverlay(item.model, sourceObjects);
+    const upgradeLevel = modelType === ModelType.Weapon ? this.debugWeaponUpgradeLevel : 0;
+
+    if (modelType === ModelType.Weapon) {
+      const sockets = this.getEquippedWeaponEffectSockets();
+      if (sockets.length > 0) {
+        const socketGlow = await buildSocketGlow(item.model, sockets, upgradeLevel);
+        if (this.character !== character || this.equippedObjects[modelType] !== sourceObjects) {
+          disposeSocketGlow(socketGlow); // superseded mid-await - character swapped, or this slot got equipped again
+          return;
+        }
+        if (socketGlow.objects.length > 0) {
+          this.equippedSocketGlow = socketGlow;
+          this.applyWeaponVisibility();
+          return; // handled per-socket - skip the whole-mesh-surface aura below entirely
+        }
+        disposeSocketGlow(socketGlow); // built but empty - fall through to the whole-mesh path
+      }
+    }
+
+    const overlay = await buildGlowOverlay(item.model, sourceObjects, upgradeLevel);
     if (this.character !== character || this.equippedObjects[modelType] !== sourceObjects) {
       disposeGlowOverlay(overlay); // superseded mid-await - character swapped, or this slot got equipped again
       return;
@@ -474,6 +739,42 @@ export class CharacterController {
 
     this.equippedGlowOverlays[modelType] = overlay;
     if (modelType === ModelType.Weapon) this.applyWeaponVisibility();
+  }
+
+  /**
+   * Per-frame upkeep for every currently-active per-socket glow billboard
+   * (see glowEffect.ts's buildSocketGlow): rotates each one to face the
+   * camera (the same billboarding concept particleSystem.ts's ParticleEffect
+   * already uses) and advances its UV scroll for whichever ones came from a
+   * movementMode-2 (scrolling) section - the same exponential speed-byte
+   * decode updateGlowAnimation already uses for the whole-mesh path, so a
+   * socket glow that scrolls doesn't read as flatter/less alive than one
+   * that would have gotten the old whole-mesh treatment. Each billboard is
+   * nested under its socket (itself nested under the weapon's own
+   * rigid-attach hierarchy, ultimately under an animated bone), so its
+   * *local* billboard quaternion has to be computed from the parent's
+   * current *world* quaternion, not just copied from the camera directly -
+   * copying the camera's world quaternion straight into a local one would
+   * only look right if the parent chain had zero net rotation, which it
+   * never does once the character's animating. No-op (and cheap) when
+   * unarmed or the weapon has no socket glow.
+   */
+  updateSocketGlowBillboards(camera: Camera, delta: number): void {
+    const glow = this.equippedSocketGlow;
+    if (!glow) return;
+    for (let i = 0; i < glow.objects.length; i++) {
+      const obj = glow.objects[i];
+      if (!obj.parent) continue;
+      obj.parent.getWorldQuaternion(this.socketGlowParentWorldQuat);
+      obj.quaternion.copy(this.socketGlowParentWorldQuat).invert().multiply(camera.quaternion);
+
+      const speedByte = glow.speedBytes[i];
+      if (speedByte === null) continue;
+      const texture = (obj.material as MeshBasicMaterial).map;
+      if (!texture) continue;
+      const speedFactor = 2 ** (speedByte - GLOW_SPEED_BASE_BYTE);
+      texture.offset.x = (texture.offset.x + speedFactor * GLOW_SCROLL_UV_PER_SEC * delta) % 1;
+    }
   }
 
   /**
@@ -514,9 +815,9 @@ export class CharacterController {
    * already been detached and is about to be garbage collected, which is
    * harmless.
    */
-  private async applySurfaceShineFor(item: ItemDefinition | null, sourceObjects: Object3D[]): Promise<void> {
+  private async applySurfaceShineFor(item: ItemDefinition | null, sourceObjects: Object3D[], upgradeLevel = 0): Promise<void> {
     if (!item) return; // defaults/unequips have no catalog entry to look up an effect for
-    await applySurfaceShine(item.model, sourceObjects);
+    await applySurfaceShine(item.model, sourceObjects, upgradeLevel);
   }
 
   /** Advances every currently-active scrolling glow texture (movementMode 2 - see glowEffect.ts) by one frame. */
@@ -663,6 +964,152 @@ export class CharacterController {
    */
   setDebugBoosterEnabled(enabled: boolean): void {
     this.isBoosterEquipped = enabled;
+  }
+
+  getDebugWeaponUpgradeLevel(): number {
+    return this.debugWeaponUpgradeLevel;
+  }
+
+  /**
+   * Debug/test-only (WeaponEditPanel's upgrade-level dropdown): simulates
+   * a different +N upgrade level for the currently-equipped weapon's Chef/
+   * effect resolution (see debugWeaponUpgradeLevel's own doc comment),
+   * then fully re-equips it so glow/socket-glow/surface-shine all rebuild
+   * fresh against the new level - simpler and more correct than trying to
+   * patch the existing overlays/materials in place (applySurfaceShine in
+   * particular only ever applies a matcap, never reverts one, so leaving
+   * the old materials around risks a stale effect surviving a level that
+   * no longer has one). No-op while unarmed.
+   */
+  setDebugWeaponUpgradeLevel(level: number): void {
+    this.debugWeaponUpgradeLevel = level;
+    if (this.currentWeaponItem) void this.equipWeapon(this.currentWeaponItem);
+  }
+
+  /** Tears down every currently-spawned particle for one slot (see slotParticles' own doc comment) - ParticleEffect.dispose() only touches its own per-instance materials, never the shared cached R3E geometry, so this is always safe to call independently of that slot's own item mesh lifecycle. No-op if that slot has none spawned. */
+  private disposeSlotParticles(modelType: ModelType): void {
+    const list = this.slotParticles[modelType];
+    if (!list) return;
+    for (const effect of list) {
+      effect.dispose();
+      this.particleEffectMeta.delete(effect);
+    }
+    delete this.slotParticles[modelType];
+  }
+
+  /**
+   * Resolves and spawns one slot's REAL particle set (see glowEffect.ts's
+   * resolveWeaponParticles/EffSection.particleIds for how this was
+   * confirmed) - fire-and-forget, called from trySpawnSlotParticles once
+   * an item is known to be equipped there. `sourceObjects` (that slot's
+   * own `equippedObjects` entry) doubles as the *candidate socket list*
+   * passed straight to resolveWeaponParticles, unfiltered by any naming
+   * convention - deliberate, not a shortcut: weapons use "effectN"/"P0N"
+   * sockets but cloaks use a third, different convention entirely
+   * ("BALL00".."BALL03"/"P03", confirmed on `Chef/Eff/Armor/
+   * BELMALE_A_CLOAK.EFF`), and resolveWeaponParticles's own name-matching
+   * (EffSection.socketLabel against Object3D.name) already does the real
+   * filtering - every real particle-bearing section checked so far
+   * (weapon and cloak alike) carries an exact label, so passing every
+   * sub-object through costs nothing extra. Same staleness-check pattern
+   * as applyGlowOverlay: discards its result silently if the character
+   * was swapped, this slot got re-equipped, or the caller turned this
+   * back off again, all before the (two-step: .eff file, then
+   * Particle.ini) resolution finished.
+   */
+  private async spawnSlotParticles(modelType: ModelType, item: ItemDefinition, character: RfCharacter, sourceObjects: Object3D[], upgradeLevel: number): Promise<void> {
+    const spawns = await resolveWeaponParticles(item.model, sourceObjects, upgradeLevel);
+    if (this.character !== character || this.equippedObjects[modelType] !== sourceObjects || !this.debugSocketParticleWanted) {
+      return;
+    }
+
+    const list = this.slotParticles[modelType] ?? [];
+    this.slotParticles[modelType] = list;
+    for (const { socket, sptPath } of spawns) {
+      const effect = new ParticleEffect();
+      // No extra scale needed - a .spt's own position/drift units share
+      // the same raw coordinate space as the .msh mesh/socket they're
+      // attached to (see DEBUG_SOCKET_PARTICLE_SCALE's own doc comment
+      // for the real, measured evidence) - still exposed live via
+      // setDebugSocketParticleScale for any case that reasoning misses.
+      effect.group.scale.setScalar(this.debugSocketParticleScale);
+      socket.add(effect.group);
+      list.push(effect);
+      this.particleEffectMeta.set(effect, { socket, sptPath });
+      void effect.load(sptPath);
+    }
+  }
+
+  /** Kicks off spawnSlotParticles for one slot if it isn't already running and there's an equipped item with a real object list to search - skips silently (returns false) for an empty/unarmed slot. Shared by setDebugSocketParticleEnabled(true) and the equip-time "follow the newly-equipped item" hook in equipWeapon/equipCloak. */
+  private trySpawnSlotParticles(modelType: ModelType, item: ItemDefinition | null, upgradeLevel: number): boolean {
+    if ((this.slotParticles[modelType]?.length ?? 0) > 0) return true; // already on
+    const character = this.character;
+    const sourceObjects = this.equippedObjects[modelType];
+    if (!character || !item || !sourceObjects || sourceObjects.length === 0) return false;
+
+    void this.spawnSlotParticles(modelType, item, character, sourceObjects, upgradeLevel);
+    return true;
+  }
+
+  /**
+   * Toggle for every equipped slot's real, `.eff`/`Particle.ini`-driven
+   * particle set (see spawnSlotParticles/resolveWeaponParticles) - no
+   * longer a hardcoded, weapon-only stand-in (see slotParticles/
+   * debugSocketParticleWanted's own doc comments on why this defaults to
+   * on and why it now covers Weapon and Cloak both). Returns true if
+   * either slot had (or now has) something to attach to, false only if
+   * neither Weapon nor Cloak is currently equipped with any object at
+   * all - so the caller (RfViewer's %particletest handler) can tell
+   * "turned on" from "nothing equipped to attach to" - this synchronous
+   * result doesn't reflect whether either item's `.eff` actually turns
+   * out to reference any real particle (resolved asynchronously
+   * afterward; an equipped item with no registered particle data just
+   * ends up spawning nothing, same as "no glow" elsewhere in this file).
+   * Turning it off (or re-equipping/unequipping either slot, which calls
+   * disposeSlotParticles directly) always tears every spawned instance in
+   * that slot down cleanly - ParticleEffect.dispose() only touches its
+   * own per-instance materials, never the shared cached R3E geometry, so
+   * this is safe to dispose independently of that slot's own item mesh
+   * lifecycle.
+   */
+  setDebugSocketParticleEnabled(enabled: boolean): boolean {
+    this.debugSocketParticleWanted = enabled;
+    if (!enabled) {
+      this.disposeSlotParticles(ModelType.Weapon);
+      this.disposeSlotParticles(ModelType.Cloak);
+      return true;
+    }
+
+    const weaponOk = this.trySpawnSlotParticles(ModelType.Weapon, this.currentWeaponItem, this.debugWeaponUpgradeLevel);
+    const cloakOk = this.trySpawnSlotParticles(ModelType.Cloak, this.currentBodyItem[ModelType.Cloak] ?? null, 0);
+    return weaponOk || cloakOk;
+  }
+
+  /**
+   * Debug/test-only (WeaponEditPanel or a %particlescale command):
+   * live-tunes every currently-spawned particle's scale, across every
+   * slot (see DEBUG_SOCKET_PARTICLE_SCALE's own doc comment on why the
+   * built-in default of 1 is the real, derived value, not a fudge factor
+   * to hand-tune away from) - takes effect immediately on whatever's
+   * already running, and is remembered for the next equip's own
+   * spawnSlotParticles call.
+   */
+  setDebugSocketParticleScale(scale: number): void {
+    this.debugSocketParticleScale = scale;
+    for (const list of Object.values(this.slotParticles)) {
+      for (const effect of list ?? []) effect.group.scale.setScalar(scale);
+    }
+  }
+
+  getDebugSocketParticleScale(): number {
+    return this.debugSocketParticleScale;
+  }
+
+  /** Per-frame upkeep for every currently-spawned particle, across every slot (see setDebugSocketParticleEnabled) - no-op and cheap when there are none. */
+  updateDebugSocketParticle(camera: Camera, delta: number): void {
+    for (const list of Object.values(this.slotParticles)) {
+      for (const effect of list ?? []) effect.update(delta, camera);
+    }
   }
 
   getIsFlying(): boolean {
@@ -890,6 +1337,14 @@ export class CharacterController {
     const previous = this.equippedObjects[ModelType.Weapon];
 
     if (!item) {
+      // Must run before `previous` is disposed below - each slotParticles
+      // [Weapon] entry's group is a genuine child of one of previous's own
+      // socket objects (see setDebugSocketParticleEnabled), so disposing
+      // `previous` first would sweep its mesh instances into
+      // disposeObject3D's traversal and corrupt their shared, cached R3E
+      // geometry (see disposeSlotParticles's own doc comment on why
+      // ParticleEffect needs its own, earlier, independent teardown here).
+      this.disposeSlotParticles(ModelType.Weapon);
       if (previous) {
         for (const obj of previous) {
           obj.parent?.remove(obj);
@@ -899,6 +1354,7 @@ export class CharacterController {
       }
       this.disposeGlowOverlayFor(ModelType.Weapon);
       this.disposeGradeOverlayFor(ModelType.Weapon);
+      this.disposeSocketGlowForWeapon();
       this.currentWeaponToken = null;
       this.currentWeaponItem = null;
       this.currentWeaponStem = null;
@@ -920,6 +1376,9 @@ export class CharacterController {
       if (this.character !== character) return 'no-character'; // superseded mid-await
     }
 
+    // Must run before `previous` is disposed below - see the `!item` branch
+    // above's identical comment on why.
+    this.disposeSlotParticles(ModelType.Weapon);
     if (previous) {
       for (const obj of previous) {
         obj.parent?.remove(obj);
@@ -928,6 +1387,7 @@ export class CharacterController {
     }
     this.disposeGlowOverlayFor(ModelType.Weapon);
     this.disposeGradeOverlayFor(ModelType.Weapon);
+    this.disposeSocketGlowForWeapon();
 
     for (const obj of newObjects) {
       if (!obj.parent) character.group.add(obj);
@@ -938,7 +1398,12 @@ export class CharacterController {
     this.currentWeaponStem = weaponMesh.stem;
     void this.applyGlowOverlay(ModelType.Weapon, item, character, newObjects);
     void this.applyGradeOverlay(ModelType.Weapon, item, character, newObjects);
-    void this.applySurfaceShineFor(item, newObjects);
+    void this.applySurfaceShineFor(item, newObjects, this.debugWeaponUpgradeLevel);
+    // Re-attach to whichever real particle data the new weapon's own .eff
+    // offers - disposed above along with `previous`, so this is a fresh
+    // attach, not a resume. Silently does nothing if this weapon has no
+    // registered particle data.
+    if (this.debugSocketParticleWanted) this.trySpawnSlotParticles(ModelType.Weapon, item, this.debugWeaponUpgradeLevel);
 
     // Only actually visible in War mode - see setBattleMode. The combat
     // clips for this weapon were already prewarmed just above, regardless
@@ -969,6 +1434,12 @@ export class CharacterController {
 
     this.currentBodyItem[ModelType.Cloak] = item;
     const previous = this.equippedObjects[ModelType.Cloak];
+    // Must run before `previous` is disposed below (either branch, either
+    // sub-path - immediate or deferred via onUnuseFinished) - same
+    // reasoning as equipWeapon's identical ordering comment: each
+    // slotParticles[Cloak] entry's group is a genuine child of one of
+    // previous's own socket objects.
+    this.disposeSlotParticles(ModelType.Cloak);
 
     if (!item) {
       // A cloak with a sway rig and a real UNUSE clip gets to play its
@@ -1059,6 +1530,13 @@ export class CharacterController {
     void this.applyGlowOverlay(ModelType.Cloak, item, character, newObjects);
     void this.applySurfaceShineFor(item, newObjects);
     void this.applyCloakAnimation(stem, character, newObjects);
+    // Re-attach to whichever real particle data the new cloak's own .eff
+    // offers - disposed above along with `previous`, so this is a fresh
+    // attach, not a resume. Silently does nothing if this cloak has no
+    // registered particle data (most cloaks - confirmed present on the
+    // "Premium Booster"/"Blood Booster" cloaks at least, see
+    // slotParticles' own doc comment).
+    if (this.debugSocketParticleWanted) this.trySpawnSlotParticles(ModelType.Cloak, item, 0);
 
     return 'equipped';
   }
@@ -1149,6 +1627,12 @@ export class CharacterController {
    * differ per race, so that can't be baked in ahead of time).
    */
   async mount(character: RfCharacter, raceGender: RaceGender): Promise<CharacterBounds> {
+    // Must run before prevGroup is disposed below - same reasoning as
+    // equipWeapon's own identical ordering comment (each slotParticles
+    // entry's group is a descendant of that slot's own socket, itself a
+    // descendant of prevGroup here).
+    this.disposeSlotParticles(ModelType.Weapon);
+    this.disposeSlotParticles(ModelType.Cloak);
     const prevGroup = this.character?.group;
     if (prevGroup) {
       this.scene.remove(prevGroup);
@@ -1177,6 +1661,7 @@ export class CharacterController {
     // update()/applyWeaponVisibility() stop iterating dangling entries.
     this.equippedGlowOverlays = {};
     this.equippedGradeOverlays = {};
+    this.equippedSocketGlow = null;
     // Same reasoning as equippedGlowOverlays above - the cloak rig plays
     // directly on the cloak's own objects, which are descendants of
     // prevGroup, already freed by disposeObject3D(prevGroup); this just
@@ -1209,6 +1694,7 @@ export class CharacterController {
     this.moveMode = 'walk';
     this.isBoosterEquipped = false;
     this.isFlying = false;
+    this.debugWeaponUpgradeLevel = 0;
     this.lastQuatByBone.clear();
     this.callbacks.onClipChange?.('stand');
     this.callbacks.onFrameLabelChange?.('');
@@ -1432,6 +1918,9 @@ export class CharacterController {
   }
 
   dispose(): void {
+    // Must run before `group` is disposed below - same reasoning as mount()'s identical ordering comment.
+    this.disposeSlotParticles(ModelType.Weapon);
+    this.disposeSlotParticles(ModelType.Cloak);
     const group = this.character?.group;
     if (group) {
       this.scene.remove(group);
@@ -1447,6 +1936,7 @@ export class CharacterController {
     this.departingCloakAnimations = [];
     this.equippedGlowOverlays = {};
     this.equippedGradeOverlays = {};
+    this.equippedSocketGlow = null;
     this.helmetBaseObjects = [];
     this.helmetBaseVariant = null;
   }

@@ -6,10 +6,10 @@
  * needs a real material rather than just a plain texture: every
  * `Chef/<effect>/<subfolder>/MainMaterial.mst` is a small index
  * (`*MATERIAL_NUM <n>` then `{ <name> <slotId> ... }`, one line per named
- * `.mst` sibling file - not parsed by this module, only the per-material
- * files it points at are) mapping material names to another `.mst` file in
- * the same folder that actually describes one or more numbered `layer { }`
- * blocks.
+ * `.mst` sibling file - see parseMaterialIndex) mapping a material slot id
+ * (an `.R3E` MatGroup's own `materialId` - see r3e.ts) to another `.mst`
+ * file in the same folder that actually describes one or more numbered
+ * `layer { }` blocks.
  *
  * `Chef/GradeEffect/{A,B,C,D}grade.mst` (see docs/rf-format-notes.md's
  * weapon-grade-overlay section) are the simplest real case: no
@@ -197,4 +197,36 @@ export function parseMaterialScript(text: string): MaterialScript {
   commitLayer();
 
   return script;
+}
+
+export interface MaterialIndexEntry {
+  /** The sibling `.mst` file's own base name (no `.mst` extension) - fetch `<name>.mst` in the same folder and parseMaterialScript it for the actual layer data. */
+  name: string;
+  /** Matches an `.R3E` MatGroup's `materialId` (see r3e.ts). */
+  slot: number;
+}
+
+/**
+ * Parses a `MainMaterial.mst` index file - `*MATERIAL_NUM <n>` (informational
+ * only, not needed to parse the rest - every real line inside `{ }` is read
+ * regardless of what this says) then `{ <name> <slot>` pairs, one per line,
+ * `}`. Confirmed real shape (`Chef/Unick_up/C_W_TSWORD/400p/MainMaterial.mst`):
+ * ```
+ * *MATERIAL_NUM 1
+ * {
+ * 1_-_Default_0	0
+ * }
+ * ```
+ */
+export function parseMaterialIndex(text: string): MaterialIndexEntry[] {
+  const entries: MaterialIndexEntry[] = [];
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = stripComment(rawLine);
+    if (!line || line.startsWith('*') || line === '{' || line === '}') continue;
+    const tokens = line.split(/\s+/);
+    if (tokens.length < 2) continue;
+    const slot = Number.parseInt(tokens[1], 10);
+    if (Number.isFinite(slot)) entries.push({ name: tokens[0], slot });
+  }
+  return entries;
 }

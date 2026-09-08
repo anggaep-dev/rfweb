@@ -1,7 +1,7 @@
 import { Vector3 } from 'three';
-import type { Scene } from 'three';
+import type { Camera, Scene } from 'three';
 import { RaceGender, loadCharacter } from '../rf/character';
-import { ALL_MODEL_TYPES, loadUsableSlotItems } from '../rf/items';
+import { ALL_EQUIP_SLOTS, ModelType, loadUsableSlotItems } from '../rf/items';
 import { CharacterController } from './CharacterController';
 
 /** Hard cap on spawnBots()'s count, so a typo (or "%addbot 99999") can't try to load/equip thousands of characters at once. */
@@ -43,6 +43,25 @@ interface Bot {
   pauseRemaining: number;
 }
 
+export interface SpawnBotOptions {
+  /**
+   * Case-insensitive substring match against a weapon item's own `name`
+   * (not required to be the full/exact name - "crimson" matches both
+   * "Crimson Eater" and every "Crimson [Hora] <Type>[Rare D]" item) -
+   * forces every bot's weapon slot to a random race-eligible item
+   * matching this filter instead of the normal random-per-slot equip
+   * chance, so a specific real weapon family can be stress-tested (e.g.
+   * "%addbot 5 crimson 7" - see ViewerScene.runCommand) without equipping
+   * one bot at a time by hand. A bot whose own race has no matching item
+   * (Civil eligibility can differ per item) just ends up unarmed for this
+   * slot, same graceful-miss handling as the normal random equip path
+   * below.
+   */
+  weaponNameFilter?: string;
+  /** Simulated +N upgrade level (see CharacterController.setDebugWeaponUpgradeLevel) - applied to whichever weapon a bot actually ends up with, whether or not weaponNameFilter forced a specific one. */
+  weaponUpgradeLevel?: number;
+}
+
 function pickWanderTarget(home: Vector3): Vector3 {
   const angle = Math.random() * Math.PI * 2;
   const radius = BOT_WANDER_MIN_RADIUS + Math.random() * (BOT_WANDER_MAX_RADIUS - BOT_WANDER_MIN_RADIUS);
@@ -56,7 +75,9 @@ function randomWanderPause(): number {
 /**
  * Owns GM-command bots: independent CharacterControllers, each with a
  * randomly picked race and (with some probability, for visual variety) a
- * randomly picked race-eligible item per slot, that wander around their
+ * randomly picked race-eligible item per slot, spawned in War mode (see
+ * spawnBots) so an equipped weapon actually shows rather than sitting
+ * hidden the way Peace mode always renders it, that wander around their
  * spawn point on their own independent timing. Loaded via loadCharacter()
  * directly rather than AssetController.loadRace() - that method's
  * generation counter is specifically for "supersede a stale switch of *the*
@@ -77,9 +98,10 @@ export class BotController {
     return this.bots.length;
   }
 
-  /** Spawns up to MAX_ADDBOT_COUNT bots, clamped and floored to at least 1. Returns how many were actually added (a bot whose load/mount fails is skipped). */
-  async spawnBots(requestedCount: number): Promise<number> {
+  /** Spawns up to MAX_ADDBOT_COUNT bots, clamped and floored to at least 1. Returns how many were actually added (a bot whose load/mount fails is skipped). See SpawnBotOptions for the optional weapon-filter/upgrade-level stress-testing hooks - omitted or empty, every slot (weapon included) just gets the normal random-per-slot equip roll. */
+  async spawnBots(requestedCount: number, options?: SpawnBotOptions): Promise<number> {
     const count = Number.isFinite(requestedCount) ? Math.min(Math.max(Math.floor(requestedCount), 1), MAX_ADDBOT_COUNT) : 1;
+    const weaponNameFilter = options?.weaponNameFilter?.toLowerCase();
     let added = 0;
     for (let i = 0; i < count; i++) {
       if (this.disposed) return added;
@@ -100,14 +122,40 @@ export class BotController {
         controller.dispose();
         return added;
       }
+      // War mode, not the default Peace - a bot's whole point here is
+      // visual/stress testing (see SpawnBotOptions), and Peace hides the
+      // weapon mesh entirely (see CharacterController.applyWeaponVisibility)
+      // regardless of what actually got equipped below, which defeated
+      // every purpose an equipped bot serves.
+      controller.setBattleMode('war');
 
-      for (const modelType of ALL_MODEL_TYPES) {
-        if (Math.random() >= BOT_RANDOM_EQUIP_CHANCE) continue;
+      for (const modelType of ALL_EQUIP_SLOTS) {
+        // ALL_EQUIP_SLOTS, not items.ts's own ALL_MODEL_TYPES - that name
+        // is misleading (it's only the *body* slots: Helmet/Face/Upper/
+        // Lower/Gauntlet/Shoes, deliberately excluding Weapon/Cloak - see
+        // its own doc comment) - using it here silently meant a bot could
+        // never equip a weapon or cloak at all, regardless of
+        // BOT_RANDOM_EQUIP_CHANCE or any weaponNameFilter, a real bug this
+        // project had from before weaponNameFilter/weaponUpgradeLevel even
+        // existed (reported as "bot only walking... i cannot see the
+        // weapon" - the actual cause wasn't War-mode visibility, it was
+        // that no weapon was ever being equipped in the first place).
+        //
+        // A forced weapon filter always attempts that slot, bypassing the
+        // normal random chance below - every other slot (and the weapon
+        // slot too, when no filter is given) keeps the usual roll.
+        const isForcedWeapon = modelType === ModelType.Weapon && weaponNameFilter;
+        if (!isForcedWeapon && Math.random() >= BOT_RANDOM_EQUIP_CHANCE) continue;
+
         try {
           const items = await loadUsableSlotItems(modelType, race);
-          if (items.length === 0) continue;
-          const item = items[Math.floor(Math.random() * items.length)];
+          const candidates = isForcedWeapon ? items.filter((item) => item.name.toLowerCase().includes(weaponNameFilter)) : items;
+          if (candidates.length === 0) continue;
+          const item = candidates[Math.floor(Math.random() * candidates.length)];
           await controller.equipItem(modelType, item);
+          if (modelType === ModelType.Weapon && options?.weaponUpgradeLevel !== undefined) {
+            controller.setDebugWeaponUpgradeLevel(options.weaponUpgradeLevel);
+          }
         } catch (err) {
           console.warn('Bot equip failed:', err);
         }
@@ -139,9 +187,22 @@ export class BotController {
     return removed;
   }
 
-  update(delta: number): void {
+  /**
+   * `camera` is only needed for each bot's own socket-glow billboards and
+   * weapon particles (both need to face the camera - see
+   * CharacterController.updateSocketGlowBillboards/
+   * updateDebugSocketParticle's own doc comments) - without calling these
+   * here too, a bot's weapon particle/glow renders once at spawn and then
+   * visibly freezes forever (reported directly: "particle is visible but
+   * not animated on bot"), since ViewerScene.update() only ever drove
+   * these for its own player-facing `characterController`, never for any
+   * bot's own independent one.
+   */
+  update(delta: number, camera: Camera): void {
     for (const bot of this.bots) {
       bot.controller.update(delta);
+      bot.controller.updateSocketGlowBillboards(camera, delta);
+      bot.controller.updateDebugSocketParticle(camera, delta);
       // Re-issue the same "walk here" command a player click would, once
       // the bot isn't mid-hop *and* has waited out its own random pause -
       // covers "just arrived" (isMoving() flips false the instant update()

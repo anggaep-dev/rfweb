@@ -21,6 +21,34 @@
  *   the viewer vs. a real 3D shape like `shield_ntt.R3E` that shouldn't)
  *   and `free` (seen only commented-out in every real file so far -
  *   parsed and exposed, but its effect is unconfirmed).
+ * - Two more real keys, confirmed on a genuine weapon-aura template
+ *   (`Chef/Unick_up/C_W_TSWORD/400p.spt`, found while investigating why
+ *   this project's own flat billboard glow didn't match the real client's
+ *   look - see ParticleEffect.load): `start_power` (an initial per-axis
+ *   launch velocity, `rand()`-able like any other field - see
+ *   ParticleTemplate.startPower's own doc comment on how this project
+ *   models it) and `creat_time_epsilon` (a per-instance spawn-time
+ *   stagger in seconds, so a multi-instance template reads as a
+ *   continuous stream rather than every copy pulsing in lockstep).
+ * - `create_time_epsilon` (correctly spelled) is a real, common alternate
+ *   spelling of `creat_time_epsilon` above - confirmed on 25 real files
+ *   that use it instead. Both are accepted as the same key; missing this
+ *   silently dropped those 25 files' spawn-stagger entirely (each
+ *   instance pulsed in lockstep instead of streaming).
+ * - `power x y z`, `xrot <n>`, `yrot <n>` are real per-keyframe fields
+ *   (inside a `time <t> { ... }` block, alongside the already-modeled
+ *   `alpha`/`zrot`/`scale`/`color`) - confirmed on real files (`Chef/
+ *   55LV_SHIELD/BC_A_LSHIELD_169/fire.spt` has both `start_power`/
+ *   `start_zrot` at the template level *and* `power`/`yrot` changing at
+ *   each keyframe). `power` is `start_power`'s per-keyframe counterpart -
+ *   the drift velocity used for that portion of the particle's life, not
+ *   a one-time launch value (see particleSystem.ts's ResolvedKeyframe/
+ *   sampleKeyframes for how this project integrates a value that changes
+ *   over time rather than just interpolating it directly like alpha/
+ *   scale/color). `xrot`/`yrot` are `zrot`'s counterparts on the other
+ *   two axes - `start_yrot` is confirmed real at the template level too
+ *   (`Chef/50LV_WEAPON/791p.spt`); no real file uses `start_xrot`, but
+ *   it's accepted defensively the same way `start_yrot` is.
  */
 
 export interface NumberOrRange {
@@ -42,8 +70,12 @@ export interface ParticleKeyframe {
   time: number;
   alpha?: NumberOrRange;
   zrot?: NumberOrRange;
+  xrot?: NumberOrRange;
+  yrot?: NumberOrRange;
   color?: [number, number, number];
   scale?: NumberOrRange;
+  /** `power x y z` - this keyframe's own drift velocity, replacing whichever value (startPower, or an earlier keyframe's own power) was in effect before it - see the module doc comment and particleSystem.ts's ResolvedKeyframe for how this differs from the other (directly-interpolated) keyframe fields. */
+  power?: [NumberOrRange, NumberOrRange, NumberOrRange];
 }
 
 export interface ParticleTemplate {
@@ -55,17 +87,25 @@ export interface ParticleTemplate {
   /** Loop duration in seconds, before `timeSpeed` scaling - see resolveNumberOrRange's caller for how this combines with timeSpeed. */
   liveTime: number;
   timeSpeed: number;
-  /** Constant per-second position drift applied over a particle's life (see the format doc - there's no separate initial-velocity field, so this is the only source of motion). */
+  /** Constant per-second position drift applied over a particle's life (see the format doc). */
   gravity: [number, number, number];
+  /** A second, independent constant per-second position drift, added alongside gravity (see the format doc's own note on why this project doesn't distinguish "initial velocity" from "ongoing force" - both are the same simple linear-in-age model here) - confirmed real on a real weapon aura template (`Chef/Unick_up/C_W_TSWORD/400p.spt`'s "start_power 2 0 0"), each axis independently rand()-able same as any other field. Defaults to zero for the common case of a template that doesn't set it. */
+  startPower: [NumberOrRange, NumberOrRange, NumberOrRange];
   startScale: NumberOrRange;
   startColor: [number, number, number];
   startAlpha: NumberOrRange;
   startZRot: NumberOrRange;
+  /** `start_yrot` - confirmed real (`Chef/50LV_WEAPON/791p.spt`), same shape as startZRot. Defaults to zero. */
+  startYRot: NumberOrRange;
+  /** `start_xrot` - never seen set in a real file, but accepted defensively the same way startYRot is (see the module doc comment). Defaults to zero. */
+  startXRot: NumberOrRange;
   alphaType: number;
   zFront: number;
   /** True unless `no_billboard` is present - see the module doc comment. */
   billboard: boolean;
   free: boolean;
+  /** Per-instance random spawn-time *jitter*, in seconds (`creat_time_epsilon`) - each instance rolls its own `rand(0, createTimeEpsilon)` offset once at spawn, added on top of an even `i/num * liveTime` baseline stagger every multi-instance template gets regardless of this value (see particleSystem.ts's ParticleEffect) - together these keep a multi-instance template reading as a continuous staggered stream instead of every copy pulsing through the exact same keyframe curve in lockstep and visibly snapping back together at the end of each loop. The baseline alone already fixes that for a template with no epsilon at all (confirmed real and common: `Chef/PVP_Item/COM_WEAPON_TSPEAR_117/773p.spt`, `num 24`, no `creat_time_epsilon` key - reported as moving/pulsing as one synchronized blob instead of looking like continuous fire, exactly what zero stagger of any kind would produce). 0 (the default) means no *extra* jitter on top of the baseline, not "no staggering at all" - a template that does set a real epsilon (`400p.spt`'s own `creat_time_epsilon 5`, confirmed correct) simply gets both sources layered together. */
+  createTimeEpsilon: number;
   /** Sorted by time ascending. */
   keyframes: ParticleKeyframe[];
 }
@@ -91,6 +131,16 @@ function parseVec3(tokens: string[]): [number, number, number] | undefined {
   return parseColor(tokens);
 }
 
+/** Same shape as parseVec3, but each axis independently accepts `rand(min,max)` - needed for `power`/`start_power`, confirmed real on a mixed-axis line ("power 0.2 rand(-2,2) -5" - see the module doc comment). */
+function parseVec3OrRange(tokens: string[]): [NumberOrRange, NumberOrRange, NumberOrRange] | undefined {
+  if (tokens.length < 3) return undefined;
+  const x = parseNumberOrRange(tokens[0]);
+  const y = parseNumberOrRange(tokens[1]);
+  const z = parseNumberOrRange(tokens[2]);
+  if (!x || !y || !z) return undefined;
+  return [x, y, z];
+}
+
 /** Strips a `;` line comment (real files use it to disable keys in-place) and surrounding whitespace. */
 function stripComment(line: string): string {
   const commentIndex = line.indexOf(';');
@@ -105,14 +155,18 @@ export function parseParticleTemplate(text: string): ParticleTemplate {
     liveTime: 1,
     timeSpeed: 1,
     gravity: [0, 0, 0],
+    startPower: [fixedValue(0), fixedValue(0), fixedValue(0)],
     startScale: fixedValue(1),
     startColor: [255, 255, 255],
     startAlpha: fixedValue(255),
     startZRot: fixedValue(0),
+    startYRot: fixedValue(0),
+    startXRot: fixedValue(0),
     alphaType: 0,
     zFront: 0,
     billboard: true,
     free: false,
+    createTimeEpsilon: 0,
     keyframes: [],
   };
 
@@ -163,6 +217,17 @@ export function parseParticleTemplate(text: string): ParticleTemplate {
         if (v) template.gravity = v;
         continue;
       }
+      case 'start_power': {
+        const v = parseVec3OrRange(rest);
+        if (v) template.startPower = v;
+        continue;
+      }
+      case 'creat_time_epsilon':
+      case 'create_time_epsilon': {
+        const v = Number.parseFloat(rest[0]);
+        if (Number.isFinite(v)) template.createTimeEpsilon = v;
+        continue;
+      }
       case 'start_scale': {
         const v = parseNumberOrRange(rest[0]);
         if (v) template.startScale = v;
@@ -181,6 +246,16 @@ export function parseParticleTemplate(text: string): ParticleTemplate {
       case 'start_zrot': {
         const v = parseNumberOrRange(rest[0]);
         if (v) template.startZRot = v;
+        continue;
+      }
+      case 'start_yrot': {
+        const v = parseNumberOrRange(rest[0]);
+        if (v) template.startYRot = v;
+        continue;
+      }
+      case 'start_xrot': {
+        const v = parseNumberOrRange(rest[0]);
+        if (v) template.startXRot = v;
         continue;
       }
       case 'alpha_type':
@@ -209,6 +284,21 @@ export function parseParticleTemplate(text: string): ParticleTemplate {
       case 'zrot': {
         const v = parseNumberOrRange(rest[0]);
         if (v && currentKeyframe) currentKeyframe.zrot = v;
+        continue;
+      }
+      case 'xrot': {
+        const v = parseNumberOrRange(rest[0]);
+        if (v && currentKeyframe) currentKeyframe.xrot = v;
+        continue;
+      }
+      case 'yrot': {
+        const v = parseNumberOrRange(rest[0]);
+        if (v && currentKeyframe) currentKeyframe.yrot = v;
+        continue;
+      }
+      case 'power': {
+        const v = parseVec3OrRange(rest);
+        if (v && currentKeyframe) currentKeyframe.power = v;
         continue;
       }
       case 'scale': {
