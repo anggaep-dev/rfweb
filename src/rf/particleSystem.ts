@@ -1,4 +1,18 @@
-import { AdditiveBlending, BufferAttribute, BufferGeometry, Color, DoubleSide, Mesh, MeshBasicMaterial, Object3D, Quaternion, SRGBColorSpace, Vector3 } from 'three';
+import {
+  AdditiveBlending,
+  BufferAttribute,
+  BufferGeometry,
+  Color,
+  DoubleSide,
+  DynamicDrawUsage,
+  InstancedMesh,
+  Matrix4,
+  MeshBasicMaterial,
+  Object3D,
+  Quaternion,
+  SRGBColorSpace,
+  Vector3,
+} from 'three';
 import type { Camera, Texture } from 'three';
 import { convertVec3 } from './coords';
 import { fetchChefAssetCaseInsensitive } from './glowEffect';
@@ -257,9 +271,16 @@ interface ResolvedKeyframe {
   powerDisplacementAtStart: Vector3;
 }
 
+/**
+ * One instance's own "recipe" - no per-instance Mesh/Material of its own
+ * (see the class doc comment on why: hundreds of those across many
+ * equipped weapons is what was actually causing the reported FPS drop).
+ * Its index in ParticleEffect.instances *is* its InstancedMesh instance
+ * index - update() writes this instance's own current transform/color
+ * into that one shared InstancedMesh via setMatrixAt/setColorAt every
+ * frame instead of touching a real scene-graph Object3D at all.
+ */
 interface ParticleInstance {
-  mesh: Mesh;
-  material: MeshBasicMaterial;
   spawnPos: Vector3;
   /** This instance's own rand(0, createTimeEpsilon) roll - see ParticleTemplate.createTimeEpsilon. */
   phaseOffset: number;
@@ -402,6 +423,10 @@ function sampleKeyframes(
   };
 }
 
+const X_AXIS = new Vector3(1, 0, 0);
+const Y_AXIS = new Vector3(0, 1, 0);
+const Z_AXIS = new Vector3(0, 0, 1);
+
 /**
  * A running instance of one `.spt` template: `num` copies of its `.R3E`
  * entity mesh, looping through the same keyframed alpha/color/scale/zrot
@@ -409,6 +434,25 @@ function sampleKeyframes(
  * not shared - see resolveKeyframes) while drifting under `gravity`.
  * Attach `.group` under whatever the effect should follow (a weapon bone,
  * a socket dummy, ...) and call `update()` once a frame.
+ *
+ * Renders every instance through one shared `InstancedMesh` (one draw
+ * call, one material, for the whole template regardless of `num`) rather
+ * than a real `Mesh`+`MeshBasicMaterial` per instance - the latter is
+ * what this class originally did, and it's what actually caused a real,
+ * reported "FPS drops from 60 to 30 with many bots" problem: a single
+ * high-upgrade-level weapon's own `.eff` can carry several particle-
+ * bearing sections (see glowEffect.ts's resolveWeaponParticles), each
+ * with its own `num`-sized template - measured at 344 separate meshes
+ * (and 344 separate WebGLProgram-relevant material instances) for just 3
+ * bots. Per-instance color/alpha is carried via `InstancedMesh.
+ * setColorAt` (three's own built-in per-instance color, RGB only, no
+ * custom shader needed) with alpha baked directly into the color's own
+ * magnitude rather than the material's opacity - safe *specifically*
+ * because every real template here uses `AdditiveBlending`, where
+ * scaling a fragment's RGB by `k` and scaling its alpha by `k` produce
+ * the exact same additive contribution (`dst + rgb*k*1 == dst +
+ * rgb*1*k`), so there's no need for true per-instance alpha at all, just
+ * a color whose brightness already has the desired alpha folded in.
  */
 export class ParticleEffect {
   readonly group = new Object3D();
@@ -416,12 +460,22 @@ export class ParticleEffect {
   private template: ParticleTemplate | null = null;
   private geometry: BufferGeometry | null = null;
   private texture: Texture | null = null;
+  /** Owned by this effect (unlike geometry/texture, which are shared/cached across every effect using the same entity - see loadR3EGeometry/loadR3EMaterialTextureCached) - one material for every instance this effect ever spawns, disposed and rebuilt alongside the InstancedMesh itself in spawnInstances(). */
+  private material: MeshBasicMaterial | null = null;
+  private instancedMesh: InstancedMesh | null = null;
   private instances: ParticleInstance[] = [];
   private simTime = 0;
   private disposed = false;
   private readonly gravity = new Vector3();
-  /** Reused every frame per instance rather than allocated fresh - see update()'s billboard math. */
+  /** Reused every frame rather than allocated fresh - see update()'s billboard math. Computed once per frame (not once per instance, unlike the pre-InstancedMesh version of this class - every instance shares the exact same parent, so recomputing this per instance was always redundant work, not just per-instance-mesh overhead). */
   private readonly parentWorldQuat = new Quaternion();
+  private readonly billboardBaseQuat = new Quaternion();
+  private readonly scratchQuat = new Quaternion();
+  private readonly scratchSpinQuat = new Quaternion();
+  private readonly scratchPosition = new Vector3();
+  private readonly scratchScale = new Vector3(1, 1, 1);
+  private readonly scratchMatrix = new Matrix4();
+  private readonly scratchColor = new Color();
 
   /** Resolves the template + its entity mesh and spawns all instances. Safe to call once; the effect renders nothing until this resolves. */
   async load(sptPath: string): Promise<void> {
@@ -444,32 +498,47 @@ export class ParticleEffect {
     this.spawnInstances();
   }
 
-  /** (Re)builds every ParticleInstance from `this.template`'s current values - shared by load() and setLiveValues() (which mutates the template then calls this again, same "just rebuild" pattern CharacterController's own setDebugWeaponUpgradeLevel uses for a similar live-tuning case). Tears down any previous instances first, but never re-fetches geometry/texture - those don't change just because a live value did. */
+  /** (Re)builds the shared InstancedMesh + every ParticleInstance "recipe" from `this.template`'s current values - shared by load() and setLiveValues() (which mutates the template then calls this again, same "just rebuild" pattern CharacterController's own setDebugWeaponUpgradeLevel uses for a similar live-tuning case). Tears down any previous InstancedMesh/material first (a fresh one is needed either way - `num` itself can change, and InstancedMesh's own instance count is fixed at construction), but never re-fetches geometry/texture - those don't change just because a live value did. */
   private spawnInstances(): void {
     const template = this.template;
     if (!template || !this.geometry) return;
 
-    for (const instance of this.instances) {
-      instance.mesh.parent?.remove(instance.mesh);
-      instance.material.dispose();
-    }
+    this.instancedMesh?.parent?.remove(this.instancedMesh);
+    this.instancedMesh?.dispose();
+    this.material?.dispose();
     this.instances = [];
     this.simTime = 0;
 
+    if (template.num <= 0) {
+      this.instancedMesh = null;
+      this.material = null;
+      return;
+    }
+
+    this.material = new MeshBasicMaterial({
+      color: 0xffffff,
+      map: this.texture,
+      transparent: true,
+      blending: AdditiveBlending,
+      depthWrite: false,
+      side: DoubleSide,
+    });
+    const instancedMesh = new InstancedMesh(this.geometry, this.material, template.num);
+    instancedMesh.instanceMatrix.setUsage(DynamicDrawUsage);
+    // Real particles drift well outside the one quad's own local bounds
+    // (that's the whole point - see docs/rf-format-notes.md's coordinate-
+    // conversion section) and move every frame, so a real per-instance
+    // bounding volume would need recomputing constantly to stay correct -
+    // not worth it for what's already a small, localized effect near one
+    // weapon; simplest correct answer is to never cull this mesh at all
+    // (off-screen instances still don't cost fill-rate, the GPU clips
+    // them at the viewport regardless of frustumCulled).
+    instancedMesh.frustumCulled = false;
+    this.group.add(instancedMesh);
+    this.instancedMesh = instancedMesh;
+
     for (let i = 0; i < template.num; i++) {
-      const material = new MeshBasicMaterial({
-        color: 0xffffff,
-        map: this.texture,
-        transparent: true,
-        blending: AdditiveBlending,
-        depthWrite: false,
-        side: DoubleSide,
-      });
-      const mesh = new Mesh(this.geometry, material);
-      this.group.add(mesh);
       this.instances.push({
-        mesh,
-        material,
         // convertVec3, not a plain Vector3(...posBox) - see resolvePower's
         // own doc comment on why a .spt's raw XYZ needs the same axis
         // conversion every other Chef/ spatial value already gets.
@@ -539,12 +608,15 @@ export class ParticleEffect {
 
   /**
    * Advances the shared loop clock and every instance's position/scale/
-   * color/alpha/rotation. `camera` is only used for billboarded templates
-   * (the common case - see particleTemplate.ts) to face each particle
-   * toward it; non-billboard templates ignore it and keep the entity
-   * mesh's own authored orientation, only spinning it by the resolved
-   * xrot/yrot/zrot. Each instance samples its keyframe curve and drifts
-   * using its *own* age (`simTime` plus that instance's own
+   * color/alpha/rotation, writing each one straight into the shared
+   * InstancedMesh's own instance matrix/color buffers (setMatrixAt/
+   * setColorAt) instead of touching a real per-instance Object3D - see
+   * the class doc comment on why. `camera` is only used for billboarded
+   * templates (the common case - see particleTemplate.ts) to face each
+   * particle toward it; non-billboard templates ignore it and keep the
+   * entity mesh's own authored orientation, only spinning it by the
+   * resolved xrot/yrot/zrot. Each instance samples its keyframe curve and
+   * drifts using its *own* age (`simTime` plus that instance's own
    * `phaseOffset` - see createTimeEpsilon), not one shared age for every
    * instance - otherwise every copy would pulse through the exact same
    * point in the curve at the exact same moment, reading as one
@@ -559,7 +631,8 @@ export class ParticleEffect {
    */
   update(delta: number, camera: Camera | null): void {
     const template = this.template;
-    if (!template) return;
+    const instancedMesh = this.instancedMesh;
+    if (!template || !instancedMesh) return;
 
     this.simTime += delta * template.timeSpeed;
     const liveTime = Math.max(template.liveTime, 1e-6);
@@ -568,56 +641,79 @@ export class ParticleEffect {
     // every other Chef/ spatial value already gets.
     convertVec3(template.gravity[0], template.gravity[1], template.gravity[2], this.gravity);
 
-    for (const instance of this.instances) {
+    // Every instance shares the exact same parent (this.group) - compute
+    // the camera-facing base orientation once per frame, not once per
+    // instance (the pre-InstancedMesh version of this class recomputed
+    // the identical value on every single instance, every frame).
+    const useBillboard = template.billboard && camera !== null;
+    if (useBillboard) {
+      if (this.group.parent) {
+        this.group.parent.getWorldQuaternion(this.parentWorldQuat);
+        this.billboardBaseQuat.copy(this.parentWorldQuat).invert().multiply(camera.quaternion);
+      } else {
+        this.billboardBaseQuat.copy(camera.quaternion);
+      }
+    }
+
+    for (let i = 0; i < this.instances.length; i++) {
+      const instance = this.instances[i];
       const age = (this.simTime + instance.phaseOffset) % liveTime;
       const sample = sampleKeyframes(instance.keyframes, age);
-      instance.material.opacity = sample.alpha / 255;
-      instance.material.color.copy(sample.color);
-      instance.mesh.scale.setScalar(sample.scale);
-      instance.mesh.position
+
+      this.scratchPosition
         .copy(instance.spawnPos)
         .addScaledVector(this.gravity, age)
         .add(sample.powerDisplacement);
+      this.scratchScale.setScalar(sample.scale);
 
       const xrotRad = (sample.xrot * Math.PI) / 180;
       const yrotRad = (sample.yrot * Math.PI) / 180;
       const zrotRad = (sample.zrot * Math.PI) / 180;
 
-      if (template.billboard && camera) {
-        // Copying camera.quaternion (a WORLD orientation) straight into
-        // this mesh's LOCAL quaternion is only correct if `.group`'s own
-        // ancestor chain has zero net world rotation - false the instant
-        // this is attached under anything animated (a weapon socket on a
-        // swinging bone, say). Left uncorrected, a flat quad can end up
-        // rotated edge-on to the camera - imperceptibly thin from most
-        // angles, reading as "the particle doesn't render" even though
-        // it's actually just facing the wrong way. Same fix as
-        // CharacterController.updateSocketGlowBillboards.
-        if (instance.mesh.parent) {
-          instance.mesh.parent.getWorldQuaternion(this.parentWorldQuat);
-          instance.mesh.quaternion.copy(this.parentWorldQuat).invert().multiply(camera.quaternion);
-        } else {
-          instance.mesh.quaternion.copy(camera.quaternion);
-        }
+      if (useBillboard) {
         // Applied on top of the camera-facing orientation (post-multiplied
         // local rotations), same as zrot always has been - xrot/yrot tilt
         // the billboarded quad relative to its own camera-facing plane
-        // rather than trying to resolve against it globally.
-        instance.mesh.rotateX(xrotRad);
-        instance.mesh.rotateY(yrotRad);
-        instance.mesh.rotateZ(zrotRad);
+        // rather than trying to resolve against it globally. Matches
+        // Object3D.rotateX/Y/Z's own convention (successive post-
+        // multiplies), replicated by hand here since there's no real
+        // Object3D per instance to call those methods on any more.
+        this.scratchQuat
+          .copy(this.billboardBaseQuat)
+          .multiply(this.scratchSpinQuat.setFromAxisAngle(X_AXIS, xrotRad))
+          .multiply(this.scratchSpinQuat.setFromAxisAngle(Y_AXIS, yrotRad))
+          .multiply(this.scratchSpinQuat.setFromAxisAngle(Z_AXIS, zrotRad));
       } else {
-        instance.mesh.rotation.set(xrotRad, yrotRad, zrotRad);
+        // Matches Object3D.rotation.set(x, y, z)'s own default 'XYZ' Euler
+        // order - composed as successive intrinsic rotations, same as
+        // three's own Quaternion.setFromEuler does for that order.
+        this.scratchQuat
+          .setFromAxisAngle(X_AXIS, xrotRad)
+          .multiply(this.scratchSpinQuat.setFromAxisAngle(Y_AXIS, yrotRad))
+          .multiply(this.scratchSpinQuat.setFromAxisAngle(Z_AXIS, zrotRad));
       }
+
+      this.scratchMatrix.compose(this.scratchPosition, this.scratchQuat, this.scratchScale);
+      instancedMesh.setMatrixAt(i, this.scratchMatrix);
+
+      // Per-instance alpha is baked into the color's own magnitude, not
+      // tracked as real per-instance alpha - see the class doc comment on
+      // why that's exactly equivalent for AdditiveBlending.
+      this.scratchColor.copy(sample.color).multiplyScalar(sample.alpha / 255);
+      instancedMesh.setColorAt(i, this.scratchColor);
     }
+
+    instancedMesh.instanceMatrix.needsUpdate = true;
+    if (instancedMesh.instanceColor) instancedMesh.instanceColor.needsUpdate = true;
   }
 
   dispose(): void {
     this.disposed = true;
-    for (const instance of this.instances) {
-      instance.mesh.parent?.remove(instance.mesh);
-      instance.material.dispose();
-    }
+    this.instancedMesh?.parent?.remove(this.instancedMesh);
+    this.instancedMesh?.dispose();
+    this.instancedMesh = null;
+    this.material?.dispose();
+    this.material = null;
     this.instances = [];
   }
 }
