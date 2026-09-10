@@ -45,6 +45,10 @@ export interface ViewerDebugStats {
   simulatedParticles: number;
   culledParticleEffects: number;
   particleUpdateMs: number;
+  /** Average per-frame time (ms, performance.now()-measured) spent in this scene's own update() - JS-side work: bot/character controller updates, animation mixers, culling, etc. - over the last stats window. See AppScene.reportFrameTiming. */
+  updateMs: number;
+  /** Average per-frame time (ms) spent inside the single renderer.render() call over the last stats window - the CPU cost of issuing this frame's draw calls, the metric relevant to whether a lower-overhead backend (e.g. WebGPU) would actually help. See AppScene.reportFrameTiming. */
+  renderMs: number;
   /** The resolved animation clip key actually playing (e.g. "walk:TCROSSBOW:rt"), or null before the first frame resolves one. */
   clipKey: string | null;
   /** The currently-equipped weapon, or null when unarmed - id/name for identifying the item, token/stem for correlating an animation or placement bug back to specific source data. */
@@ -114,6 +118,9 @@ export class ViewerScene implements AppScene {
 
   private statsFrameCount = 0;
   private statsElapsed = 0;
+  /** Summed across every frame in the current stats window, then averaged at the tick below - see reportFrameTiming. */
+  private statsUpdateMsSum = 0;
+  private statsRenderMsSum = 0;
   private readonly particleViewProjection = new Matrix4();
   private readonly particleCulling: ParticleCullingContext = { frustum: new Frustum(), cameraPosition: new Vector3() };
 
@@ -488,12 +495,22 @@ export class ViewerScene implements AppScene {
         simulatedParticles: particleStats.simulatedInstances + botParticleStats.simulatedInstances,
         culledParticleEffects: particleStats.culledEffects + botParticleStats.culledEffects,
         particleUpdateMs: particleStats.updateMs + botParticleStats.updateMs,
+        updateMs: this.statsUpdateMsSum / this.statsFrameCount,
+        renderMs: this.statsRenderMsSum / this.statsFrameCount,
         clipKey: this.characterController.getCurrentClipKey(),
         weapon: weapon ? { id: weapon.item.id, name: weapon.item.name, token: weapon.token, stem: weapon.stem } : null,
       });
       this.statsFrameCount = 0;
       this.statsElapsed = 0;
+      this.statsUpdateMsSum = 0;
+      this.statsRenderMsSum = 0;
     }
+  }
+
+  /** See AppScene.reportFrameTiming - fed into the next stats tick's updateMs/renderMs averages above. */
+  reportFrameTiming(updateMs: number, renderMs: number): void {
+    this.statsUpdateMsSum += updateMs;
+    this.statsRenderMsSum += renderMs;
   }
 
   resize(aspect: number): void {

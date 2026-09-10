@@ -50,6 +50,8 @@ export default function RfViewer({ sceneManager, initialRaceGender, onExit }: Rf
     simulatedParticles: 0,
     culledParticleEffects: 0,
     particleUpdateMs: 0,
+    updateMs: 0,
+    renderMs: 0,
     clipKey: null,
     weapon: null,
   });

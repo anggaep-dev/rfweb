@@ -16,6 +16,9 @@ export interface AppScene {
   /** Called once per frame while this scene is active, right before it's rendered. */
   update(delta: number): void;
 
+  /** Optional: called once per frame right after this scene is rendered, with how long its own update() call and the renderer.render() call each took (performance.now()-measured milliseconds) - a coarse CPU-side split for perf diagnosis (JS/animation work vs. time spent issuing draw calls), independent of the FPS a scene may already track itself. */
+  reportFrameTiming?(updateMs: number, renderMs: number): void;
+
   /** Container aspect ratio changed - update the active camera's projection. */
   resize(aspect: number): void;
 

@@ -71,8 +71,11 @@ export class SceneManager {
     this.timer.update();
     const delta = this.timer.getDelta();
     if (this.current) {
+      const updateStart = performance.now();
       this.current.update(delta);
+      const renderStart = performance.now();
       this.renderer.render(this.current.scene, this.current.getCamera());
+      this.current.reportFrameTiming?.(renderStart - updateStart, performance.now() - renderStart);
     }
   };
 

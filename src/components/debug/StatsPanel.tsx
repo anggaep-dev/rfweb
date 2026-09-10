@@ -15,6 +15,7 @@ function buildStatsCopyText(stats: ViewerDebugStats, orientation: string): strin
   return [
     `${stats.fps} FPS${stats.heapMB !== null ? ` · ${stats.heapMB} MB` : ''} · ${stats.geometries} geo · ${stats.textures} tex`,
     `Render: ${stats.calls} calls · ${stats.triangles} tris`,
+    `Frame: update ${stats.updateMs.toFixed(2)} ms · render ${stats.renderMs.toFixed(2)} ms`,
     `Particles: ${stats.simulatedParticles}/${stats.particleInstances} · ${stats.particleEffects} effects · ${stats.particleBatches} batches · ${stats.culledParticleEffects} culled · ${stats.particleUpdateMs.toFixed(2)} ms`,
     `Anim: ${stats.clipKey ?? '-'}`,
     `Weapon: ${weapon}`,
@@ -50,6 +51,9 @@ export default function StatsPanel({ stats }: StatsPanelProps) {
         {stats.geometries} geo · {stats.textures} tex
       </div>
       <div>Render: {stats.calls} calls · {stats.triangles.toLocaleString()} tris</div>
+      <div>
+        Frame: update {stats.updateMs.toFixed(2)} ms · render {stats.renderMs.toFixed(2)} ms
+      </div>
       <div>
         Particles: {stats.simulatedParticles}/{stats.particleInstances} · {stats.particleEffects} effects · {stats.particleBatches} batches · {stats.culledParticleEffects} culled · {stats.particleUpdateMs.toFixed(2)} ms
       </div>

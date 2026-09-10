@@ -1,7 +1,8 @@
-import { Vector3 } from 'three';
+import { Frustum, Matrix4, Vector3 } from 'three';
 import type { PerspectiveCamera, Scene, WebGLRenderer } from 'three';
 import { CameraController } from '../controllers/CameraController';
 import { CharacterController, WALK_SPEED_RADIUS_PER_SEC } from '../controllers/CharacterController';
+import type { ParticleCullingContext } from '../controllers/CharacterController';
 import { applyCharacterAppearance } from '../controllers/characterAppearance';
 import { LocomotionDebugGizmo } from '../controllers/LocomotionDebugGizmo';
 import { NameTag } from '../controllers/NameTag';
@@ -15,6 +16,8 @@ import type { ConnectionStatus } from '../net/WorldConnection';
 import { WorldConnection } from '../net/WorldConnection';
 import { classifyLocomotionDirectionStable, classifyMovementAgainstFacing, loadCharacter } from '../rf/character';
 import type { LocomotionDirection, RaceGender } from '../rf/character';
+import { initSocketGlowBatching } from '../rf/glowEffect';
+import { advanceParticleBatchClocks, initParticleBatching, setParticleEffectCountForBudget } from '../rf/particleSystem';
 import type { AppScene } from './AppScene';
 
 const UP_AXIS = new Vector3(0, 1, 0);
@@ -166,6 +169,10 @@ export class OnlineScene implements AppScene {
   private readonly debugOrigin = new Vector3();
   private disposed = false;
 
+  /** Recomputed from the camera every frame - see update(). Same shape ViewerScene feeds its own particle-effect/socket-glow culling. */
+  private readonly particleViewProjection = new Matrix4();
+  private readonly particleCulling: ParticleCullingContext = { frustum: new Frustum(), cameraPosition: new Vector3() };
+
   private readonly handleRunKeyDown = (event: KeyboardEvent) => this.handleRunKeyChange(event, true);
   private readonly handleRunKeyUp = (event: KeyboardEvent) => this.handleRunKeyChange(event, false);
   // A held Shift never seeing its keyup if focus/visibility is lost mid-press
@@ -207,6 +214,17 @@ export class OnlineScene implements AppScene {
     this.cameraController.controls.enableDamping = false;
     this.characterController = new CharacterController(this.sceneController.scene);
     this.remoteEntityController = new RemoteEntityController(this.sceneController.scene, sessionToken);
+
+    // Without these, every batch's InstancedMesh is created and kept
+    // updated but never actually added to any scene (see
+    // initParticleBatching/initSocketGlowBatching's own doc comments) -
+    // both only ever got wired up from ViewerScene's constructor, which is
+    // the "/debug" offline scene, not this one (the actual default/online
+    // route - see SceneApp.tsx's own routing comment), so every equipped
+    // weapon/cloak particle effect and socket-glow billboard was silently
+    // invisible for real networked play.
+    initParticleBatching(this.sceneController.scene);
+    initSocketGlowBatching(this.sceneController.scene);
   }
 
   get scene(): Scene {
@@ -403,21 +421,6 @@ export class OnlineScene implements AppScene {
     }
 
     this.characterController.update(delta);
-    this.remoteEntityController.tick(delta);
-    this.nameTag?.update(this.characterController.getHeadBone());
-
-    const hips = this.characterController.getHipsBone();
-    if (hips) {
-      hips.updateWorldMatrix(true, false);
-      hips.getWorldPosition(this.debugOrigin);
-    }
-    this.debugGizmo?.update(
-      this.debugOrigin,
-      this.facing,
-      this.moveInput ? this.moveDirection : null,
-      this.lastLocomotionDirection,
-      this.characterController.getCurrentClipKey(),
-    );
 
     const character = this.characterController.getCharacter();
     this.cameraController.update(delta, {
@@ -433,6 +436,35 @@ export class OnlineScene implements AppScene {
       // camera-relative (no click-to-move) control scheme.
       suppressBehindFollow: true,
     });
+
+    // Must run after cameraController.update() above (needs this frame's
+    // camera transform, not last frame's) and before anything below that
+    // reads it - same ordering ViewerScene's own update() uses.
+    const camera = this.cameraController.camera;
+    camera.updateMatrixWorld();
+    this.particleViewProjection.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+    this.particleCulling.frustum.setFromProjectionMatrix(this.particleViewProjection);
+    camera.getWorldPosition(this.particleCulling.cameraPosition);
+    advanceParticleBatchClocks(delta);
+    setParticleEffectCountForBudget(this.characterController.getParticleEffectCount() + this.remoteEntityController.getParticleEffectCount());
+    this.characterController.updateSocketGlowBillboards(camera, delta);
+    this.characterController.updateDebugSocketParticle(camera, delta, this.particleCulling);
+
+    this.remoteEntityController.tick(delta, camera, this.particleCulling);
+    this.nameTag?.update(this.characterController.getHeadBone());
+
+    const hips = this.characterController.getHipsBone();
+    if (hips) {
+      hips.updateWorldMatrix(true, false);
+      hips.getWorldPosition(this.debugOrigin);
+    }
+    this.debugGizmo?.update(
+      this.debugOrigin,
+      this.facing,
+      this.moveInput ? this.moveDirection : null,
+      this.lastLocomotionDirection,
+      this.characterController.getCurrentClipKey(),
+    );
 
     if (this.callbacks.onRadarFrame) {
       const blips = this.hasServerSelfPosition

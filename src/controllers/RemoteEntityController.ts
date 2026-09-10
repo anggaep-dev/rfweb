@@ -1,5 +1,5 @@
 import { Vector3 } from 'three';
-import type { Scene } from 'three';
+import type { Camera, Scene } from 'three';
 import { getCharacterAppearance } from '../net/CharacterClient';
 import { rotationToYaw } from '../net/compassRotation';
 import type { EntitySnapshot, EntityUpdate } from '../net/generated/protocol';
@@ -7,6 +7,7 @@ import { RaceGender, classifyMovementAgainstFacing, loadCharacter } from '../rf/
 import type { LocomotionDirection } from '../rf/character';
 import type { CharacterAppearance } from '../rf/characterProfile';
 import { CharacterController } from './CharacterController';
+import type { ParticleCullingContext } from './CharacterController';
 import { applyCharacterAppearance } from './characterAppearance';
 import { LocomotionDebugGizmo } from './LocomotionDebugGizmo';
 import { NameTag } from './NameTag';
@@ -169,8 +170,27 @@ export class RemoteEntityController {
     return positions;
   }
 
-  /** Smooths every tracked entity's rendered position/yaw toward its latest server-reported target, and drives its walk/idle animation - call once per render frame. */
-  tick(delta: number): void {
+  /** Summed across every tracked entity - feeds setParticleEffectCountForBudget alongside the local player's own count, same as ViewerScene/BotController. */
+  getParticleEffectCount(): number {
+    let count = 0;
+    for (const remote of this.entities.values()) count += remote.controller.getParticleEffectCount();
+    return count;
+  }
+
+  /**
+   * Smooths every tracked entity's rendered position/yaw toward its latest
+   * server-reported target, and drives its walk/idle animation - call once
+   * per render frame. `camera`/`particleCulling` are only needed for each
+   * entity's own socket-glow billboards and weapon/cloak particles (both
+   * need to face the camera - see CharacterController.
+   * updateSocketGlowBillboards/updateDebugSocketParticle's own doc
+   * comments) - without calling these here too, a remote player's equipped
+   * particle/glow renders once (in practice: never, since OnlineScene never
+   * even calls initParticleBatching/initSocketGlowBatching either - see
+   * OnlineScene's own constructor) and then visibly freezes forever, same
+   * bug BotController.update's identical doc comment describes for bots.
+   */
+  tick(delta: number, camera: Camera, particleCulling: ParticleCullingContext): void {
     const posT = 1 - Math.exp(-POSITION_SMOOTHING_RATE * delta);
     const rotT = 1 - Math.exp(-ROTATION_SMOOTHING_RATE * delta);
     for (const remote of this.entities.values()) {
@@ -211,6 +231,8 @@ export class RemoteEntityController {
       // here (see class doc comment); overwrite it with our own
       // server-smoothed values right after.
       remote.controller.update(delta);
+      remote.controller.updateSocketGlowBillboards(camera, delta);
+      remote.controller.updateDebugSocketParticle(camera, delta, particleCulling);
 
       remote.controller.setWorldYaw(remote.yaw);
       const character = remote.controller.getCharacter();
