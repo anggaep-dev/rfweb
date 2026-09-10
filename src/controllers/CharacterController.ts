@@ -325,6 +325,18 @@ export class CharacterController {
   private debugSocketParticleWanted = true;
 
   /**
+   * `%glowtest 0/1` (RfViewer's own command) - purely a visibility gate on
+   * the current equippedSocketGlow's billboards (see applyWeaponVisibility),
+   * not a spawn/despawn toggle like debugSocketParticleWanted above: there's
+   * no per-frame respawn cost to skip, so simply hiding the existing
+   * billboards is enough to A/B-test how much of the render-time gap
+   * (see StatsPanel's Frame: render ms) is transparent-overdraw cost from
+   * these specifically, same methodology %particletest already established
+   * for particles.
+   */
+  private debugSocketGlowWanted = true;
+
+  /**
    * Which of the 5 pre-made DEFAULT_{PART}_00{0-4} variants each base slot
    * (see ALL_MODEL_TYPES) uses when nothing's equipped there - the
    * character-creation-time customization (hair for Bell/Cora's Helmet
@@ -655,14 +667,21 @@ export class CharacterController {
     }
   }
 
-  /** A wielded weapon (and its grade overlay, if it has any) is only ever visible in War mode - see setBattleMode/equipWeapon. Whole-mesh glow no longer has a separate object to toggle - it's injected directly into the weapon mesh's own material (see glowEffect.ts's attachGlowInjection), so it's already hidden/shown along with `weaponObjects` above. */
+  /** A wielded weapon (and its grade overlay, if it has any) is only ever visible in War mode - see setBattleMode/equipWeapon. Whole-mesh glow no longer has a separate object to toggle - it's injected directly into the weapon mesh's own material (see glowEffect.ts's attachGlowInjection), so it's already hidden/shown along with `weaponObjects` above. Socket glow billboards are additionally gated on debugSocketGlowWanted (see its own doc comment) - `%glowtest 0` hides them even in War mode. */
   private applyWeaponVisibility(): void {
     const visible = this.battleMode === 'war';
     const weaponObjects = this.equippedObjects[ModelType.Weapon];
     if (weaponObjects) for (const obj of weaponObjects) obj.visible = visible;
     const gradeOverlay = this.equippedGradeOverlays[ModelType.Weapon];
     if (gradeOverlay) for (const obj of gradeOverlay.objects) obj.visible = visible;
-    if (this.equippedSocketGlow) for (const obj of this.equippedSocketGlow.objects) obj.visible = visible;
+    const socketGlowVisible = visible && this.debugSocketGlowWanted;
+    if (this.equippedSocketGlow) for (const obj of this.equippedSocketGlow.objects) obj.visible = socketGlowVisible;
+  }
+
+  /** Forwards `%glowtest` to this character's own socket-glow billboards (see debugSocketGlowWanted's own doc comment) - takes effect immediately, and stays in effect across a re-equip since applyWeaponVisibility re-reads the flag every time it runs. */
+  setDebugSocketGlowEnabled(enabled: boolean): void {
+    this.debugSocketGlowWanted = enabled;
+    this.applyWeaponVisibility();
   }
 
   /** Drops the stale scrollingMaterials bookkeeping for one slot before a re-equip - there's no separate glow object to dispose anymore (see glowEffect.ts's attachGlowInjection/GlowOverlay doc comments): the injected material lives inside the mesh itself, already torn down by the normal disposeObject3D traversal when that mesh is disposed. */

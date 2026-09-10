@@ -1,6 +1,7 @@
 import { AxesHelper, Euler, Frustum, Matrix4, Mesh, MeshBasicMaterial, Quaternion, Raycaster, SphereGeometry, Vector2, Vector3 } from 'three';
-import type { Object3D, PerspectiveCamera, WebGLRenderer } from 'three';
+import type { Object3D, PerspectiveCamera } from 'three';
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
+import type { WebGPURenderer } from 'three/webgpu';
 import { AssetController } from '../controllers/AssetController';
 import { BotController } from '../controllers/BotController';
 import { CameraController } from '../controllers/CameraController';
@@ -102,7 +103,7 @@ export class ViewerScene implements AppScene {
   readonly botController: BotController;
   readonly assetController = new AssetController();
 
-  private readonly renderer: WebGLRenderer;
+  private readonly renderer: WebGPURenderer;
   private readonly callbacks: ViewerSceneCallbacks;
   private disposed = false;
 
@@ -146,7 +147,7 @@ export class ViewerScene implements AppScene {
   private effectEditMarkers: { helper: AxesHelper; hitSphere: Mesh; socket: Object3D }[] = [];
   private effectEditSockets: Object3D[] = [];
 
-  constructor(renderer: WebGLRenderer, private initialRaceGender: RaceGender, callbacks: ViewerSceneCallbacks = {}) {
+  constructor(renderer: WebGPURenderer, private initialRaceGender: RaceGender, callbacks: ViewerSceneCallbacks = {}) {
     this.renderer = renderer;
     this.callbacks = callbacks;
 

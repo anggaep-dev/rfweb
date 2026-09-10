@@ -1,5 +1,6 @@
 import { Frustum, Matrix4, Vector3 } from 'three';
-import type { PerspectiveCamera, Scene, WebGLRenderer } from 'three';
+import type { PerspectiveCamera, Scene } from 'three';
+import type { WebGPURenderer } from 'three/webgpu';
 import { CameraController } from '../controllers/CameraController';
 import { CharacterController, WALK_SPEED_RADIUS_PER_SEC } from '../controllers/CharacterController';
 import type { ParticleCullingContext } from '../controllers/CharacterController';
@@ -184,7 +185,7 @@ export class OnlineScene implements AppScene {
   };
 
   constructor(
-    renderer: WebGLRenderer,
+    renderer: WebGPURenderer,
     raceGender: RaceGender,
     sessionToken: string,
     characterId: string,

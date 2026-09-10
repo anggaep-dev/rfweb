@@ -1,5 +1,4 @@
 import {
-  CompressedTexture,
   DataTexture,
   LinearFilter,
   LinearMipmapLinearFilter,
@@ -11,7 +10,6 @@ import {
   SRGBColorSpace,
   type Texture,
 } from 'three';
-import type { CompressedPixelFormat } from 'three';
 import { DDSLoader } from 'three/examples/jsm/loaders/DDSLoader.js';
 
 /**
@@ -38,24 +36,17 @@ const DDS_MAGIC = 0x20534444; // 'DDS ' little-endian
 // different asset sets: character .RFT textures are DXT1/DXT5 only
 // (verified by decoding every entry across the base race archives), but
 // Chef/'s glow textures (glowEffect.ts) turned out to also use DXT3 and
-// even uncompressed DDS (7 files at 24bpp, 2 at 16bpp) - discovered the
-// hard way, blindly building a CompressedTexture for those uncompressed
-// ones crashed three.js at GPU-upload time (its mipmap objects don't have
-// the shape CompressedTexture's upload path expects), not at decode time,
-// so it wasn't caught by earlier testing that only exercised character
-// textures.
+// even uncompressed DDS (7 files at 24bpp, 2 at 16bpp).
 //
 // Imported directly off the installed three.js package rather than
 // hand-copied numbers - a previous version of this file hardcoded
 // 33776/33777/33778 for DXT1/DXT3/DXT5, which is wrong for DXT3/DXT5
 // (really 33778/33779; DDSLoader also never actually emits
 // RGBA_S3TC_DXT1_Format=33777, only RGB_S3TC_DXT1_Format=33776, for a
-// DXT1 fourCC). That off-by-one meant the CPU-decompression fallback's
-// format check silently never matched real DXT5 textures, so
-// S3TC-unsupported devices fell through to building a (broken, for them)
-// CompressedTexture instead - undetected until now because Node-based
-// testing only exercises texture *construction*, never the GPU upload
-// where this actually breaks.
+// DXT1 fourCC). That off-by-one meant this module's format check silently
+// never matched real DXT5 textures, so the CPU decompressor below (see
+// decompressBlockTexture, and its callers) silently used the wrong block
+// size for them.
 const RGB_S3TC_DXT1_FORMAT = RGB_S3TC_DXT1_Format;
 const RGBA_S3TC_DXT3_FORMAT = RGBA_S3TC_DXT3_Format;
 const RGBA_S3TC_DXT5_FORMAT = RGBA_S3TC_DXT5_Format;
@@ -72,35 +63,6 @@ function decodeRft(buffer: ArrayBuffer): ArrayBuffer {
     decoded[i] ^= RFT_PASSWORD_BYTES[i];
   }
   return decoded.buffer;
-}
-
-let s3tcSupported: boolean | null = null;
-
-/**
- * Most mobile GPUs (iOS Safari in particular) don't expose the
- * WEBGL_compressed_texture_s3tc extension, so uploading a CompressedTexture
- * silently fails there - the mesh renders but with no map, falling back to
- * the flat gray material color. Probed once via a throwaway canvas/context
- * and cached; nothing here is tied to the renderer actually used later.
- */
-function isS3TCSupported(): boolean {
-  if (s3tcSupported !== null) return s3tcSupported;
-  try {
-    const canvas = document.createElement('canvas');
-    const gl = (canvas.getContext('webgl2') ||
-      canvas.getContext('webgl')) as WebGLRenderingContext | null;
-    if (!gl) {
-      s3tcSupported = false;
-      return s3tcSupported;
-    }
-    const ext =
-      gl.getExtension('WEBGL_compressed_texture_s3tc') ||
-      gl.getExtension('WEBKIT_WEBGL_compressed_texture_s3tc');
-    s3tcSupported = !!ext;
-  } catch {
-    s3tcSupported = false;
-  }
-  return s3tcSupported;
 }
 
 function rgb565ToRgb888(c: number): [number, number, number] {
@@ -434,11 +396,27 @@ export function decodeRftTexture(rawBuffer: ArrayBuffer): Texture {
     return buildDataTexture(base, classifyAlpha(base.data));
   }
 
-  // Alpha is classified from a CPU decode of the base mip regardless of
-  // S3TC support (even though the compressed-upload path below re-uses the
-  // still-compressed bytes rather than this decode) - there's no way to
-  // inspect a DXT block's alpha without decoding it, and this is a one-time
-  // per-texture cost at load/equip time, not a per-frame one.
+  // Always CPU-decompress rather than building a THREE.CompressedTexture:
+  // this project's renderer (SceneManager) is always a `WebGPURenderer`
+  // (three/webgpu), never a plain WebGLRenderer, and a CompressedTexture's
+  // BC1/2/3 bytes are only valid there if the runtime happened to actually
+  // negotiate the real WebGPU backend *and* that adapter's device
+  // advertises the `texture-compression-bc` feature - neither of which is
+  // (or safely can be) checked here. WebGPURenderer's own internal WebGL2
+  // fallback backend is a second, independent consumer of the same
+  // CompressedTexture with the same problem. A previous version of this
+  // function gated the CompressedTexture branch on isS3TCSupported(),
+  // which only ever probed a throwaway canvas's *WebGL* extension - a
+  // signal that's meaningless for either of WebGPURenderer's actual
+  // backends and, on any desktop browser, reports "supported" almost
+  // unconditionally regardless. When the real backend can't actually
+  // sample the BC format it was handed, the GPU texture comes back
+  // black/zeroed (WebGPU texture-creation errors are async and easy to
+  // miss, not a thrown JS exception) - exactly the "black rectangle,
+  // missing color" symptom this was rendering as. The CPU-decoded RGBA
+  // buffer below was already being computed unconditionally anyway (for
+  // classifyAlpha), so this isn't new decode cost - just always using its
+  // result instead of a second, format-uncertain upload path.
   const base = ddsData.mipmaps[0] as DdsMipmap;
   const rgba = decompressBlockTexture(
     new Uint8Array(base.data.buffer, base.data.byteOffset, base.data.byteLength),
@@ -447,21 +425,7 @@ export function decodeRftTexture(rawBuffer: ArrayBuffer): Texture {
     format,
   );
   const alphaInfo = classifyAlpha(rgba);
-
-  if (!isS3TCSupported()) {
-    return buildDataTexture({ data: rgba as unknown as Uint8Array, width: base.width, height: base.height }, alphaInfo);
-  }
-
-  const texture = new CompressedTexture(
-    ddsData.mipmaps,
-    ddsData.width,
-    ddsData.height,
-    format as CompressedPixelFormat,
-  );
-  texture.minFilter = ddsData.mipmapCount > 1 ? LinearMipmapLinearFilter : LinearFilter;
-  texture.magFilter = LinearFilter;
-  applyCommonTextureSettings(texture, alphaInfo);
-  return texture;
+  return buildDataTexture({ data: rgba as unknown as Uint8Array, width: base.width, height: base.height }, alphaInfo);
 }
 
 export async function loadRftTexture(url: string): Promise<Texture> {

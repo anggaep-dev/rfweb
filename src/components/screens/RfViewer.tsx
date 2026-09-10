@@ -478,6 +478,21 @@ export default function RfViewer({ sceneManager, initialRaceGender, onExit }: Rf
       return;
     }
 
+    // %glowtest 1/0 - same reasoning/shape as %particletest above, for the
+    // socket-glow billboards (see CharacterController.
+    // setDebugSocketGlowEnabled) - lets a perf A/B test isolate how much of
+    // the render-time gap (StatsPanel's Frame: render ms) is transparent
+    // overdraw from these specifically, independent of particles.
+    const glowtestMatch = /^%glowtest\s+([01])$/.exec(trimmed);
+    if (glowtestMatch) {
+      const on = glowtestMatch[1] === '1';
+      viewerSceneRef.current?.characterController.setDebugSocketGlowEnabled(on);
+      // Bots each own a separate CharacterController - same reasoning as %particletest's identical forwarding above.
+      viewerSceneRef.current?.botController.setDebugSocketGlowEnabled(on);
+      setCommandFeedback(on ? 'Glow billboard test on.' : 'Glow billboard test off - socket glow billboards hidden.');
+      return;
+    }
+
     const particlescaleMatch = /^%particlescale\s+([\d.]+)$/.exec(trimmed);
     if (particlescaleMatch) {
       const scale = Number.parseFloat(particlescaleMatch[1]);

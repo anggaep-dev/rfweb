@@ -11,10 +11,29 @@ import {
   Object3D,
   SRGBColorSpace,
   Sphere,
-  ShaderMaterial,
   Vector3,
 } from 'three';
 import type { Camera, Texture } from 'three';
+import {
+  attribute,
+  buffer,
+  float,
+  instanceIndex,
+  mix,
+  modelViewMatrix,
+  positionGeometry,
+  radians,
+  select,
+  sin,
+  cos,
+  texture as sampleTexture,
+  uniform,
+  uv,
+  vec3,
+  vec4,
+} from 'three/tsl';
+import { MeshBasicNodeMaterial } from 'three/webgpu';
+import type { InstancedMesh as WebGpuInstancedMesh, NodeBuilder } from 'three/webgpu';
 import { convertVec3 } from './coords';
 import { fetchChefAssetCaseInsensitive } from './glowEffect';
 import { parseMaterialIndex, parseMaterialScript } from './materialScript';
@@ -83,12 +102,18 @@ async function loadTextureFromMst(dirUrl: string, materialId: number): Promise<T
   const indexBuffer = await fetchChefAssetCaseInsensitive(dirUrl, 'MainMaterial.mst');
   const indexEntries = parseMaterialIndex(new TextDecoder('euc-kr').decode(indexBuffer));
   const entry = indexEntries.find((e) => e.slot === materialId);
-  if (!entry) return null;
+  if (!entry) {
+    console.warn(`No MainMaterial.mst slot ${materialId} at "${dirUrl}" - particle renders untextured (flat keyframe color).`);
+    return null;
+  }
 
   const materialBuffer = await fetchChefAssetCaseInsensitive(dirUrl, `${entry.name}.mst`);
   const script = parseMaterialScript(new TextDecoder('euc-kr').decode(materialBuffer));
   const mapName = script.layers[0]?.mapName;
-  if (!mapName) return null;
+  if (!mapName) {
+    console.warn(`"${entry.name}.mst" at "${dirUrl}" has no map_name - particle renders untextured (flat keyframe color).`);
+    return null;
+  }
 
   const textureBuffer = await fetchChefAssetCaseInsensitive(dirUrl, mapName);
   return decodeRftTexture(textureBuffer);
@@ -420,62 +445,232 @@ function computeLocalBoundsRadius(template: ParticleTemplate, geometry: BufferGe
   return spawnPos.length() + (gravity.length() + maxPowerSpeed) * liveTime + shapeRadius * maxScale;
 }
 
-function glslNumber(value: number): string {
-  return Number.isFinite(value) ? value.toFixed(8) : '0.0';
+/**
+ * TSL (WebGPU/node-material) replacement for the old raw-GLSL `ShaderMaterial`
+ * this project used under `WebGLRenderer` - `onBeforeCompile`/hand-written
+ * GLSL strings don't run under `WebGPURenderer`'s node-based pipeline (see
+ * this project's own WebGPU migration notes), so the whole per-template
+ * keyframe generator had to be rebuilt as a node graph instead of a GLSL
+ * string. One instance is still built per unique template (same reasoning
+ * as before: identical templates produce an identical node graph and can
+ * share a compiled program across every effect/bot using it), and the
+ * keyframe constants are still baked in as literal nodes, not uniforms -
+ * same "compact shader per template" shape as before, just node objects
+ * instead of interpolated GLSL source.
+ *
+ * `setupPositionView` is overridden (same pattern three.js's own
+ * `SpriteNodeMaterial` uses for its billboard case) because this vertex
+ * pipeline is fundamentally custom, not a "displace the standard geometry
+ * position" case `positionNode` alone could express: the base spawn/
+ * gravity/power-drift position replaces `position` entirely, the instance
+ * transform is applied explicitly (constructing the same buffer-backed
+ * mat4 node three.js's own automatic InstancedMesh wiring would - see
+ * `Instance.js`'s `createInstanceMatrixNode`, not exported publicly, so
+ * reconstructed here for the common (non-huge-instance-count) case), and
+ * the billboard offset is added in view space *after* that transform,
+ * exactly mirroring the old GLSL's `mvPosition.xyz += particleVertex`.
+ */
+// TSL's node types are precise template-literal generics ("vec3", "float",
+// ...) that don't compose cleanly through a shared generic helper (the
+// `select()`/`mix()` chain below needs to work uniformly across float and
+// vec3 fields) - three.js's own internal node-material source (e.g.
+// SpriteNodeMaterial.js) is plain untyped JS for exactly this reason, not
+// type-checked against these .d.ts files at all. Matching that reality
+// here rather than fighting the generics: node composition below is typed
+// as `AnyNode`, same runtime objects/API either way.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type AnyNode = any;
+
+/**
+ * Builds a right-to-left `select()` chain reproducing the old GLSL's
+ * `if (age<t1) {...} else if (age<t2) {...} else {...}` age-branching -
+ * starts from the last keyframe's flat value (the "else" case) and wraps
+ * one more segment test around it per iteration, so the first matching
+ * `age < keyframe.time` test (scanned in time order, same as the original
+ * if/else-if chain) wins. `select()` evaluates both sides (it's a GPU
+ * select, not a branch), which is fine here - every segment's own formula
+ * is already O(1) thanks to `powerDisplacementAtStart` being precomputed
+ * once on the CPU (see resolveKeyframes), so this chain is no more
+ * expensive than the old GLSL's incremental version. `age` is an explicit
+ * parameter (not closed over) so the same function can be called with a
+ * vertex-stage `age` (position-related fields) or a separately-recomputed
+ * fragment-stage `age` (color/alpha - see RfParticleNodeMaterial's own
+ * colorNode doc comment for why those live in the fragment stage now).
+ */
+function sampleKeyframeField(age: AnyNode, keyframes: ResolvedKeyframe[], pick: (kf: ResolvedKeyframe) => AnyNode): AnyNode {
+  let result = pick(keyframes[keyframes.length - 1]);
+  for (let i = keyframes.length - 1; i >= 1; i--) {
+    const prev = keyframes[i - 1];
+    const curr = keyframes[i];
+    const span = Math.max(curr.time - prev.time, 1e-6);
+    const t = age.sub(prev.time).div(span);
+    const segmentValue = mix(pick(prev), pick(curr), t);
+    result = select(age.lessThan(curr.time), segmentValue, result);
+  }
+  return result;
 }
 
-function glslVec3(value: Vector3): string {
-  return `vec3(${glslNumber(value.x)}, ${glslNumber(value.y)}, ${glslNumber(value.z)})`;
+class RfParticleNodeMaterial extends MeshBasicNodeMaterial {
+  /** Stable holder for advanceClock to mutate every frame - same reasoning as glowEffect.ts's attachGlowInjection returning a `{value}` holder instead of a raw uniform, so callers never need to know this is a TSL uniform node specifically. */
+  readonly particleTime: { value: number };
+
+  private readonly billboard: boolean;
+  private readonly particlePositionLocal: AnyNode;
+  private readonly particleVertex: AnyNode;
+  private keyframeAlpha: AnyNode;
+  private keyframeColor: AnyNode;
+
+  constructor(template: ParticleTemplate, texture: Texture | null, keyframes: ResolvedKeyframe[]) {
+    super();
+    this.transparent = true;
+    this.blending = AdditiveBlending;
+    this.depthWrite = false;
+    // MeshBasicNodeMaterial's own constructor sets `this.lights = true` -
+    // "although the basic material is by definition unlit, we use a
+    // lighting model to compute the outgoing light" (its own doc comment) -
+    // meaning colorNode's output otherwise gets shaded by the scene's real
+    // lights (SceneController's DirectionalLight) against these billboard
+    // quads' own (never explicitly set, effectively undefined-orientation)
+    // normals - confirmed as a real, visible bug: irregular, direction-
+    // dependent dark patches, not simple rectangles, tracking the light
+    // rather than the quad shape. Force back to true passthrough (colorNode
+    // *is* the final color, no lighting model) - the actual unlit behavior
+    // this particle material has always wanted.
+    this.lights = false;
+    this.side = DoubleSide;
+    this.toneMapped = false;
+    this.billboard = template.billboard;
+
+    const particleTimeUniform = uniform(0);
+    this.particleTime = particleTimeUniform;
+
+    const particlePhase: AnyNode = attribute('particlePhase', 'float');
+    const liveTime = Math.max(template.liveTime, 1e-6);
+    const age: AnyNode = particleTimeUniform.add(particlePhase).mod(liveTime);
+
+    const xrot = sampleKeyframeField(age, keyframes, (kf) => float(kf.xrot));
+    const yrot = sampleKeyframeField(age, keyframes, (kf) => float(kf.yrot));
+    const zrot = sampleKeyframeField(age, keyframes, (kf) => float(kf.zrot));
+    const scale = sampleKeyframeField(age, keyframes, (kf) => float(kf.scale));
+    // Vertex-stage color/alpha (real per-vertex `age`, relying on TSL's
+    // automatic vertex->fragment promotion when referenced from colorNode
+    // below) - this exact shape (not the fragment-stage-recompute version
+    // that used to live here) is independently confirmed working on its
+    // own for the untextured case; see RfParticleNodeMaterial's own
+    // colorNode doc comment for the full story on why textured particles
+    // can't currently use it too.
+    // Stashed on `this` (not just a local) so colorNode's own construction
+    // further down can reference them - named to avoid colliding with the
+    // real `Material.color` (a plain THREE.Color, not a node) this class
+    // inherits.
+    this.keyframeAlpha = sampleKeyframeField(age, keyframes, (kf) => float(kf.alpha));
+    this.keyframeColor = sampleKeyframeField(age, keyframes, (kf) => vec3(kf.color.r, kf.color.g, kf.color.b));
+    const power = (kf: ResolvedKeyframe): AnyNode => vec3(kf.power.x, kf.power.y, kf.power.z);
+    const displacementAtStart = (kf: ResolvedKeyframe): AnyNode =>
+      vec3(kf.powerDisplacementAtStart.x, kf.powerDisplacementAtStart.y, kf.powerDisplacementAtStart.z);
+
+    // powerDisplacement: same closed-form trapezoidal-integral shape as
+    // sampleField above, but each segment's own formula (not a simple mix)
+    // - see resolveKeyframes' doc comment for the math this reproduces.
+    let powerDisplacement = displacementAtStart(keyframes[keyframes.length - 1]);
+    for (let i = keyframes.length - 1; i >= 1; i--) {
+      const prev = keyframes[i - 1];
+      const curr = keyframes[i];
+      const span = Math.max(curr.time - prev.time, 1e-6);
+      const t = age.sub(prev.time).div(span);
+      const powerAtAge = mix(power(prev), power(curr), t);
+      const elapsed = age.sub(prev.time);
+      const segmentDisplacement = displacementAtStart(prev).add(power(prev).add(powerAtAge).mul(0.5).mul(elapsed));
+      powerDisplacement = select(age.lessThan(curr.time), segmentDisplacement, powerDisplacement);
+    }
+
+    const spawn = convertVec3(template.posBox[0], template.posBox[1], template.posBox[2]);
+    const gravity = convertVec3(template.gravity[0], template.gravity[1], template.gravity[2]);
+    this.particlePositionLocal = vec3(spawn.x, spawn.y, spawn.z)
+      .add(vec3(gravity.x, gravity.y, gravity.z).mul(age))
+      .add(powerDisplacement);
+
+    // rotateParticle(position*scale, radians(xrot), radians(yrot), radians(zrot)) - same X-then-Y-then-Z Euler order as the old GLSL helper, written out per-axis since TSL has no matching built-in 3-axis Euler rotator (rotate() is 2D-only, used by e.g. SpriteNodeMaterial).
+    const xr = radians(xrot);
+    const yr = radians(yrot);
+    const zr = radians(zrot);
+    const v0: AnyNode = positionGeometry.mul(scale);
+    const afterX = vec3(v0.x, v0.y.mul(cos(xr)).sub(v0.z.mul(sin(xr))), v0.y.mul(sin(xr)).add(v0.z.mul(cos(xr))));
+    const afterY = vec3(afterX.x.mul(cos(yr)).add(afterX.z.mul(sin(yr))), afterX.y, afterX.x.negate().mul(sin(yr)).add(afterX.z.mul(cos(yr))));
+    this.particleVertex = vec3(afterY.x.mul(cos(zr)).sub(afterY.y.mul(sin(zr))), afterY.x.mul(sin(zr)).add(afterY.y.mul(cos(zr))), afterY.z);
+
+    // Textured particles are tinted by the template's own per-keyframe
+    // color/alpha, same as the untextured case below - this was previously
+    // believed to be broken ("multiplying anything onto a texture sample
+    // causes TSL artifacts"), across two separate wrong diagnoses (first
+    // blamed on THREE.CompressedTexture - see texture.ts's own doc comment
+    // - then, when that didn't fix it, blamed on TSL/WebGPU itself and
+    // reverted here). Root-caused instead to SceneManager's renderer: it
+    // was constructed without `alpha: false`, so the canvas' own
+    // framebuffer was transparent and got composited by the *browser* over
+    // this page's own dark background - and AdditiveBlending's alpha
+    // output isn't attenuated by its blend factors the way its RGB is (see
+    // SceneManager's own doc comment for the full mechanism), so a
+    // fully-opaque-alpha texture (most real weapon-glow assets - they rely
+    // entirely on a true-black background + additive blending for
+    // "transparency", never on their own alpha channel) pushed the canvas'
+    // *alpha* near 1 across a whole particle quad even where its RGB
+    // correctly stayed near black, and the browser then composited that
+    // (near-black, near-opaque) canvas region as solid black over the page
+    // - a browser-compositing artifact, not anything three.js/TSL was
+    // doing wrong with this multiply. Fixed at the renderer, not here.
+    const tint = vec4(this.keyframeColor, this.keyframeAlpha.div(255));
+    this.colorNode = texture ? sampleTexture(texture, uv()).mul(tint) : tint;
+  }
+
+  setupPositionView(builder: NodeBuilder): AnyNode {
+    const object = builder.object as unknown as WebGpuInstancedMesh;
+    const instanceMatrix = object.instanceMatrix;
+    const instanceMatrixNode: AnyNode = (buffer(instanceMatrix.array, 'mat4', Math.max(instanceMatrix.count, 1)) as AnyNode).element(instanceIndex);
+
+    const instancedPoint = instanceMatrixNode.mul(vec4(this.particlePositionLocal, 1));
+    const mvPosition: AnyNode = modelViewMatrix.mul(instancedPoint);
+
+    if (this.billboard) {
+      // A hidden row (unused batch capacity, or a culled/LOD-reduced member
+      // - see ParticleTemplateBatch's ZERO_SCALE_MATRIX/updateMember) has
+      // its *position* collapsed to the origin by a zero-scale instance
+      // matrix, but that alone doesn't hide a billboard particle: its own
+      // screen-space size (particleVertex, below) is computed independently
+      // of the instance transform entirely - that's what makes it
+      // camera-facing rather than following the socket's own rotation. Left
+      // alone, every hidden row across the whole batch still rendered a
+      // full-size quad, just relocated to the same point (the scene origin,
+      // near wherever the character itself stands) - confirmed visually as
+      // a cluster of solid, oversized squares. Scaling the billboard offset
+      // by the instance's own scale magnitude (extracted the same way
+      // SpriteNodeMaterial reads a world matrix's scale, via one column's
+      // length - 1 for any real, visible instance, 0 for a zero-scale
+      // hidden one) collapses the quad's own size right along with its
+      // position, matching a real Mesh's own "invisible when scaled to
+      // zero" behavior instead of only hiding position.
+      const instanceScale = instanceMatrixNode[0].xyz.length();
+      // mvPosition.xyz += particleVertex - camera-facing offset added post-transform, in view space, ignoring the instance's own rotation (see rebuildMesh's doc comment on why - this mesh spans many unrelated socket orientations).
+      return vec4(mvPosition.xyz.add(this.particleVertex.mul(instanceScale)), mvPosition.w);
+    }
+
+    // Non-billboard: the vertex offset goes through the instance transform
+    // too (as a direction - w=0, no translation), unlike the billboard
+    // branch above - so a hidden row's zero-scale matrix already correctly
+    // collapses this offset to zero right along with its position, no
+    // separate fix needed here.
+    return mvPosition.add(modelViewMatrix.mul(instanceMatrixNode.mul(vec4(this.particleVertex, 0))));
+  }
 }
 
-/** Builds one compact shader per RF template. The keyframes are resolved once at spawn; thereafter the GPU owns interpolation, power integration, spin, scale, colour, and billboarding. */
-function buildGpuParticleMaterial(template: ParticleTemplate, texture: Texture | null, keyframes: ResolvedKeyframe[]): ShaderMaterial {
-  const state = keyframes.map((keyframe, index) => {
-    const color = keyframe.color;
-    return `float a${index}=${glslNumber(keyframe.alpha)}; float xr${index}=${glslNumber(keyframe.xrot)}; float yr${index}=${glslNumber(keyframe.yrot)}; float zr${index}=${glslNumber(keyframe.zrot)}; float s${index}=${glslNumber(keyframe.scale)}; vec3 c${index}=vec3(${glslNumber(color.r)},${glslNumber(color.g)},${glslNumber(color.b)}); vec3 p${index}=${glslVec3(keyframe.power)};`;
-  }).join('\n');
-  let sample = `float alpha=a0; float xrot=xr0; float yrot=yr0; float zrot=zr0; float scale=s0; vec3 color=c0; vec3 powerDisplacement=vec3(0.0);`;
-  let completedPower = '';
-  for (let i = 1; i < keyframes.length; i++) {
-    const previous = keyframes[i - 1];
-    const current = keyframes[i];
-    const span = Math.max(current.time - previous.time, 1e-6);
-    const branch = `${i === 1 ? 'if' : 'else if'} (age < ${glslNumber(current.time)}) { ${completedPower} float t=(age-${glslNumber(previous.time)})/${glslNumber(span)}; vec3 powerAtAge=mix(p${i - 1},p${i},t); powerDisplacement+=0.5*(p${i - 1}+powerAtAge)*(age-${glslNumber(previous.time)}); alpha=mix(a${i - 1},a${i},t); xrot=mix(xr${i - 1},xr${i},t); yrot=mix(yr${i - 1},yr${i},t); zrot=mix(zr${i - 1},zr${i},t); scale=mix(s${i - 1},s${i},t); color=mix(c${i - 1},c${i},t); }`;
-    sample += `\n${branch}`;
-    completedPower += `powerDisplacement+=0.5*(p${i - 1}+p${i})*${glslNumber(span)}; `;
-  }
-  if (keyframes.length > 1) {
-    const last = keyframes.length - 1;
-    sample += ` else { ${completedPower} alpha=a${last}; xrot=xr${last}; yrot=yr${last}; zrot=zr${last}; scale=s${last}; color=c${last}; }`;
-  }
-  const spawn = convertVec3(template.posBox[0], template.posBox[1], template.posBox[2]);
-  const gravity = convertVec3(template.gravity[0], template.gravity[1], template.gravity[2]);
-  const textureUniform = texture ? 'uniform sampler2D map;' : '';
-  const textureSample = texture ? 'texture2D(map, vUv)' : 'vec4(1.0)';
-  // instanceMatrix carries this row's own socket world transform (see
-  // ParticleTemplateBatch - many sockets across many characters share this
-  // one material/mesh, so their positioning can no longer come from the
-  // mesh's own modelViewMatrix the way a private per-effect mesh used to
-  // provide it). Billboard offset is still added post-projection in view
-  // space, ignoring instanceMatrix's rotation, same as the old per-effect
-  // mesh already did via its own modelViewMatrix.
-  const billboard = template.billboard ? 'mvPosition.xyz += particleVertex;' : 'mvPosition += modelViewMatrix * instanceMatrix * vec4(particleVertex, 0.0);';
-  return new ShaderMaterial({
-    uniforms: { particleTime: { value: 0 }, ...(texture ? { map: { value: texture } } : {}) },
-    // ShaderMaterial injects the standard position/uv attributes and
-    // modelView/projection uniforms itself, and three.js's WebGLProgram
-    // auto-declares `attribute mat4 instanceMatrix` for any material
-    // rendered via InstancedMesh (independent of material type) - only
-    // declare particle-specific inputs here, otherwise WebGL rejects the
-    // duplicate declarations.
-    vertexShader: `attribute float particlePhase; uniform float particleTime; varying vec2 vUv; varying vec3 vParticleColor; vec3 rotateParticle(vec3 v,float x,float y,float z){ float cx=cos(x),sx=sin(x),cy=cos(y),sy=sin(y),cz=cos(z),sz=sin(z); v=vec3(v.x,v.y*cx-v.z*sx,v.y*sx+v.z*cx); v=vec3(v.x*cy+v.z*sy,v.y,-v.x*sy+v.z*cy); return vec3(v.x*cz-v.y*sz,v.x*sz+v.y*cz,v.z); } void main(){ vUv=uv; float age=mod(particleTime+particlePhase,${glslNumber(Math.max(template.liveTime, 1e-6))}); ${state} ${sample} vec3 particlePosition=${glslVec3(spawn)}+${glslVec3(gravity)}*age+powerDisplacement; vec3 particleVertex=rotateParticle(position*scale,radians(xrot),radians(yrot),radians(zrot)); vec4 mvPosition=modelViewMatrix*instanceMatrix*vec4(particlePosition,1.0); ${billboard} gl_Position=projectionMatrix*mvPosition; vParticleColor=color*(alpha/255.0); }`,
-    fragmentShader: `precision highp float; ${textureUniform} varying vec2 vUv; varying vec3 vParticleColor; vec3 srgbToLinear(vec3 c){ return mix(c/12.92,pow((c+0.055)/1.055,vec3(2.4)),step(0.04045,c)); } vec3 linearToSrgb(vec3 c){ return mix(c*12.92,1.055*pow(max(c,vec3(0.0)),vec3(1.0/2.4))-0.055,step(0.0031308,c)); } void main(){ vec4 texel=${textureSample}; gl_FragColor=vec4(linearToSrgb(srgbToLinear(texel.rgb)*vParticleColor),texel.a); }`,
-    transparent: true,
-    blending: AdditiveBlending,
-    depthWrite: false,
-    side: DoubleSide,
-    toneMapped: false,
-  });
+/** Builds one compact node-material per RF template - see RfParticleNodeMaterial's own doc comment for why this is a full TSL node graph now (WebGPURenderer migration) instead of a GLSL string. Returns the material alongside a stable `{value}` holder for `advanceClock` to mutate every frame - same shape glowEffect.ts's attachGlowInjection already uses for its own per-frame-mutated uniform. */
+function buildGpuParticleMaterial(
+  template: ParticleTemplate,
+  texture: Texture | null,
+  keyframes: ResolvedKeyframe[],
+): { material: RfParticleNodeMaterial; particleTime: { value: number } } {
+  const material = new RfParticleNodeMaterial(template, texture, keyframes);
+  return { material, particleTime: material.particleTime };
 }
 
 /** Instance-row capacity a ParticleTemplateBatch grows by whenever a new member doesn't fit, so it isn't rebuilt on every single equip/spawn event - see ParticleTemplateBatch.rebuildMesh. */
@@ -530,7 +725,7 @@ class BatchMember {
  * independently of each other within one draw call.
  */
 class ParticleTemplateBatch {
-  material: ShaderMaterial;
+  material: RfParticleNodeMaterial;
   rowsPerMember: number;
   localBoundsRadius: number;
 
@@ -542,13 +737,17 @@ class ParticleTemplateBatch {
   private geometry: BufferGeometry;
   private template: ParticleTemplate;
   private texture: Texture | null;
+  /** The material's own particleTime uniform holder - see buildGpuParticleMaterial's return shape. Held separately (not re-read off `material` each time) since a TSL node material doesn't expose a plain `.uniforms` map the way the old ShaderMaterial did. */
+  private particleTime: { value: number };
 
   constructor(geometry: BufferGeometry, template: ParticleTemplate, texture: Texture | null) {
     this.geometry = geometry;
     this.template = template;
     this.texture = texture;
     const keyframes = resolveKeyframes(template);
-    this.material = buildGpuParticleMaterial(template, texture, keyframes);
+    const built = buildGpuParticleMaterial(template, texture, keyframes);
+    this.material = built.material;
+    this.particleTime = built.particleTime;
     this.rowsPerMember = Math.max(0, Math.round(template.num));
     this.localBoundsRadius = computeLocalBoundsRadius(template, geometry, keyframes);
   }
@@ -560,7 +759,7 @@ class ParticleTemplateBatch {
   /** Advances this batch's one shared animation clock - called once per batch per frame (see advanceParticleBatchClocks), not once per member. Every member already differentiates purely via its own particlePhase row data (Van der Corput + createTimeEpsilon jitter, assigned in reassignRows), so a shared clock across every socket using this template is visually indistinguishable from each effect owning its own clock, just cheaper. */
   advanceClock(delta: number): void {
     this.simTime += delta * this.template.timeSpeed;
-    if (this.material.uniforms.particleTime) this.material.uniforms.particleTime.value = this.simTime;
+    this.particleTime.value = this.simTime;
   }
 
   addMember(group: Object3D): BatchMember {
@@ -585,7 +784,9 @@ class ParticleTemplateBatch {
   rebuildFromTemplate(): void {
     const keyframes = resolveKeyframes(this.template);
     this.material.dispose();
-    this.material = buildGpuParticleMaterial(this.template, this.texture, keyframes);
+    const built = buildGpuParticleMaterial(this.template, this.texture, keyframes);
+    this.material = built.material;
+    this.particleTime = built.particleTime;
     if (this.instancedMesh) this.instancedMesh.material = this.material;
     this.rowsPerMember = Math.max(0, Math.round(this.template.num));
     this.localBoundsRadius = computeLocalBoundsRadius(this.template, this.geometry, keyframes);

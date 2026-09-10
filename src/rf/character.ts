@@ -570,6 +570,45 @@ function buildObjectsFromParsedMesh(
   weaponToken?: string | null,
 ): Object3D[] {
   const built3d: Object3D[] = [];
+  // Every renderable sub-object in one call shares the same `texture` param
+  // (and therefore the same materialAlphaOptions result) - built once,
+  // lazily (only if something actually needs it), and reused by every
+  // sub-object below instead of each getting its own `new
+  // MeshStandardMaterial(...)`. Confirmed real and not premature: a single
+  // cloak's own .msh alone has ~20 renderable sub-objects (wings, cover,
+  // weapon-cloak base parts) that were each getting a distinct material
+  // instance despite drawing the exact same texture, forcing three.js to
+  // rebind material/shader state between every one of those draw calls
+  // instead of batching them - confirmed as a real, measured contributor to
+  // per-bot render cost (StatsPanel's Frame: render ms), not merely a
+  // theoretical waste.
+  //
+  // Safe to share across sub-objects of the same equip:
+  // - applySurfaceShineFor replaces `mesh.material` outright per matched
+  //   sub-object (a plain reference reassignment) rather than mutating the
+  //   material object in place, so it can't leak onto siblings still
+  //   pointing at this shared instance.
+  // - attachGlowInjection (glowEffect.ts) already reuses
+  //   `material.userData.rfGlowUvOffset` instead of creating a fresh one
+  //   per call, so being invoked once per sub-object sharing this material
+  //   (glow applies item-wide, to every renderable sub-object already - see
+  //   buildGlowOverlay) is idempotent, not a duplicate-uniform bug.
+  // - disposeObject3D calls `material.dispose()` once per traversed
+  //   sub-object regardless of sharing - safe/idempotent on a three.js
+  //   Material, same as it already relies on for the equally-shared,
+  //   pooled `texture` itself (see its own `userData.pooled` guard).
+  let sharedMaterial: MeshStandardMaterial | null = null;
+  const getSharedMaterial = (): MeshStandardMaterial => {
+    if (!sharedMaterial) {
+      sharedMaterial = new MeshStandardMaterial({
+        map: texture,
+        color: texture ? 0xffffff : 0xcccccc,
+        side: DoubleSide,
+        ...materialAlphaOptions(texture),
+      });
+    }
+    return sharedMaterial;
+  };
   // Some multi-part meshes chain a piece's parentName to *another
   // sub-object in this same file* instead of (or in addition to - via a
   // longer chain) a skeleton bone - e.g. a staff's ornamental head parented
@@ -606,12 +645,7 @@ function buildObjectsFromParsedMesh(
 
     if (isRenderable && obj.skinBoneNames && obj.skinWeights) {
       const geometry = buildGeometry(obj);
-      const material = new MeshStandardMaterial({
-        map: texture,
-        color: texture ? 0xffffff : 0xcccccc,
-        side: DoubleSide,
-        ...materialAlphaOptions(texture),
-      });
+      const material = getSharedMaterial();
       const { skinIndices, skinWeights } = buildSkinAttributes(obj, built.nameToIndex);
       geometry.setAttribute('skinIndex', new BufferAttribute(skinIndices, 4));
       geometry.setAttribute('skinWeight', new BufferAttribute(skinWeights, 4));
@@ -638,17 +672,7 @@ function buildObjectsFromParsedMesh(
       // pivot (isRenderable false - see above) gets a bare Object3D instead
       // of a Mesh, since there's no geometry to build for it, but otherwise
       // goes through the exact same placement logic below.
-      const mesh: Object3D = isRenderable
-        ? new Mesh(
-            buildGeometry(obj),
-            new MeshStandardMaterial({
-              map: texture,
-              color: texture ? 0xffffff : 0xcccccc,
-              side: DoubleSide,
-              ...materialAlphaOptions(texture),
-            }),
-          )
-        : new Object3D();
+      const mesh: Object3D = isRenderable ? new Mesh(buildGeometry(obj), getSharedMaterial()) : new Object3D();
       mesh.name = obj.name || `${namePrefix}_${objects.indexOf(obj)}`;
 
       const parentIndex = built.nameToIndex.get(obj.parentName);

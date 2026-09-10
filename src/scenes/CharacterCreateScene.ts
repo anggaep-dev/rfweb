@@ -1,4 +1,5 @@
-import type { PerspectiveCamera, Scene, WebGLRenderer } from 'three';
+import type { PerspectiveCamera, Scene } from 'three';
+import type { WebGPURenderer } from 'three/webgpu';
 import { AssetController } from '../controllers/AssetController';
 import { CameraController } from '../controllers/CameraController';
 import { CharacterController } from '../controllers/CharacterController';
@@ -30,7 +31,7 @@ export class CharacterCreateScene implements AppScene {
   private readonly callbacks: CharacterCreateSceneCallbacks;
   private disposed = false;
 
-  constructor(renderer: WebGLRenderer, private initialRaceGender: RaceGender, callbacks: CharacterCreateSceneCallbacks = {}) {
+  constructor(renderer: WebGPURenderer, private initialRaceGender: RaceGender, callbacks: CharacterCreateSceneCallbacks = {}) {
     this.callbacks = callbacks;
 
     this.cameraController = new CameraController(

@@ -98,6 +98,8 @@ export class BotController {
   private disposed = false;
   /** Mirrors CharacterController's own debugSocketParticleWanted default - applied to every bot at spawn (see spawnBots) and forwarded live to every existing bot by setDebugSocketParticleEnabled, so `%particletest` actually reaches bots instead of only the player's own CharacterController (see RfViewer's %particletest handler). */
   private debugSocketParticleWanted = true;
+  /** Same reasoning as debugSocketParticleWanted above, for `%glowtest` (see CharacterController.debugSocketGlowWanted). */
+  private debugSocketGlowWanted = true;
 
   constructor(scene: Scene) {
     this.scene = scene;
@@ -141,6 +143,12 @@ export class BotController {
     for (const bot of this.bots) bot.controller.setDebugSocketParticleEnabled(enabled);
   }
 
+  /** Forwards `%glowtest` to every current bot (see debugSocketGlowWanted's own doc comment) and remembers the choice for any bot spawned afterward. */
+  setDebugSocketGlowEnabled(enabled: boolean): void {
+    this.debugSocketGlowWanted = enabled;
+    for (const bot of this.bots) bot.controller.setDebugSocketGlowEnabled(enabled);
+  }
+
   /** Spawns up to MAX_ADDBOT_COUNT bots, clamped and floored to at least 1. Returns how many were actually added (a bot whose load/mount fails is skipped). See SpawnBotOptions for the optional weapon-filter/upgrade-level stress-testing hooks - omitted or empty, every slot (weapon included) just gets the normal random-per-slot equip roll. */
   async spawnBots(requestedCount: number, options?: SpawnBotOptions): Promise<number> {
     const count = Number.isFinite(requestedCount) ? Math.min(Math.max(Math.floor(requestedCount), 1), MAX_ADDBOT_COUNT) : 1;
@@ -170,6 +178,8 @@ export class BotController {
       // (CharacterController's own default), same bug setDebugSocketParticleEnabled
       // fixes for bots that already existed when the command ran.
       controller.setDebugSocketParticleEnabled(this.debugSocketParticleWanted);
+      // Same reasoning as the particle line above, for `%glowtest`.
+      controller.setDebugSocketGlowEnabled(this.debugSocketGlowWanted);
       // War mode, not the default Peace - a bot's whole point here is
       // visual/stress testing (see SpawnBotOptions), and Peace hides the
       // weapon mesh entirely (see CharacterController.applyWeaponVisibility)

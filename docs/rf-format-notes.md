@@ -270,18 +270,23 @@ textures (glowEffect.ts) turned out to use a wider spread, though: DXT1,
 **DXT3**, and even **uncompressed** DDS (24bpp and 16bpp) - `decodeRftTexture`
 handles all of these now, not just DXT1/DXT5 (see below).
 
-Most mobile GPUs (iOS Safari especially) don't expose
-`WEBGL_compressed_texture_s3tc`, so uploading a `CompressedTexture` there
-silently no-ops - mesh renders, but with no texture (falls back to the flat
-gray material color). `texture.ts` probes support once (cached, via a
-throwaway canvas/WebGL context) and, when unsupported, CPU-decompresses the
-**base mip level only** into a `DataTexture` (see BC1/BC2/BC3 formulas
-below), letting the GPU regenerate the rest of the mip chain. An
-**uncompressed** DDS skips this decision entirely and always uploads as a
-plain `DataTexture` - it works on any GPU regardless of S3TC support, and
-building a `CompressedTexture` from non-compressed mip data (an actual bug
-here until the Chef/ work surfaced it - see "Known bugs" below) crashes at
-GPU-upload time, not at decode time.
+`decodeRftTexture` never builds a `THREE.CompressedTexture` at all any
+more - every DXT1/DXT3/DXT5 DDS is CPU-decompressed (see BC1/BC2/BC3
+formulas below) into a plain `RGBAFormat` `DataTexture` (**base mip level
+only**; the GPU regenerates the rest of the chain), same as an
+**uncompressed** DDS already did unconditionally. This used to be
+conditional - a `CompressedTexture` was built whenever `isS3TCSupported()`
+(a throwaway WebGL-canvas extension probe) reported support, which is what
+most mobile GPUs lack. That check made sense back when this project's only
+renderer was `WebGLRenderer`, where the probe's own context *is* the real
+one. It stopped making sense once `SceneManager` switched to
+`WebGPURenderer` (`three/webgpu`) - a WebGL extension list says nothing
+about whether the renderer's actual backend (real WebGPU, or `WebGPURenderer`'s
+own separate internal WebGL2 fallback) can sample a `CompressedTexture`,
+and on desktop the probe reports "supported" almost unconditionally
+regardless, so the compressed path was being taken with no real
+verification behind it. See "Known bugs" below for the actual regression
+this caused and how it was diagnosed.
 
 ### Coordinate conversion (`src/rf/coords.ts`)
 
@@ -1818,6 +1823,58 @@ template pulsed through the exact same keyframe at the exact same moment
   comparison, no-op unless the equipped weapon actually changed) and
   re-attaching (with a fresh "Original" capture) whenever it differs,
   rather than only on the `%wpedit 1` transition.
+- **`SceneManager`'s `WebGPURenderer` must be constructed with
+  `alpha: false`** - this was the real cause of a "black/dark rectangular
+  background around textured particles" regression from the WebGL->WebGPU
+  migration, misdiagnosed twice before landing on the actual root cause:
+  - First blamed on `CompressedTexture` (see the `.RFT texture` section
+    above) - a real, independent bug (fixed anyway), but fixing it alone
+    didn't remove the black boxes.
+  - Then blamed on `particleSystem.ts`'s `colorNode = sampleTexture(...)
+    .mul(vec4(keyframeColor, keyframeAlpha.div(255)))` (the per-keyframe
+    color/alpha tint) - reverting to a bare `sampleTexture(texture, uv())`
+    *did* make the boxes disappear, which looked like confirmation, and an
+    upgrade from three.js 0.185.1 to 0.186.0 made no difference either way
+    - but this was a false positive: reverting the tint also happened to
+      make `DiffuseColor.rgb` slightly less "purely black" in a texture's
+      transparent-looking padding (see below), which was enough to mask
+      the real bug rather than fix it.
+  - **Actual cause**: `THREE.Renderer` (the base both `WebGPURenderer` and
+    `WebGLRenderer` share) defaults `alpha: true` - genuinely different
+    from the old dedicated `WebGLRenderer`'s own `alpha: false` default,
+    which is what this project's pre-migration code implicitly relied on.
+    With `alpha: true` and no `scene.background` set, the canvas'
+    framebuffer is transparent, and the *browser* composites it over the
+    page's own CSS background per-pixel - which matters because
+    `AdditiveBlending`'s alpha blend factors are `(One, One)` (see
+    `WebGPUPipelineUtils.js`'s `_getBlending`), i.e. alpha accumulates
+    raw/unattenuated, unlike RGB which is correctly `SrcAlpha`-scaled. Most
+    real RF weapon-glow textures (`aa.dds`-style assets, confirmed via a
+    CPU alpha-channel survey: `minAlpha == maxAlpha == 255`, 0% transparent
+    texels) are **fully opaque in their alpha channel** and rely entirely
+    on a true-black RGB background + additive blending for their
+    "transparency" - never on their own alpha. So even though such a
+    texture's RGB correctly blended toward near-black, its *alpha* pushed
+    the canvas' own alpha toward 1 across the whole quad regardless - and
+    a (near-black RGB, near-1 alpha) canvas region composites as solid
+    black over the page background. Confirmed live: calling
+    `renderer.setClearColor(0x0a0e15, 1)` from devtools, with *no other
+    change* (tint multiply still active), removed the black boxes
+    outright; sampled screenshot pixels inside the artifact were
+    measurably *darker* than the plain page background before the fix
+    (impossible under correct additive blending) and always `>=` the
+    background after it. Fixed by passing `alpha: false` to
+    `new WebGPURenderer(...)` and calling `setClearColor(0x0a0e15, 1)`
+    (matching `--surface-base`, `src/styles/tokens.css`) right after - the
+    canvas becomes its own opaque surface again, the same way the old
+    `WebGLRenderer` always was, and the tint multiply (the actually-correct
+    per-effect recoloring) was restored with it.
+  - **Takeaway for next time**: a WebGPU rendering bug that only shows up
+    on *some* additive-blended/transparent textures, and specifically on
+    ones with a fully-opaque alpha channel, points at canvas/page alpha
+    compositing before it points at TSL or the texture pipeline - check
+    `renderer`'s `alpha`/`premultipliedAlpha` config and whether
+    `scene.background` is set before suspecting the node graph.
 
 ## Empirical weapon placement fixups
 

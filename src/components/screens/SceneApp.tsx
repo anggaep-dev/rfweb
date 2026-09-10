@@ -60,8 +60,25 @@ export default function SceneApp() {
     if (!container) return;
 
     let disposed = false;
-    const sceneManager = new SceneManager(container);
-    setSceneManagerState(sceneManager);
+    // Written once SceneManager.create() resolves below - handleResize and
+    // this effect's own cleanup both need to reach it, but can't just
+    // close over a `const` the way the old synchronous `new SceneManager()`
+    // let them, since creation is now async (WebGPURenderer needs to
+    // negotiate a device/adapter before it can render - see its own doc
+    // comment).
+    let manager: SceneManager | null = null;
+    void SceneManager.create(container).then((created) => {
+      if (disposed) {
+        // This effect's cleanup already ran by the time creation resolved
+        // (a fast unmount, or React StrictMode's dev-mode double-invoke) -
+        // dispose the now-unneeded manager immediately instead of leaking
+        // it or handing a stale one to setSceneManagerState.
+        created.dispose();
+        return;
+      }
+      manager = created;
+      setSceneManagerState(created);
+    });
 
     // Blocks entry past the login screen only until every race's skeleton
     // and base animations are cached - body-part/armor/weapon/cloak meshes
@@ -89,13 +106,13 @@ export default function SceneApp() {
         setPreloadError(err instanceof Error ? err.message : String(err));
       });
 
-    const handleResize = () => sceneManager.resize();
+    const handleResize = () => manager?.resize();
     window.addEventListener('resize', handleResize);
 
     return () => {
       disposed = true;
       window.removeEventListener('resize', handleResize);
-      sceneManager.dispose();
+      manager?.dispose();
       setSceneManagerState(null);
     };
   }, []);
