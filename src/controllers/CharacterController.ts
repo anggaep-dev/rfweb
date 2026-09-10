@@ -850,49 +850,137 @@ export class CharacterController {
    * Best-effort, fire-and-forget: loads a just-equipped cloak's own
    * animation clips (see character.ts's loadCloakAnimationRig), if it has
    * any - most cloaks don't, and that's not an error, same reasoning as
-   * applyGlowOverlay. Finds the one object among `sourceObjects` actually
-   * parented to a real character bone (everything else in the rigid
-   * sibling chain - see buildObjectsFromParsedMesh - hangs off it already)
-   * to use as both the clip's target and its bind-pose source, and starts
-   * EQUIP (falling through to a looping USE once it finishes, or
-   * immediately if EQUIP is missing).
+   * applyGlowOverlay. Finds the cloak's own "BONE Cloak"/"BONE CLOAK" pivot
+   * among `sourceObjects` (everything else in the rigid sibling chain - see
+   * buildObjectsFromParsedMesh - hangs off it already) to use as both the
+   * clip's target and its bind-pose source, and starts EQUIP (falling
+   * through to a looping USE once it finishes, or immediately if EQUIP is
+   * missing).
+   *
+   * That pivot can't be found by "the one object parented to a real
+   * skeleton bone" alone - confirmed on a real mesh (BELMALE_ARMOR_CLOAK_000
+   * and the same for Cora/BellFemale, unlike Accretia's) to also carry
+   * several unrelated cosmetic "DummyNN" attach points (hair/weapon socket
+   * decorations) directly parented to real bones (head/fingers/toes)
+   * *before* the cloak's own pivot in the mesh's own object order - taking
+   * the first bone-parented match picked one of those instead, so the
+   * mixer's root ended up being a head/finger/toe attachment with none of
+   * the wing/ball tracks as its descendants, silently failing to bind any
+   * of them (three.js just warns and no-ops per track) and leaving the
+   * cloak frozen in its static rigid-attach pose - the "stuck" bug this
+   * name match fixes. Matched by name instead (seen as "BONE Cloak" on
+   * Accretia/Cora, "BONE CLOAK" on Bell) with the old bone-parented check
+   * kept only as a fallback in case some other item uses a different pivot
+   * name entirely.
    */
   private async applyCloakAnimation(stem: string, character: RfCharacter, sourceObjects: Object3D[]): Promise<void> {
     const boneSet = new Set<Object3D>(character.builtSkeleton.bones);
-    const target = sourceObjects.find((o) => o.parent && boneSet.has(o.parent));
+    const target =
+      sourceObjects.find((o) => /^BONE\s+CLOAK$/i.test(o.name)) ?? sourceObjects.find((o) => o.parent && boneSet.has(o.parent));
     if (!target) return; // no sub-object is directly parented to a real skeleton bone - nothing to animate from
 
     const rig = await loadCloakAnimationRig(stem, target);
     if (this.character !== character || this.equippedObjects[ModelType.Cloak] !== sourceObjects) return; // superseded mid-await
-    if (!rig) return; // common case - this cloak has no ani data
+    if (!rig) {
+      console.log(`[anim-debug] cloak sway: "${stem}" has no ani data at all`);
+      return; // common case - this cloak has no ani data
+    }
 
     const state: CloakSwayState = { rig };
     this.cloakAnimation = state;
 
     const equipClip = rig.clips.EQUIP;
     const useClip = rig.clips.USE;
-    if (equipClip) {
+    console.log(`[anim-debug] cloak sway: "${stem}" loaded states [${Object.keys(rig.clips).join(', ')}] - equip=${!!equipClip} use=${!!useClip}`);
+    // EQUIP/UNUSE are reserved for the flight takeoff/landing transitions
+    // (see setCloakFlightAnimation) - a plain equip settles straight into
+    // the resting USE loop, falling back to a frozen EQUIP if this cloak
+    // has no USE clip at all.
+    if (useClip) {
+      rig.mixer.clipAction(useClip).reset().setLoop(LoopRepeat, Infinity).play();
+    } else if (equipClip) {
       const equipAction = rig.mixer.clipAction(equipClip).reset();
       equipAction.setLoop(LoopOnce, 1);
       equipAction.clampWhenFinished = true;
       equipAction.play();
-      if (useClip) {
-        const onEquipFinished = (e: { action: AnimationAction }) => {
-          if (e.action !== equipAction) return;
-          rig.mixer.removeEventListener('finished', onEquipFinished);
-          // clampWhenFinished keeps equipAction "running" (frozen on its last
+    }
+  }
+
+  /**
+   * Plays `first` once, clamped on its last frame, then - once it finishes -
+   * stops it and starts `second` looping forever. The shared shape behind
+   * every cloak sway state change: a fresh equip (EQUIP->USE, see
+   * applyCloakAnimation), takeoff (USE->ATTACK) and landing (UNUSE->EQUIP,
+   * itself chaining into another EQUIP->USE via this same helper) - see
+   * setCloakFlightAnimation. Missing-clip fallbacks match
+   * applyCloakAnimation's original behavior: `first` alone freezes on its
+   * last frame if `second` is missing (clampWhenFinished, no fallback);
+   * `second` alone loops immediately if `first` is missing; both missing is
+   * a total no-op.
+   */
+  private playCloakTransition(rig: CloakAnimationRig, first: AnimationClip | undefined, second: AnimationClip | undefined): void {
+    if (first) {
+      const firstAction = rig.mixer.clipAction(first).reset();
+      firstAction.setLoop(LoopOnce, 1);
+      firstAction.clampWhenFinished = true;
+      firstAction.play();
+      if (second) {
+        const onFirstFinished = (e: { action: AnimationAction }) => {
+          if (e.action !== firstAction) return;
+          rig.mixer.removeEventListener('finished', onFirstFinished);
+          // clampWhenFinished keeps firstAction "running" (frozen on its last
           // frame, still contributing weight) even after this fires - left
-          // alone, the mixer blends that frozen pose together with useClip's
-          // loop instead of replacing it, damping the idle sway down to
-          // near-invisible. Stop it explicitly so useClip has the track to
-          // itself.
-          equipAction.stop();
-          rig.mixer.clipAction(useClip).reset().setLoop(LoopRepeat, Infinity).play();
+          // alone, the mixer blends that frozen pose together with second's
+          // loop instead of replacing it, damping it down to near-invisible.
+          // Stop it explicitly so second has the track to itself.
+          firstAction.stop();
+          rig.mixer.clipAction(second).reset().setLoop(LoopRepeat, Infinity).play();
         };
-        rig.mixer.addEventListener('finished', onEquipFinished);
+        rig.mixer.addEventListener('finished', onFirstFinished);
       }
-    } else if (useClip) {
-      rig.mixer.clipAction(useClip).reset().setLoop(LoopRepeat, Infinity).play();
+    } else if (second) {
+      rig.mixer.clipAction(second).reset().setLoop(LoopRepeat, Infinity).play();
+    }
+  }
+
+  /**
+   * Layers the cloak sway rig's flight states on top of its normal resting
+   * USE loop (see applyCloakAnimation) - called from setFlying on an actual
+   * isFlying transition. EQUIP/UNUSE are otherwise-unused-on-equip clips
+   * (see applyCloakAnimation) reserved specifically for this: taking off
+   * plays EQUIP once then falls through to looping ATTACK as the sustained
+   * flying pose; landing plays UNUSE once then falls back to the plain
+   * resting USE loop. No-op if there's no active cloak rig (no cloak
+   * equipped, or this one has no ani data) - flying without an equipped
+   * cloak can't happen (setFlying's own equipped-cloak check), and a cloak
+   * with no relevant clip just stays on whatever it was already showing,
+   * same fallback reasoning playCloakTransition uses for a missing clip.
+   */
+  private setCloakFlightAnimation(flying: boolean): void {
+    const rig = this.cloakAnimation?.rig;
+    if (!rig) return;
+    rig.mixer.stopAllAction();
+
+    if (flying) {
+      this.playCloakTransition(rig, rig.clips.EQUIP, rig.clips.ATTACK);
+    } else {
+      const unuseClip = rig.clips.UNUSE;
+      const settle = () => this.playCloakTransition(rig, undefined, rig.clips.USE);
+      if (unuseClip) {
+        const unuseAction = rig.mixer.clipAction(unuseClip).reset();
+        unuseAction.setLoop(LoopOnce, 1);
+        unuseAction.clampWhenFinished = true;
+        unuseAction.play();
+        const onUnuseFinished = (e: { action: AnimationAction }) => {
+          if (e.action !== unuseAction) return;
+          rig.mixer.removeEventListener('finished', onUnuseFinished);
+          unuseAction.stop();
+          settle();
+        };
+        rig.mixer.addEventListener('finished', onUnuseFinished);
+      } else {
+        settle();
+      }
     }
   }
 
@@ -1150,12 +1238,14 @@ export class CharacterController {
    * but flying's own idle clip does.
    */
   setFlying(enabled: boolean): boolean {
+    const wasFlying = this.isFlying;
     if (enabled) {
       if (!this.equippedObjects[ModelType.Cloak]) return false;
       this.isFlying = true;
     } else {
       this.isFlying = false;
     }
+    if (this.isFlying !== wasFlying) this.setCloakFlightAnimation(this.isFlying);
     this.setDesiredClip(this.moveTarget || this.moveDirection ? this.getDesiredLocomotionClip() : this.getIdleClip());
     return true;
   }
@@ -1509,7 +1599,6 @@ export class CharacterController {
       }
 
       delete this.equippedObjects[ModelType.Cloak];
-      this.disposeGlowOverlayFor(ModelType.Cloak);
       this.isBoosterEquipped = false;
       // Flying requires a cloak (see setFlying) - none left to require it of.
       if (this.isFlying) this.setFlying(false);
@@ -1547,13 +1636,10 @@ export class CharacterController {
         disposeObject3D(obj);
       }
     }
-    this.disposeGlowOverlayFor(ModelType.Cloak);
-
     for (const obj of newObjects) {
       if (!obj.parent) character.group.add(obj);
     }
     this.equippedObjects[ModelType.Cloak] = newObjects;
-    void this.applyGlowOverlay(ModelType.Cloak, item, character, newObjects);
     void this.applyCloakAnimation(stem, character, newObjects);
     // Re-attach to whichever real particle data the new cloak's own .eff
     // offers - disposed above along with `previous`, so this is a fresh

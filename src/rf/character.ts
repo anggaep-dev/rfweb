@@ -830,8 +830,8 @@ export async function buildMeshPartObjects(stem: string, cdnBase: string, built:
   return buildObjectsFromParsedMesh(parsed.objects, parsed.texture, built, stem);
 }
 
-/** Which of a cloak's own animation states this project actually plays - see loadCloakAnimationRig's doc comment for why ATTACK/DEFAULT/UNEQUIP aren't included. */
-const CLOAK_ANI_STATES = ['EQUIP', 'USE', 'UNUSE'] as const;
+/** Which of a cloak's own animation states this project loads - see loadCloakAnimationRig's doc comment for why DEFAULT/UNEQUIP aren't included. ATTACK has no real trigger yet (no combat action exists in this app) but is still loaded so it's available in the debug preview dropdown. */
+const CLOAK_ANI_STATES = ['EQUIP', 'USE', 'UNUSE', 'ATTACK'] as const;
 type CloakAniState = (typeof CLOAK_ANI_STATES)[number];
 
 export interface CloakAnimationRig {
@@ -869,11 +869,12 @@ export interface CloakAnimationRig {
  * so that track still binds to `target` instead of silently not matching
  * anything.
  *
- * Only EQUIP/USE/UNUSE are loaded - see docs/rf-format-notes.md and this
+ * EQUIP/USE/UNUSE/ATTACK are loaded - see docs/rf-format-notes.md and this
  * project's own plan notes: DEFAULT is just the bind pose (nothing to
- * play), UNEQUIP appears unused by the real client for this (UNUSE is
- * what actually plays on removal), and ATTACK has no trigger to hook into
- * yet (no attack/combat action exists anywhere in this app today).
+ * play), and UNEQUIP appears unused by the real client for this (UNUSE is
+ * what actually plays on removal). ATTACK has no trigger to hook into yet
+ * (no attack/combat action exists anywhere in this app today) - it's still
+ * loaded so it's available in the debug preview dropdown.
  */
 export async function loadCloakAnimationRig(stem: string, target: Object3D): Promise<CloakAnimationRig | null> {
   const bindPoseByBone = new Map<string, BindPose>();
@@ -883,17 +884,25 @@ export async function loadCloakAnimationRig(stem: string, target: Object3D): Pro
   const targetBind = bindPoseByBone.get(target.name);
   if (targetBind) bindPoseByBone.set(stem, targetBind);
 
-  const clips: Partial<Record<CloakAniState, AnimationClip>> = {};
-  await Promise.all(
+  // Fetched in parallel but assigned into `clips` in CLOAK_ANI_STATES order
+  // afterward (not as each fetch resolves) so the object's key order - and
+  // so getCloakAnimationStateNames' Object.keys - is stable across loads
+  // instead of depending on network timing.
+  const resolved = await Promise.all(
     CLOAK_ANI_STATES.map(async (state) => {
       try {
         const buffer = await fetchBuffer(`${CLOAK_CDN_BASE}/ani/${stem}_${state}.ANI`);
-        clips[state] = buildAnimationClip(state, parseAnimation(buffer), bindPoseByBone);
+        return [state, buildAnimationClip(state, parseAnimation(buffer), bindPoseByBone)] as const;
       } catch {
         // Missing is common (e.g. no UNUSE for this item) - just leave that state unset.
+        return null;
       }
     }),
   );
+  const clips: Partial<Record<CloakAniState, AnimationClip>> = {};
+  for (const entry of resolved) {
+    if (entry) clips[entry[0]] = entry[1];
+  }
   if (Object.keys(clips).length === 0) return null;
 
   return { mixer: new AnimationMixer(target), clips };
