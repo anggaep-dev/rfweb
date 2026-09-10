@@ -4,13 +4,14 @@ import {
   BufferGeometry,
   Color,
   DoubleSide,
-  DynamicDrawUsage,
+  Frustum,
   InstancedMesh,
+  InstancedBufferAttribute,
   Matrix4,
-  MeshBasicMaterial,
   Object3D,
-  Quaternion,
   SRGBColorSpace,
+  Sphere,
+  ShaderMaterial,
   Vector3,
 } from 'three';
 import type { Camera, Texture } from 'three';
@@ -26,6 +27,38 @@ import { parseR3T } from './r3t';
 import { decodeRftTexture } from './texture';
 
 const CHEF_BASE = '/game-assets/Chef';
+
+/** Effects beyond this raw scene-space distance begin reducing their instance budget. The RF character/weapon assets are much larger than conventional three.js demo units, so this intentionally starts well outside normal close-up inspection range. */
+const PARTICLE_LOD_FULL_DISTANCE = 80;
+/** At this distance an effect has reached its smallest visible instance count. */
+const PARTICLE_LOD_MIN_DISTANCE = 240;
+const PARTICLE_LOD_MIN_INSTANCES = 4;
+/** Effects whose emitter origin is farther than this from the camera are not rendered. */
+const PARTICLE_RENDER_DISTANCE = 250;
+/** A particle template can request far more copies than it needs to read as a continuous effect. This cap applies before distance LOD, with Van der Corput phases preserving coverage across the full lifetime. */
+const PARTICLE_VISIBLE_INSTANCE_CAP = 12;
+const PARTICLE_SCENE_INSTANCE_BUDGET = 600;
+let particleVisibleInstanceCap = PARTICLE_VISIBLE_INSTANCE_CAP;
+// Deterministic midpoint curves are the default performance mode. Besides
+// being a useful visual baseline, identical templates now produce identical
+// shader source and can share WebGL programs across effects/bots. The GM
+// command `%particlerandom 1` restores RF-style random range sampling.
+let particleRandomnessEnabled = false;
+
+export function setParticleRandomnessEnabled(enabled: boolean): void {
+  particleRandomnessEnabled = enabled;
+}
+
+/** ViewerScene divides this fixed scene-wide budget across active effects once per frame. */
+export function setParticleEffectCountForBudget(effectCount: number): void {
+  particleVisibleInstanceCap = effectCount > 0
+    ? Math.max(PARTICLE_LOD_MIN_INSTANCES, Math.floor(PARTICLE_SCENE_INSTANCE_BUDGET / effectCount))
+    : PARTICLE_VISIBLE_INSTANCE_CAP;
+}
+
+function resolveParticleNumber(range: NumberOrRange): number {
+  return particleRandomnessEnabled ? resolveNumberOrRange(range) : (range.min + range.max) * 0.5;
+}
 
 function chefPathToUrl(clientPath: string): string {
   const normalized = clientPath.replace(/\\/g, '/').replace(/^\.?\/?Chef\/?/i, '');
@@ -256,7 +289,7 @@ function loadParticleTemplate(sptPath: string): Promise<ParticleTemplate | null>
   return cached;
 }
 
-/** A single particle's own resolved (rand()-rolled once, not re-rolled every frame) keyframe curve - see the module doc comment on why this is per-particle rather than shared. */
+/** A single particle's own resolved (rand()-rolled once, not re-rolled every frame) keyframe curve - see the module doc comment on why this is per-template (shared by every instance of one ParticleTemplateBatch), not per-instance. */
 interface ResolvedKeyframe {
   time: number;
   alpha: number;
@@ -271,22 +304,6 @@ interface ResolvedKeyframe {
   powerDisplacementAtStart: Vector3;
 }
 
-/**
- * One instance's own "recipe" - no per-instance Mesh/Material of its own
- * (see the class doc comment on why: hundreds of those across many
- * equipped weapons is what was actually causing the reported FPS drop).
- * Its index in ParticleEffect.instances *is* its InstancedMesh instance
- * index - update() writes this instance's own current transform/color
- * into that one shared InstancedMesh via setMatrixAt/setColorAt every
- * frame instead of touching a real scene-graph Object3D at all.
- */
-interface ParticleInstance {
-  spawnPos: Vector3;
-  /** This instance's own rand(0, createTimeEpsilon) roll - see ParticleTemplate.createTimeEpsilon. */
-  phaseOffset: number;
-  keyframes: ResolvedKeyframe[];
-}
-
 /** RF's particle colors are plain 0-255 display-referred RGB bytes, same as any other color this project reads off disk - explicit SRGBColorSpace here matches texture.ts's own convention, rather than three.js's default of treating raw Color() components as already-linear (which visibly shifts the result - verified against a real file while building this). */
 function colorFromRgb255(r: number, g: number, b: number): Color {
   return new Color().setRGB(r / 255, g / 255, b / 255, SRGBColorSpace);
@@ -294,7 +311,7 @@ function colorFromRgb255(r: number, g: number, b: number): Color {
 
 /** Resolves a NumberOrRange triple into a real drift-velocity Vector3, going through the same 3ds-Max-to-three.js axis conversion (coords.ts's convertVec3) every other spatial value this project reads from Chef/'s binary formats (.msh/.bn/.ani) already goes through - .spt is plain text, not one of those, but it's authored by the same original toolchain for the same 3ds-Max-space scene, so the same conversion applies (confirmed: skipping it left a real weapon's own particle spawning ~28 raw units away from the weapon's own mesh entirely - see docs/rf-format-notes.md). */
 function resolvePower(range: [NumberOrRange, NumberOrRange, NumberOrRange]): Vector3 {
-  return convertVec3(resolveNumberOrRange(range[0]), resolveNumberOrRange(range[1]), resolveNumberOrRange(range[2]));
+  return convertVec3(resolveParticleNumber(range[0]), resolveParticleNumber(range[1]), resolveParticleNumber(range[2]));
 }
 
 function fixedNumberOrRange(n: number): NumberOrRange {
@@ -314,14 +331,28 @@ export interface ParticleLiveValues {
   timeSpeed: number;
 }
 
+function applyLiveValuePatch(template: ParticleTemplate, patch: Partial<ParticleLiveValues>): void {
+  if (patch.num !== undefined) template.num = Math.max(0, Math.round(patch.num));
+  if (patch.posBox) template.posBox = patch.posBox;
+  if (patch.gravity) template.gravity = patch.gravity;
+  if (patch.startPower) {
+    template.startPower = [fixedNumberOrRange(patch.startPower[0]), fixedNumberOrRange(patch.startPower[1]), fixedNumberOrRange(patch.startPower[2])];
+  }
+  if (patch.startScale !== undefined) template.startScale = fixedNumberOrRange(patch.startScale);
+  if (patch.startAlpha !== undefined) template.startAlpha = fixedNumberOrRange(patch.startAlpha);
+  if (patch.startZRot !== undefined) template.startZRot = fixedNumberOrRange(patch.startZRot);
+  if (patch.liveTime !== undefined) template.liveTime = patch.liveTime;
+  if (patch.timeSpeed !== undefined) template.timeSpeed = patch.timeSpeed;
+}
+
 function resolveKeyframes(template: ParticleTemplate): ResolvedKeyframe[] {
   const start: ResolvedKeyframe = {
     time: 0,
-    alpha: resolveNumberOrRange(template.startAlpha),
-    zrot: resolveNumberOrRange(template.startZRot),
-    xrot: resolveNumberOrRange(template.startXRot),
-    yrot: resolveNumberOrRange(template.startYRot),
-    scale: resolveNumberOrRange(template.startScale),
+    alpha: resolveParticleNumber(template.startAlpha),
+    zrot: resolveParticleNumber(template.startZRot),
+    xrot: resolveParticleNumber(template.startXRot),
+    yrot: resolveParticleNumber(template.startYRot),
+    scale: resolveParticleNumber(template.startScale),
     color: colorFromRgb255(...template.startColor),
     power: resolvePower(template.startPower),
     powerDisplacementAtStart: new Vector3(),
@@ -336,11 +367,11 @@ function resolveKeyframes(template: ParticleTemplate): ResolvedKeyframe[] {
   for (const kf of template.keyframes) {
     const next: ResolvedKeyframe = {
       time: kf.time,
-      alpha: kf.alpha ? resolveNumberOrRange(kf.alpha) : prev.alpha,
-      zrot: kf.zrot ? resolveNumberOrRange(kf.zrot) : prev.zrot,
-      xrot: kf.xrot ? resolveNumberOrRange(kf.xrot) : prev.xrot,
-      yrot: kf.yrot ? resolveNumberOrRange(kf.yrot) : prev.yrot,
-      scale: kf.scale ? resolveNumberOrRange(kf.scale) : prev.scale,
+      alpha: kf.alpha ? resolveParticleNumber(kf.alpha) : prev.alpha,
+      zrot: kf.zrot ? resolveParticleNumber(kf.zrot) : prev.zrot,
+      xrot: kf.xrot ? resolveParticleNumber(kf.xrot) : prev.xrot,
+      yrot: kf.yrot ? resolveParticleNumber(kf.yrot) : prev.yrot,
+      scale: kf.scale ? resolveParticleNumber(kf.scale) : prev.scale,
       color: kf.color ? colorFromRgb255(...kf.color) : prev.color.clone(),
       power: kf.power ? resolvePower(kf.power) : prev.power.clone(),
       powerDisplacementAtStart: new Vector3(), // filled in below, once every keyframe's own `power` is known
@@ -367,92 +398,335 @@ function resolveKeyframes(template: ParticleTemplate): ResolvedKeyframe[] {
   return resolved;
 }
 
-/**
- * Piecewise-linear interpolation across a particle's own resolved
- * keyframe curve. Holds the first/last value outside the curve's own
- * time range - including `powerDisplacement`, which simply stops
- * accumulating once `age` passes the last keyframe (the particle keeps
- * whatever position offset `power` had already given it, same "hold at
- * the end" behavior as every other field here).
- *
- * `powerDisplacement` (unlike every other field returned here) isn't a
- * direct interpolation of `power` itself - `power` is a *velocity*, so
- * its effect on position is the *integral* of that velocity over time,
- * not its instantaneous value. Within the current segment [prev, curr],
- * `power` is assumed to vary linearly from `prev.power` to `curr.power`
- * (matching how every other field here is itself linearly interpolated),
- * so the displacement contributed between `prev.time` and `age` is the
- * exact trapezoidal-rule integral of that line: the average of the
- * velocity at the start and end of the elapsed portion, times the
- * elapsed time - added to `prev.powerDisplacementAtStart`, the
- * already-accumulated total from every earlier segment (see
- * resolveKeyframes's own second pass).
- */
-function sampleKeyframes(
-  keyframes: ResolvedKeyframe[],
-  age: number,
-): { alpha: number; zrot: number; xrot: number; yrot: number; scale: number; color: Color; powerDisplacement: Vector3 } {
-  if (age <= keyframes[0].time) return { ...keyframes[0], powerDisplacement: keyframes[0].powerDisplacementAtStart };
-  const last = keyframes[keyframes.length - 1];
-  if (age >= last.time) return { ...last, powerDisplacement: last.powerDisplacementAtStart };
+/** Conservative local-space bounds radius for one template's whole particle field, derived from its resolved keyframe curve (max scale/power reached over the curve) plus its (always fixed, never randomized - see particleTemplate.ts's posBox typing) spawn point. Shared by every member of a ParticleTemplateBatch using this template, since it depends only on template data, never on which socket an individual member is attached to. */
+function computeLocalBoundsRadius(template: ParticleTemplate, geometry: BufferGeometry, keyframes: ResolvedKeyframe[]): number {
+  if (!geometry.boundingSphere) geometry.computeBoundingSphere();
+  const shapeRadius = geometry.boundingSphere?.radius ?? 0;
+  const liveTime = Math.max(template.liveTime, 1e-6);
+  const gravity = convertVec3(template.gravity[0], template.gravity[1], template.gravity[2]);
+  const spawnPos = convertVec3(template.posBox[0], template.posBox[1], template.posBox[2]);
 
-  let next = keyframes.length - 1;
-  for (let i = 1; i < keyframes.length; i++) {
-    if (keyframes[i].time >= age) {
-      next = i;
-      break;
-    }
+  let maxScale = 0;
+  let maxPowerSpeed = 0;
+  for (const keyframe of keyframes) {
+    maxScale = Math.max(maxScale, Math.abs(keyframe.scale));
+    maxPowerSpeed = Math.max(maxPowerSpeed, keyframe.power.length());
   }
-  const prev = keyframes[next - 1];
-  const curr = keyframes[next];
-  const span = curr.time - prev.time;
-  const t = span > 0 ? (age - prev.time) / span : 0;
-  const elapsed = age - prev.time;
-  const powerAtAge = prev.power.clone().lerp(curr.power, t);
-  const powerDisplacement = prev.powerDisplacementAtStart
-    .clone()
-    .addScaledVector(prev.power.clone().add(powerAtAge).multiplyScalar(0.5), elapsed);
-  return {
-    alpha: prev.alpha + (curr.alpha - prev.alpha) * t,
-    zrot: prev.zrot + (curr.zrot - prev.zrot) * t,
-    xrot: prev.xrot + (curr.xrot - prev.xrot) * t,
-    yrot: prev.yrot + (curr.yrot - prev.yrot) * t,
-    scale: prev.scale + (curr.scale - prev.scale) * t,
-    color: prev.color.clone().lerp(curr.color, t),
-    powerDisplacement,
-  };
+
+  // A particle can travel under both the constant gravity term and any
+  // keyframed power velocity. Treating power as its maximum speed over
+  // the full lifetime intentionally overestimates the bound, which is
+  // exactly the safe direction for frustum culling.
+  return spawnPos.length() + (gravity.length() + maxPowerSpeed) * liveTime + shapeRadius * maxScale;
 }
 
-const X_AXIS = new Vector3(1, 0, 0);
-const Y_AXIS = new Vector3(0, 1, 0);
-const Z_AXIS = new Vector3(0, 0, 1);
+function glslNumber(value: number): string {
+  return Number.isFinite(value) ? value.toFixed(8) : '0.0';
+}
+
+function glslVec3(value: Vector3): string {
+  return `vec3(${glslNumber(value.x)}, ${glslNumber(value.y)}, ${glslNumber(value.z)})`;
+}
+
+/** Builds one compact shader per RF template. The keyframes are resolved once at spawn; thereafter the GPU owns interpolation, power integration, spin, scale, colour, and billboarding. */
+function buildGpuParticleMaterial(template: ParticleTemplate, texture: Texture | null, keyframes: ResolvedKeyframe[]): ShaderMaterial {
+  const state = keyframes.map((keyframe, index) => {
+    const color = keyframe.color;
+    return `float a${index}=${glslNumber(keyframe.alpha)}; float xr${index}=${glslNumber(keyframe.xrot)}; float yr${index}=${glslNumber(keyframe.yrot)}; float zr${index}=${glslNumber(keyframe.zrot)}; float s${index}=${glslNumber(keyframe.scale)}; vec3 c${index}=vec3(${glslNumber(color.r)},${glslNumber(color.g)},${glslNumber(color.b)}); vec3 p${index}=${glslVec3(keyframe.power)};`;
+  }).join('\n');
+  let sample = `float alpha=a0; float xrot=xr0; float yrot=yr0; float zrot=zr0; float scale=s0; vec3 color=c0; vec3 powerDisplacement=vec3(0.0);`;
+  let completedPower = '';
+  for (let i = 1; i < keyframes.length; i++) {
+    const previous = keyframes[i - 1];
+    const current = keyframes[i];
+    const span = Math.max(current.time - previous.time, 1e-6);
+    const branch = `${i === 1 ? 'if' : 'else if'} (age < ${glslNumber(current.time)}) { ${completedPower} float t=(age-${glslNumber(previous.time)})/${glslNumber(span)}; vec3 powerAtAge=mix(p${i - 1},p${i},t); powerDisplacement+=0.5*(p${i - 1}+powerAtAge)*(age-${glslNumber(previous.time)}); alpha=mix(a${i - 1},a${i},t); xrot=mix(xr${i - 1},xr${i},t); yrot=mix(yr${i - 1},yr${i},t); zrot=mix(zr${i - 1},zr${i},t); scale=mix(s${i - 1},s${i},t); color=mix(c${i - 1},c${i},t); }`;
+    sample += `\n${branch}`;
+    completedPower += `powerDisplacement+=0.5*(p${i - 1}+p${i})*${glslNumber(span)}; `;
+  }
+  if (keyframes.length > 1) {
+    const last = keyframes.length - 1;
+    sample += ` else { ${completedPower} alpha=a${last}; xrot=xr${last}; yrot=yr${last}; zrot=zr${last}; scale=s${last}; color=c${last}; }`;
+  }
+  const spawn = convertVec3(template.posBox[0], template.posBox[1], template.posBox[2]);
+  const gravity = convertVec3(template.gravity[0], template.gravity[1], template.gravity[2]);
+  const textureUniform = texture ? 'uniform sampler2D map;' : '';
+  const textureSample = texture ? 'texture2D(map, vUv)' : 'vec4(1.0)';
+  // instanceMatrix carries this row's own socket world transform (see
+  // ParticleTemplateBatch - many sockets across many characters share this
+  // one material/mesh, so their positioning can no longer come from the
+  // mesh's own modelViewMatrix the way a private per-effect mesh used to
+  // provide it). Billboard offset is still added post-projection in view
+  // space, ignoring instanceMatrix's rotation, same as the old per-effect
+  // mesh already did via its own modelViewMatrix.
+  const billboard = template.billboard ? 'mvPosition.xyz += particleVertex;' : 'mvPosition += modelViewMatrix * instanceMatrix * vec4(particleVertex, 0.0);';
+  return new ShaderMaterial({
+    uniforms: { particleTime: { value: 0 }, ...(texture ? { map: { value: texture } } : {}) },
+    // ShaderMaterial injects the standard position/uv attributes and
+    // modelView/projection uniforms itself, and three.js's WebGLProgram
+    // auto-declares `attribute mat4 instanceMatrix` for any material
+    // rendered via InstancedMesh (independent of material type) - only
+    // declare particle-specific inputs here, otherwise WebGL rejects the
+    // duplicate declarations.
+    vertexShader: `attribute float particlePhase; uniform float particleTime; varying vec2 vUv; varying vec3 vParticleColor; vec3 rotateParticle(vec3 v,float x,float y,float z){ float cx=cos(x),sx=sin(x),cy=cos(y),sy=sin(y),cz=cos(z),sz=sin(z); v=vec3(v.x,v.y*cx-v.z*sx,v.y*sx+v.z*cx); v=vec3(v.x*cy+v.z*sy,v.y,-v.x*sy+v.z*cy); return vec3(v.x*cz-v.y*sz,v.x*sz+v.y*cz,v.z); } void main(){ vUv=uv; float age=mod(particleTime+particlePhase,${glslNumber(Math.max(template.liveTime, 1e-6))}); ${state} ${sample} vec3 particlePosition=${glslVec3(spawn)}+${glslVec3(gravity)}*age+powerDisplacement; vec3 particleVertex=rotateParticle(position*scale,radians(xrot),radians(yrot),radians(zrot)); vec4 mvPosition=modelViewMatrix*instanceMatrix*vec4(particlePosition,1.0); ${billboard} gl_Position=projectionMatrix*mvPosition; vParticleColor=color*(alpha/255.0); }`,
+    fragmentShader: `precision highp float; ${textureUniform} varying vec2 vUv; varying vec3 vParticleColor; vec3 srgbToLinear(vec3 c){ return mix(c/12.92,pow((c+0.055)/1.055,vec3(2.4)),step(0.04045,c)); } vec3 linearToSrgb(vec3 c){ return mix(c*12.92,1.055*pow(max(c,vec3(0.0)),vec3(1.0/2.4))-0.055,step(0.0031308,c)); } void main(){ vec4 texel=${textureSample}; gl_FragColor=vec4(linearToSrgb(srgbToLinear(texel.rgb)*vParticleColor),texel.a); }`,
+    transparent: true,
+    blending: AdditiveBlending,
+    depthWrite: false,
+    side: DoubleSide,
+    toneMapped: false,
+  });
+}
+
+/** Instance-row capacity a ParticleTemplateBatch grows by whenever a new member doesn't fit, so it isn't rebuilt on every single equip/spawn event - see ParticleTemplateBatch.rebuildMesh. */
+const PARTICLE_BATCH_CAPACITY_CHUNK = 64;
+/** Shared "hide this row" matrix (scale 0 on every axis) - reused by every batch for both culled members and unused capacity slack, never mutated in place, safe to share since InstancedMesh.setMatrixAt only reads it. */
+const ZERO_SCALE_MATRIX = new Matrix4().makeScale(0, 0, 0);
+
+let particleBatchSceneRoot: Object3D | null = null;
+
+/** Wires the shared per-template batches into the real scene - call once, before any ParticleEffect.load() (ViewerScene does this from its constructor). Every batch's InstancedMesh is added directly here, at the scene root, rather than under any one character's socket - see ParticleTemplateBatch's own doc comment for why. */
+export function initParticleBatching(sceneRoot: Object3D): void {
+  particleBatchSceneRoot = sceneRoot;
+}
+
+/** One socket's worth of rows within a shared ParticleTemplateBatch. Not exported - ParticleEffect (below) is the public handle wrapping this. */
+class BatchMember {
+  baseRow = -1;
+  rowCount = 0;
+  culled = false;
+  activeInstanceCount = 0;
+  readonly worldBounds = new Sphere();
+  readonly worldScale = new Vector3();
+  readonly group: Object3D;
+  localBoundsRadius: number;
+
+  constructor(group: Object3D, localBoundsRadius: number) {
+    this.group = group;
+    this.localBoundsRadius = localBoundsRadius;
+  }
+}
 
 /**
- * A running instance of one `.spt` template: `num` copies of its `.R3E`
- * entity mesh, looping through the same keyframed alpha/color/scale/zrot
- * curve (each instance rolling its own `rand()` values once at creation,
- * not shared - see resolveKeyframes) while drifting under `gravity`.
- * Attach `.group` under whatever the effect should follow (a weapon bone,
- * a socket dummy, ...) and call `update()` once a frame.
+ * Every `ParticleEffect` resolving to the same `.spt` template (across
+ * *every* character - player and every bot alike) shares one of these:
+ * one `InstancedMesh`/`ShaderMaterial`/draw call for however many sockets
+ * are currently using that template, instead of one InstancedMesh per
+ * socket. This is what actually fixed the reported "20 bots, 252 effects,
+ * ~27fps" case - each effect was already cheap to *simulate* (GPU-driven,
+ * see buildGpuParticleMaterial's own doc comment), but 252 separate draw
+ * calls was the real remaining cost, and per-effect instance-count LOD
+ * (setParticleEffectCountForBudget) can't reduce draw-call count at all.
  *
- * Renders every instance through one shared `InstancedMesh` (one draw
- * call, one material, for the whole template regardless of `num`) rather
- * than a real `Mesh`+`MeshBasicMaterial` per instance - the latter is
- * what this class originally did, and it's what actually caused a real,
- * reported "FPS drops from 60 to 30 with many bots" problem: a single
- * high-upgrade-level weapon's own `.eff` can carry several particle-
- * bearing sections (see glowEffect.ts's resolveWeaponParticles), each
- * with its own `num`-sized template - measured at 344 separate meshes
- * (and 344 separate WebGLProgram-relevant material instances) for just 3
- * bots. Per-instance color/alpha is carried via `InstancedMesh.
- * setColorAt` (three's own built-in per-instance color, RGB only, no
- * custom shader needed) with alpha baked directly into the color's own
- * magnitude rather than the material's opacity - safe *specifically*
- * because every real template here uses `AdditiveBlending`, where
- * scaling a fragment's RGB by `k` and scaling its alpha by `k` produce
- * the exact same additive contribution (`dst + rgb*k*1 == dst +
- * rgb*1*k`), so there's no need for true per-instance alpha at all, just
- * a color whose brightness already has the desired alpha folded in.
+ * The batch's own InstancedMesh sits at the scene root with an identity
+ * transform (added via initParticleBatching's sceneRoot, never parented
+ * to any one socket) - each member's own socket-space positioning comes
+ * instead from a per-row `instanceMatrix` (three's built-in per-instance
+ * transform, auto-wired into any material on an InstancedMesh - see
+ * buildGpuParticleMaterial), written every frame from that member's own
+ * `group.matrixWorld`. A member beyond its own culled/LOD-reduced active
+ * count is hidden via ZERO_SCALE_MATRIX rather than shrinking the shared
+ * mesh's instance count, since different members can be culled
+ * independently of each other within one draw call.
+ */
+class ParticleTemplateBatch {
+  material: ShaderMaterial;
+  rowsPerMember: number;
+  localBoundsRadius: number;
+
+  private instancedMesh: InstancedMesh | null = null;
+  private instanceGeometry: BufferGeometry | null = null;
+  private capacity = 0;
+  private readonly members: BatchMember[] = [];
+  private simTime = 0;
+  private geometry: BufferGeometry;
+  private template: ParticleTemplate;
+  private texture: Texture | null;
+
+  constructor(geometry: BufferGeometry, template: ParticleTemplate, texture: Texture | null) {
+    this.geometry = geometry;
+    this.template = template;
+    this.texture = texture;
+    const keyframes = resolveKeyframes(template);
+    this.material = buildGpuParticleMaterial(template, texture, keyframes);
+    this.rowsPerMember = Math.max(0, Math.round(template.num));
+    this.localBoundsRadius = computeLocalBoundsRadius(template, geometry, keyframes);
+  }
+
+  get memberCount(): number {
+    return this.members.length;
+  }
+
+  /** Advances this batch's one shared animation clock - called once per batch per frame (see advanceParticleBatchClocks), not once per member. Every member already differentiates purely via its own particlePhase row data (Van der Corput + createTimeEpsilon jitter, assigned in reassignRows), so a shared clock across every socket using this template is visually indistinguishable from each effect owning its own clock, just cheaper. */
+  advanceClock(delta: number): void {
+    this.simTime += delta * this.template.timeSpeed;
+    if (this.material.uniforms.particleTime) this.material.uniforms.particleTime.value = this.simTime;
+  }
+
+  addMember(group: Object3D): BatchMember {
+    const member = new BatchMember(group, this.localBoundsRadius);
+    this.members.push(member);
+    this.reassignRows();
+    return member;
+  }
+
+  removeMember(member: BatchMember): void {
+    const index = this.members.indexOf(member);
+    if (index === -1) return;
+    this.members.splice(index, 1);
+    if (this.members.length === 0) {
+      this.disposeMesh();
+      return;
+    }
+    this.reassignRows();
+  }
+
+  /** Rebuilds this batch's shared material/bounds after its template was mutated in place (a %efedit live-value edit on a private forked batch, or a %particlerandom randomness-mode toggle) - always safe to call, including redundantly (every member sharing a batch calls this on a randomness toggle; the last call wins, harmless since the result is identical each time). */
+  rebuildFromTemplate(): void {
+    const keyframes = resolveKeyframes(this.template);
+    this.material.dispose();
+    this.material = buildGpuParticleMaterial(this.template, this.texture, keyframes);
+    if (this.instancedMesh) this.instancedMesh.material = this.material;
+    this.rowsPerMember = Math.max(0, Math.round(this.template.num));
+    this.localBoundsRadius = computeLocalBoundsRadius(this.template, this.geometry, keyframes);
+    for (const member of this.members) member.localBoundsRadius = this.localBoundsRadius;
+    this.reassignRows();
+  }
+
+  /** Rebuilds row assignment (and grows the InstancedMesh if needed) whenever membership or rowsPerMember changes - infrequent (equip/spawn/despawn/live-edit events), never a per-frame cost. Every row (including unused capacity slack) is reset to ZERO_SCALE_MATRIX first so a freshly grown or reassigned row never briefly shows a stale previous member's transform. */
+  private reassignRows(): void {
+    const needed = this.members.length * this.rowsPerMember;
+    if (!this.instancedMesh || needed > this.capacity) this.rebuildMesh(needed);
+    const instancedMesh = this.instancedMesh;
+    const instanceGeometry = this.instanceGeometry;
+    if (!instancedMesh || !instanceGeometry) return;
+
+    for (let i = 0; i < this.capacity; i++) instancedMesh.setMatrixAt(i, ZERO_SCALE_MATRIX);
+
+    const phaseAttr = instanceGeometry.getAttribute('particlePhase') as InstancedBufferAttribute;
+    const liveTime = Math.max(this.template.liveTime, 1e-6);
+    let row = 0;
+    for (const member of this.members) {
+      member.baseRow = row;
+      member.rowCount = this.rowsPerMember;
+      for (let i = 0; i < this.rowsPerMember; i++) {
+        // Van der Corput ordering means every leading LOD subset still spans
+        // the whole loop, rather than bunching at the start of its lifetime.
+        let bits = i;
+        let fraction = 0;
+        let place = 0.5;
+        while (bits > 0) { fraction += (bits & 1) * place; bits >>>= 1; place *= 0.5; }
+        phaseAttr.setX(row + i, fraction * liveTime + Math.random() * this.template.createTimeEpsilon);
+      }
+      row += this.rowsPerMember;
+    }
+    phaseAttr.needsUpdate = true;
+    instancedMesh.instanceMatrix.needsUpdate = true;
+  }
+
+  private rebuildMesh(minCapacity: number): void {
+    const newCapacity = Math.max(PARTICLE_BATCH_CAPACITY_CHUNK, Math.ceil(minCapacity / PARTICLE_BATCH_CAPACITY_CHUNK) * PARTICLE_BATCH_CAPACITY_CHUNK);
+    this.instancedMesh?.parent?.remove(this.instancedMesh);
+    this.instancedMesh?.dispose();
+    this.instanceGeometry?.dispose();
+
+    // Each batch owns its geometry wrapper because phase data is per row;
+    // clone keeps the cached R3E source geometry untouched.
+    const instanceGeometry = this.geometry.clone();
+    instanceGeometry.setAttribute('particlePhase', new InstancedBufferAttribute(new Float32Array(newCapacity), 1));
+    const instancedMesh = new InstancedMesh(instanceGeometry, this.material, newCapacity);
+    // Real particles drift well outside the one quad's own local bounds and
+    // move every frame, and this mesh now spans many unrelated socket
+    // positions across the whole scene besides - a real bounding volume
+    // would be both expensive to keep correct and meaningless. Off-screen
+    // instances still don't cost fill-rate; the GPU clips them at the
+    // viewport regardless of frustumCulled. Per-member visibility is
+    // handled explicitly instead (see updateMember's zero-scale rows).
+    instancedMesh.frustumCulled = false;
+    instancedMesh.count = newCapacity;
+    particleBatchSceneRoot?.add(instancedMesh);
+
+    this.instancedMesh = instancedMesh;
+    this.instanceGeometry = instanceGeometry;
+    this.capacity = newCapacity;
+  }
+
+  private disposeMesh(): void {
+    this.instancedMesh?.parent?.remove(this.instancedMesh);
+    this.instancedMesh?.dispose();
+    this.instancedMesh = null;
+    this.instanceGeometry?.dispose();
+    this.instanceGeometry = null;
+    this.capacity = 0;
+  }
+
+  /** Per-frame cull test + instanceMatrix upload for one member - called from ParticleEffect.update(), once per socket per frame (the batch's own animation clock is advanced separately, once per batch - see advanceClock). */
+  updateMember(member: BatchMember, frustum: Frustum | null, cameraPosition: Vector3 | null): void {
+    if (!this.instancedMesh || member.rowCount <= 0) return;
+
+    // InstancedMesh's built-in bounds only cover its source geometry, not
+    // its moving per-member instance matrices - test the conservative
+    // per-member sphere instead, after the socket hierarchy has received
+    // this frame's animation transforms. Time still advances while hidden
+    // (see advanceClock), so an effect resumes at the correct point in its
+    // loop when it re-enters view.
+    member.group.updateWorldMatrix(true, false);
+
+    let distance = 0;
+    if (frustum || cameraPosition) {
+      member.group.getWorldPosition(member.worldBounds.center);
+      member.group.getWorldScale(member.worldScale);
+      member.worldBounds.radius = member.localBoundsRadius * Math.max(Math.abs(member.worldScale.x), Math.abs(member.worldScale.y), Math.abs(member.worldScale.z));
+      distance = cameraPosition ? cameraPosition.distanceTo(member.worldBounds.center) : 0;
+      member.culled = (frustum ? !frustum.intersectsSphere(member.worldBounds) : false) || distance > PARTICLE_RENDER_DISTANCE;
+    } else {
+      member.culled = false;
+    }
+
+    const instancedMesh = this.instancedMesh;
+    if (member.culled) {
+      member.activeInstanceCount = 0;
+      for (let i = 0; i < member.rowCount; i++) instancedMesh.setMatrixAt(member.baseRow + i, ZERO_SCALE_MATRIX);
+      instancedMesh.instanceMatrix.needsUpdate = true;
+      return;
+    }
+
+    // Keep a phase-distributed subset as an effect recedes. Selecting
+    // evenly-spaced source rows retains the emitter's full lifetime
+    // coverage; truncating to the first N would visibly bunch the stream.
+    const lodT = Math.min(1, Math.max(0, (distance - PARTICLE_LOD_FULL_DISTANCE) / (PARTICLE_LOD_MIN_DISTANCE - PARTICLE_LOD_FULL_DISTANCE)));
+    const cappedCount = Math.min(member.rowCount, particleVisibleInstanceCap);
+    const minCount = Math.min(cappedCount, PARTICLE_LOD_MIN_INSTANCES);
+    const activeCount = Math.max(minCount, Math.round(cappedCount + (minCount - cappedCount) * lodT));
+    member.activeInstanceCount = activeCount;
+
+    for (let i = 0; i < activeCount; i++) instancedMesh.setMatrixAt(member.baseRow + i, member.group.matrixWorld);
+    for (let i = activeCount; i < member.rowCount; i++) instancedMesh.setMatrixAt(member.baseRow + i, ZERO_SCALE_MATRIX);
+    instancedMesh.instanceMatrix.needsUpdate = true;
+  }
+}
+
+const templateBatches = new Map<string, ParticleTemplateBatch>();
+let nextPrivateBatchId = 0;
+
+/** Advances every active batch's shared animation clock exactly once per rendered frame - call once from ViewerScene.update(), separately from the many individual ParticleEffect.update() calls (one per socket, across every character) that only handle per-member culling/positioning. Keeping the clock advance here is what lets many effects share one batch's `particleTime` uniform without over-advancing it once per member instead of once per frame. */
+export function advanceParticleBatchClocks(delta: number): void {
+  for (const batch of templateBatches.values()) batch.advanceClock(delta);
+}
+
+/** How many distinct ParticleTemplateBatch draw calls currently exist scene-wide (player + every bot combined) - debug-only, for StatsPanel to show alongside the raw effect count so "did batching actually merge these" is a direct read instead of an inference from total render calls (which are dominated by character meshes and vary run-to-run on their own). */
+export function getParticleBatchCount(): number {
+  return templateBatches.size;
+}
+
+/**
+ * A running instance of one `.spt` template, attached to one socket (a
+ * weapon bone, a socket dummy, ...) - `.group` is parented there exactly
+ * as before; call `load()` once, then `update()` once a frame. Rendering
+ * itself is delegated to a shared `ParticleTemplateBatch` (see its own
+ * doc comment) keyed by `.spt` path, so this class no longer owns an
+ * `InstancedMesh`/material of its own in the common case - only a live-
+ * tuned effect (see setLiveValues) ever gets a private one-member batch.
  */
 export class ParticleEffect {
   readonly group = new Object3D();
@@ -460,24 +734,15 @@ export class ParticleEffect {
   private template: ParticleTemplate | null = null;
   private geometry: BufferGeometry | null = null;
   private texture: Texture | null = null;
-  /** Owned by this effect (unlike geometry/texture, which are shared/cached across every effect using the same entity - see loadR3EGeometry/loadR3EMaterialTextureCached) - one material for every instance this effect ever spawns, disposed and rebuilt alongside the InstancedMesh itself in spawnInstances(). */
-  private material: MeshBasicMaterial | null = null;
-  private instancedMesh: InstancedMesh | null = null;
-  private instances: ParticleInstance[] = [];
-  private simTime = 0;
+  private sptPath: string | null = null;
+  private batch: ParticleTemplateBatch | null = null;
+  private batchKey: string | null = null;
+  private member: BatchMember | null = null;
   private disposed = false;
-  private readonly gravity = new Vector3();
-  /** Reused every frame rather than allocated fresh - see update()'s billboard math. Computed once per frame (not once per instance, unlike the pre-InstancedMesh version of this class - every instance shares the exact same parent, so recomputing this per instance was always redundant work, not just per-instance-mesh overhead). */
-  private readonly parentWorldQuat = new Quaternion();
-  private readonly billboardBaseQuat = new Quaternion();
-  private readonly scratchQuat = new Quaternion();
-  private readonly scratchSpinQuat = new Quaternion();
-  private readonly scratchPosition = new Vector3();
-  private readonly scratchScale = new Vector3(1, 1, 1);
-  private readonly scratchMatrix = new Matrix4();
-  private readonly scratchColor = new Color();
+  /** Set once this effect has been live-edited via %efedit - from then on it owns a private, never-shared batch (a fresh key, never `.spt`-path-keyed again) so tuning one socket never bleeds into every other effect currently using the same template. See setLiveValues. */
+  private forkedForLiveEdit = false;
 
-  /** Resolves the template + its entity mesh and spawns all instances. Safe to call once; the effect renders nothing until this resolves. */
+  /** Resolves the template + its entity mesh and joins (or creates) the shared batch for this `.spt` path. Safe to call once; the effect renders nothing until this resolves. */
   async load(sptPath: string): Promise<void> {
     const template = await loadParticleTemplate(sptPath);
     if (this.disposed || !template || !template.entityFile) return;
@@ -495,72 +760,44 @@ export class ParticleEffect {
     this.template = template;
     this.geometry = geometry;
     this.texture = texture;
-    this.spawnInstances();
+    this.sptPath = sptPath;
+    this.joinBatch(sptPath);
   }
 
-  /** (Re)builds the shared InstancedMesh + every ParticleInstance "recipe" from `this.template`'s current values - shared by load() and setLiveValues() (which mutates the template then calls this again, same "just rebuild" pattern CharacterController's own setDebugWeaponUpgradeLevel uses for a similar live-tuning case). Tears down any previous InstancedMesh/material first (a fresh one is needed either way - `num` itself can change, and InstancedMesh's own instance count is fixed at construction), but never re-fetches geometry/texture - those don't change just because a live value did. */
-  private spawnInstances(): void {
-    const template = this.template;
-    if (!template || !this.geometry) return;
+  private joinBatch(key: string): void {
+    this.leaveBatch();
+    if (!this.template || !this.geometry || this.template.num <= 0) return;
 
-    this.instancedMesh?.parent?.remove(this.instancedMesh);
-    this.instancedMesh?.dispose();
-    this.material?.dispose();
-    this.instances = [];
-    this.simTime = 0;
-
-    if (template.num <= 0) {
-      this.instancedMesh = null;
-      this.material = null;
-      return;
+    let batch = templateBatches.get(key);
+    if (!batch) {
+      batch = new ParticleTemplateBatch(this.geometry, this.template, this.texture);
+      templateBatches.set(key, batch);
     }
+    this.batch = batch;
+    this.batchKey = key;
+    this.member = batch.addMember(this.group);
+  }
 
-    this.material = new MeshBasicMaterial({
-      color: 0xffffff,
-      map: this.texture,
-      transparent: true,
-      blending: AdditiveBlending,
-      depthWrite: false,
-      side: DoubleSide,
-    });
-    const instancedMesh = new InstancedMesh(this.geometry, this.material, template.num);
-    instancedMesh.instanceMatrix.setUsage(DynamicDrawUsage);
-    // Real particles drift well outside the one quad's own local bounds
-    // (that's the whole point - see docs/rf-format-notes.md's coordinate-
-    // conversion section) and move every frame, so a real per-instance
-    // bounding volume would need recomputing constantly to stay correct -
-    // not worth it for what's already a small, localized effect near one
-    // weapon; simplest correct answer is to never cull this mesh at all
-    // (off-screen instances still don't cost fill-rate, the GPU clips
-    // them at the viewport regardless of frustumCulled).
-    instancedMesh.frustumCulled = false;
-    this.group.add(instancedMesh);
-    this.instancedMesh = instancedMesh;
-
-    for (let i = 0; i < template.num; i++) {
-      this.instances.push({
-        // convertVec3, not a plain Vector3(...posBox) - see resolvePower's
-        // own doc comment on why a .spt's raw XYZ needs the same axis
-        // conversion every other Chef/ spatial value already gets.
-        spawnPos: convertVec3(template.posBox[0], template.posBox[1], template.posBox[2]),
-        // Evenly spread across the loop by instance index as a baseline
-        // (i/num * liveTime), with createTimeEpsilon's own random jitter
-        // layered on top - not createTimeEpsilon alone. A `num`>1
-        // template with no createTimeEpsilon at all is common (confirmed
-        // real: `Chef/PVP_Item/COM_WEAPON_TSPEAR_117/773p.spt`, num=24,
-        // no creat_time_epsilon key) - reported as "moves/pulses as one
-        // blob then snaps back" instead of "looks like continuous fire",
-        // which is exactly what perfectly-synchronized instances (every
-        // one sharing phaseOffset=0, the old behavior) would look like.
-        // The even-spacing baseline fixes that case without changing
-        // anything for a template that already sets a real epsilon (see
-        // `400p.spt`'s own `creat_time_epsilon 5`, already confirmed to
-        // look correct) - it just adds a second, complementary source of
-        // stagger on top of the jitter that was already there.
-        phaseOffset: (i / template.num) * template.liveTime + Math.random() * template.createTimeEpsilon,
-        keyframes: resolveKeyframes(template),
-      });
+  private leaveBatch(): void {
+    if (this.batch && this.member) {
+      this.batch.removeMember(this.member);
+      if (this.batch.memberCount === 0 && this.batchKey) templateBatches.delete(this.batchKey);
     }
+    this.batch = null;
+    this.member = null;
+  }
+
+  /** Per-effect values consumed by CharacterController's debug stats. Kept as scalar getters so gathering them doesn't create one object per effect per frame. */
+  getInstanceCount(): number {
+    return this.member?.rowCount ?? 0;
+  }
+
+  getActiveInstanceCount(): number {
+    return this.member?.activeInstanceCount ?? 0;
+  }
+
+  isCulled(): boolean {
+    return this.member?.culled ?? false;
   }
 
   /** Debug-only, read-only snapshot of the real `.spt` values currently driving this effect - for `%efedit`'s live inspector/tuner (see setLiveValues). Null before load() resolves. */
@@ -568,152 +805,56 @@ export class ParticleEffect {
     return this.template;
   }
 
-  /**
-   * Debug-only (`%efedit`'s per-socket inspector panel): overwrites one or
-   * more of this effect's own template values in place and rebuilds every
-   * instance from the result - for empirically dialing in "the exact
-   * formula" against the real game's own look, the same live-tune-and-
-   * observe workflow WeaponEditPanel's grade values already offer. A full
-   * rebuild (not a partial in-place patch) is used even for a single
-   * field change: several fields here (`startPower`/`startScale`/
-   * `startAlpha`/`startZRot`/`posBox`) are only ever read once, at spawn
-   * time, into each instance's own resolved keyframe curve - patching
-   * them without rebuilding wouldn't visibly do anything. `gravity`/
-   * `liveTime`/`timeSpeed` ARE re-read fresh every frame in update() and
-   * would technically update live without a rebuild, but going through
-   * the same rebuild path for every field keeps this method's behavior
-   * uniform and simple rather than field-dependent. Values here are
-   * plain numbers, not the template's own `NumberOrRange` - editing away
-   * any `rand()` a field originally had, same simplification
-   * GradeLiveValues already makes for `.mst` values.
-   */
-  setLiveValues(patch: Partial<ParticleLiveValues>): void {
-    const template = this.template;
-    if (!template) return;
-
-    if (patch.num !== undefined) template.num = Math.max(0, Math.round(patch.num));
-    if (patch.posBox) template.posBox = patch.posBox;
-    if (patch.gravity) template.gravity = patch.gravity;
-    if (patch.startPower) {
-      template.startPower = [fixedNumberOrRange(patch.startPower[0]), fixedNumberOrRange(patch.startPower[1]), fixedNumberOrRange(patch.startPower[2])];
-    }
-    if (patch.startScale !== undefined) template.startScale = fixedNumberOrRange(patch.startScale);
-    if (patch.startAlpha !== undefined) template.startAlpha = fixedNumberOrRange(patch.startAlpha);
-    if (patch.startZRot !== undefined) template.startZRot = fixedNumberOrRange(patch.startZRot);
-    if (patch.liveTime !== undefined) template.liveTime = patch.liveTime;
-    if (patch.timeSpeed !== undefined) template.timeSpeed = patch.timeSpeed;
-
-    this.spawnInstances();
+  /** Rebuilds this effect's batch after the debug randomness mode changes. If this effect shares a batch with other members, every one of them calls this too (each rebuild is redundant but harmless - the result is identical each time), same simplification `rebuildFromTemplate` itself documents. */
+  rebuildForRandomnessChange(): void {
+    this.batch?.rebuildFromTemplate();
   }
 
   /**
-   * Advances the shared loop clock and every instance's position/scale/
-   * color/alpha/rotation, writing each one straight into the shared
-   * InstancedMesh's own instance matrix/color buffers (setMatrixAt/
-   * setColorAt) instead of touching a real per-instance Object3D - see
-   * the class doc comment on why. `camera` is only used for billboarded
-   * templates (the common case - see particleTemplate.ts) to face each
-   * particle toward it; non-billboard templates ignore it and keep the
-   * entity mesh's own authored orientation, only spinning it by the
-   * resolved xrot/yrot/zrot. Each instance samples its keyframe curve and
-   * drifts using its *own* age (`simTime` plus that instance's own
-   * `phaseOffset` - see createTimeEpsilon), not one shared age for every
-   * instance - otherwise every copy would pulse through the exact same
-   * point in the curve at the exact same moment, reading as one
-   * overlapping blob instead of a staggered stream (the real, and
-   * intended, effect of a nonzero createTimeEpsilon).
+   * Debug-only (`%efedit`'s per-socket inspector panel): overwrites one or
+   * more of this effect's own template values in place and rebuilds its
+   * batch from the result - for empirically dialing in "the exact
+   * formula" against the real game's own look, the same live-tune-and-
+   * observe workflow WeaponEditPanel's grade values already offer.
    *
-   * Position drift is `gravity` (constant for the whole template) plus
-   * `sample.powerDisplacement` (the integrated effect of `power`/
-   * `start_power`, which - unlike gravity - can change value at each
-   * keyframe; see sampleKeyframes's own doc comment for why this is an
-   * integral rather than a direct per-frame add).
+   * `this.template` starts out as the same cached object every other
+   * effect resolving this `.spt` path shares (see loadParticleTemplate's
+   * module-level cache) - mutating it in place would silently retune
+   * every other socket currently using this template, including bots. The
+   * first edit clones it into a private copy and moves this effect into
+   * its own private, never-shared batch (a fresh key, not this `.spt`
+   * path) before applying anything, so a live edit stays scoped to just
+   * the one socket `%efedit` is pointed at, exactly like before batching
+   * existed. Every edit after the first reuses that same private batch
+   * (cheap in-place rebuild, not a fresh join) since a live-tune panel can
+   * fire on every keystroke.
    */
-  update(delta: number, camera: Camera | null): void {
+  setLiveValues(patch: Partial<ParticleLiveValues>): void {
     const template = this.template;
-    const instancedMesh = this.instancedMesh;
-    if (!template || !instancedMesh) return;
+    if (!template || !this.geometry) return;
 
-    this.simTime += delta * template.timeSpeed;
-    const liveTime = Math.max(template.liveTime, 1e-6);
-    // convertVec3, not a plain .set(...gravity) - see resolvePower's own
-    // doc comment on why a .spt's raw XYZ needs the same axis conversion
-    // every other Chef/ spatial value already gets.
-    convertVec3(template.gravity[0], template.gravity[1], template.gravity[2], this.gravity);
-
-    // Every instance shares the exact same parent (this.group) - compute
-    // the camera-facing base orientation once per frame, not once per
-    // instance (the pre-InstancedMesh version of this class recomputed
-    // the identical value on every single instance, every frame).
-    const useBillboard = template.billboard && camera !== null;
-    if (useBillboard) {
-      if (this.group.parent) {
-        this.group.parent.getWorldQuaternion(this.parentWorldQuat);
-        this.billboardBaseQuat.copy(this.parentWorldQuat).invert().multiply(camera.quaternion);
-      } else {
-        this.billboardBaseQuat.copy(camera.quaternion);
-      }
+    if (!this.forkedForLiveEdit) {
+      const forked = { ...template };
+      this.template = forked;
+      this.forkedForLiveEdit = true;
+      applyLiveValuePatch(forked, patch);
+      this.joinBatch(`${this.sptPath ?? 'unknown'}#private-${nextPrivateBatchId++}`);
+      return;
     }
 
-    for (let i = 0; i < this.instances.length; i++) {
-      const instance = this.instances[i];
-      const age = (this.simTime + instance.phaseOffset) % liveTime;
-      const sample = sampleKeyframes(instance.keyframes, age);
+    applyLiveValuePatch(template, patch);
+    this.batch?.rebuildFromTemplate();
+  }
 
-      this.scratchPosition
-        .copy(instance.spawnPos)
-        .addScaledVector(this.gravity, age)
-        .add(sample.powerDisplacement);
-      this.scratchScale.setScalar(sample.scale);
-
-      const xrotRad = (sample.xrot * Math.PI) / 180;
-      const yrotRad = (sample.yrot * Math.PI) / 180;
-      const zrotRad = (sample.zrot * Math.PI) / 180;
-
-      if (useBillboard) {
-        // Applied on top of the camera-facing orientation (post-multiplied
-        // local rotations), same as zrot always has been - xrot/yrot tilt
-        // the billboarded quad relative to its own camera-facing plane
-        // rather than trying to resolve against it globally. Matches
-        // Object3D.rotateX/Y/Z's own convention (successive post-
-        // multiplies), replicated by hand here since there's no real
-        // Object3D per instance to call those methods on any more.
-        this.scratchQuat
-          .copy(this.billboardBaseQuat)
-          .multiply(this.scratchSpinQuat.setFromAxisAngle(X_AXIS, xrotRad))
-          .multiply(this.scratchSpinQuat.setFromAxisAngle(Y_AXIS, yrotRad))
-          .multiply(this.scratchSpinQuat.setFromAxisAngle(Z_AXIS, zrotRad));
-      } else {
-        // Matches Object3D.rotation.set(x, y, z)'s own default 'XYZ' Euler
-        // order - composed as successive intrinsic rotations, same as
-        // three's own Quaternion.setFromEuler does for that order.
-        this.scratchQuat
-          .setFromAxisAngle(X_AXIS, xrotRad)
-          .multiply(this.scratchSpinQuat.setFromAxisAngle(Y_AXIS, yrotRad))
-          .multiply(this.scratchSpinQuat.setFromAxisAngle(Z_AXIS, zrotRad));
-      }
-
-      this.scratchMatrix.compose(this.scratchPosition, this.scratchQuat, this.scratchScale);
-      instancedMesh.setMatrixAt(i, this.scratchMatrix);
-
-      // Per-instance alpha is baked into the color's own magnitude, not
-      // tracked as real per-instance alpha - see the class doc comment on
-      // why that's exactly equivalent for AdditiveBlending.
-      this.scratchColor.copy(sample.color).multiplyScalar(sample.alpha / 255);
-      instancedMesh.setColorAt(i, this.scratchColor);
-    }
-
-    instancedMesh.instanceMatrix.needsUpdate = true;
-    if (instancedMesh.instanceColor) instancedMesh.instanceColor.needsUpdate = true;
+  update(delta: number, camera: Camera | null, frustum: Frustum | null, cameraPosition: Vector3 | null): void {
+    void delta; // clock advance is batch-level now, see advanceParticleBatchClocks
+    void camera; // billboarding is baked into the shader at build time, not read at runtime - matches the old per-effect behavior
+    if (!this.batch || !this.member) return;
+    this.batch.updateMember(this.member, frustum, cameraPosition);
   }
 
   dispose(): void {
     this.disposed = true;
-    this.instancedMesh?.parent?.remove(this.instancedMesh);
-    this.instancedMesh?.dispose();
-    this.instancedMesh = null;
-    this.material?.dispose();
-    this.material = null;
-    this.instances = [];
+    this.leaveBatch();
   }
 }

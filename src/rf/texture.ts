@@ -401,6 +401,12 @@ function buildDataTexture(base: DdsMipmap, alphaInfo: TextureAlphaInfo): DataTex
 export function decodeRftTexture(rawBuffer: ArrayBuffer): Texture {
   const ddsBuffer = decodeRft(rawBuffer);
 
+  // DDSLoader logs "Unsupported FourCC code" for real uncompressed RGB565
+  // DDS files before returning an empty result. Detect the one verified RF
+  // layout first so those valid R3T entries take the quiet manual path.
+  const rgb565 = tryDecodeRgb565Uncompressed(ddsBuffer);
+  if (rgb565) return buildDataTexture(rgb565, classifyAlpha(rgb565.data));
+
   const loader = new DDSLoader();
   const ddsData = loader.parse(ddsBuffer, true);
   const format = ddsData.format as number;
@@ -415,8 +421,6 @@ export function decodeRftTexture(rawBuffer: ArrayBuffer): Texture {
   // already treat a failed texture load as "commonly missing," same as any
   // other unavailable asset in this codebase.
   if (ddsData.mipmaps.length === 0) {
-    const rgb565 = tryDecodeRgb565Uncompressed(ddsBuffer);
-    if (rgb565) return buildDataTexture(rgb565, classifyAlpha(rgb565.data));
     throw new Error(`DDSLoader could not parse this DDS (unsupported variant, format=${String(format)})`);
   }
 

@@ -607,7 +607,7 @@ function buildObjectsFromParsedMesh(
     if (isRenderable && obj.skinBoneNames && obj.skinWeights) {
       const geometry = buildGeometry(obj);
       const material = new MeshStandardMaterial({
-        map: texture ?? undefined,
+        map: texture,
         color: texture ? 0xffffff : 0xcccccc,
         side: DoubleSide,
         ...materialAlphaOptions(texture),
@@ -642,7 +642,7 @@ function buildObjectsFromParsedMesh(
         ? new Mesh(
             buildGeometry(obj),
             new MeshStandardMaterial({
-              map: texture ?? undefined,
+              map: texture,
               color: texture ? 0xffffff : 0xcccccc,
               side: DoubleSide,
               ...materialAlphaOptions(texture),

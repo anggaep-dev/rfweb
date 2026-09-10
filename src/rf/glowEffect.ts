@@ -1,14 +1,6 @@
-import { AdditiveBlending, ClampToEdgeWrapping, DataTexture, DoubleSide, Matrix4, Mesh, MeshBasicMaterial, MeshMatcapMaterial, PlaneGeometry, RedFormat } from 'three';
-import type { Material, MeshStandardMaterial, Object3D, SkinnedMesh, Texture } from 'three';
+import { AdditiveBlending, ClampToEdgeWrapping, DataTexture, DoubleSide, InstancedMesh, Matrix4, Mesh, MeshBasicMaterial, MeshMatcapMaterial, PlaneGeometry, RedFormat, Vector3 } from 'three';
+import type { Camera, MeshStandardMaterial, Object3D, Texture } from 'three';
 import { decodeRftTexture } from './texture';
-
-// SkinnedMesh.bind() only ever reads from the bindMatrix it's given, so
-// this one instance is safe to reuse for every glow overlay mesh bound
-// here - same reasoning as character.ts's own IDENTITY_MATRIX (kept
-// separate rather than importing/exporting theirs, since sharing a mutable
-// module-level object across unrelated files is more coupling than this
-// needs for one constant).
-const IDENTITY_MATRIX = new Matrix4();
 
 const CHEF_BASE = '/game-assets/Chef';
 
@@ -296,6 +288,17 @@ async function fetchChefAssetOrNull(url: string): Promise<ArrayBuffer | null> {
   return res.arrayBuffer();
 }
 
+/** Encodes raw client filenames one path segment at a time. RF data can contain literal `%` characters (for example a real particle material named `MATERIAL%`); putting those raw into fetch() makes the browser reject the URL before Vite can serve the asset. */
+function chefAssetUrl(dirUrl: string, filename: string): string {
+  const encodedFilename = filename
+    .replace(/\\/g, '/')
+    .split('/')
+    .filter((segment) => segment.length > 0)
+    .map((segment) => encodeURIComponent(segment))
+    .join('/');
+  return `${dirUrl}/${encodedFilename}`;
+}
+
 /**
  * Fetches a Chef/-relative asset, retrying with the requested filename's
  * all-lowercase and all-uppercase spellings if the exact case given 404s
@@ -311,12 +314,12 @@ async function fetchChefAssetOrNull(url: string): Promise<ArrayBuffer | null> {
  * blanket spellings only when that misses.
  */
 export async function fetchChefAssetCaseInsensitive(dirUrl: string, filename: string): Promise<ArrayBuffer> {
-  const exact = await fetchChefAssetOrNull(`${dirUrl}/${filename}`);
+  const exact = await fetchChefAssetOrNull(chefAssetUrl(dirUrl, filename));
   if (exact) return exact;
 
   for (const candidate of [filename.toLowerCase(), filename.toUpperCase()]) {
     if (candidate === filename) continue;
-    const hit = await fetchChefAssetOrNull(`${dirUrl}/${candidate}`);
+    const hit = await fetchChefAssetOrNull(chefAssetUrl(dirUrl, candidate));
     if (hit) return hit;
   }
 
@@ -341,25 +344,73 @@ function loadChefTexture(textureName: string): Promise<Texture | null> {
 }
 
 export interface GlowOverlay {
-  objects: Object3D[];
-  /** Non-empty only when at least one section used movementMode 2 (scrolling) - see animateGlowOverlay in the controller. */
-  scrollingMaterials: { material: MeshBasicMaterial; speedByte: number }[];
+  /** Non-empty only when at least one section used movementMode 2 (scrolling) - `uvOffset` is the live uniform holder attachGlowInjection stashed on that mesh's own material (see its own doc comment on why this must be a stable object, not read fresh off `shader.uniforms` each time), mutated by updateGlowAnimation in the controller. */
+  scrollingMaterials: { uvOffset: { value: number }; speedByte: number }[];
+  /** How many renderable submeshes actually got a glow term injected - since glow now lives inside each part's own pre-existing material (see attachGlowInjection) rather than a separate object, this is what callers check instead of an `objects.length` count. */
+  appliedCount: number;
   /** The resolved .eff path this came from, or null for the common "no registered effect" case - debug display only (WeaponEditPanel). */
   effPath: string | null;
   /** The specific .eff section (of possibly several - see EffSection) whose glowTexture was actually used - debug display only. */
   section: EffSection | null;
 }
 
-const EMPTY_GLOW_OVERLAY: GlowOverlay = { objects: [], scrollingMaterials: [], effPath: null, section: null };
+const EMPTY_GLOW_OVERLAY: GlowOverlay = { scrollingMaterials: [], appliedCount: 0, effPath: null, section: null };
 
 /**
- * Builds a glow overlay for an already-built, already-attached equipped
- * part: one additively-blended sibling mesh per renderable object in
- * `sourceObjects`, sharing geometry (and, for skinned meshes, the same
- * skeleton) so it deforms identically to the part it's glowing on top of.
- * Returns an empty overlay (not null) when the item has no registered
- * glow effect or its .eff has no usable texture - callers can treat "no
- * glow" and "glow with zero sections" the same way.
+ * Extends `mesh`'s own existing material (always a real `MeshStandardMaterial`
+ * - see character.ts) with an additive glow term, instead of adding a whole
+ * separate sibling mesh the way this project used to (one extra draw call
+ * per glow-bearing submesh of every equipped part - a real, measured
+ * contributor to bot-heavy scenes staying slow even after particle
+ * rendering got fixed). `onBeforeCompile` is three.js's supported way to
+ * splice extra GLSL into a built-in material's shader without losing its
+ * real PBR lighting (recreating that by hand, the way the old sibling-mesh
+ * MeshBasicMaterial sidestepped needing to, is not worth it here).
+ *
+ * The injection point and varying name were verified against this
+ * project's actual installed three.js (0.185.1, see node_modules/three/src/
+ * renderers/shaders/ShaderChunk/{uv_pars_fragment,opaque_fragment}.glsl.js):
+ * `vMapUv` (not the older universal `vUv`) is the base texture's own UV
+ * varying whenever a material has `map` set (true for every part built in
+ * character.ts), and `#include <opaque_fragment>` is the last chunk before
+ * `gl_FragColor` is assembled from `outgoingLight` - late enough that
+ * lighting/emissive/aomap are already resolved, early enough to still pass
+ * through tonemapping/colorspace conversion like the rest of the material.
+ * The math reproduces exactly what the old separate `AdditiveBlending`
+ * `MeshBasicMaterial` sibling computed (`dst + texel.rgb * texel.a`), just
+ * composited in the same draw instead of a second one.
+ *
+ * Returns a `{ value: number }` UV-scroll-offset uniform holder for
+ * `updateGlowAnimation` to mutate - stored on `material.userData` (not read
+ * fresh off `shader.uniforms`) because `onBeforeCompile` can re-fire on a
+ * later program recompile (a new light count, etc.), which would hand back
+ * a *different* uniforms object; referencing the same stable holder from
+ * both the shader and the caller keeps scrolling working across that.
+ */
+function attachGlowInjection(mesh: Mesh, glowTexture: Texture): { value: number } {
+  const material = mesh.material as MeshStandardMaterial;
+  const uvOffset: { value: number } = (material.userData.rfGlowUvOffset as { value: number } | undefined) ?? { value: 0 };
+  material.userData.rfGlowUvOffset = uvOffset;
+
+  material.onBeforeCompile = (shader) => {
+    shader.uniforms.rfGlowMap = { value: glowTexture };
+    shader.uniforms.rfGlowUvOffset = uvOffset;
+    shader.fragmentShader = `uniform sampler2D rfGlowMap;\nuniform float rfGlowUvOffset;\n${shader.fragmentShader}`.replace(
+      '#include <opaque_fragment>',
+      `#ifdef OPAQUE\ndiffuseColor.a = 1.0;\n#endif\n#ifdef USE_TRANSMISSION\ndiffuseColor.a *= material.transmissionAlpha;\n#endif\nvec4 rfGlowTexel = texture2D( rfGlowMap, vMapUv + vec2( rfGlowUvOffset, 0.0 ) );\noutgoingLight += rfGlowTexel.rgb * rfGlowTexel.a;\ngl_FragColor = vec4( outgoingLight, diffuseColor.a );`,
+    );
+  };
+  material.needsUpdate = true;
+  return uvOffset;
+}
+
+/**
+ * Injects a glow term (see attachGlowInjection) into every renderable
+ * submesh of an already-built, already-attached equipped part, in place -
+ * no separate mesh added to the scene. Returns an empty overlay (not null)
+ * when the item has no registered glow effect or its .eff has no usable
+ * texture - callers can treat "no glow" and "glow with zero sections" the
+ * same way.
  */
 export async function buildGlowOverlay(modelId: string, sourceObjects: Object3D[], upgradeLevel = 0): Promise<GlowOverlay> {
   const effPath = await resolveGlowEffectPath(modelId, upgradeLevel);
@@ -372,59 +423,30 @@ export async function buildGlowOverlay(modelId: string, sourceObjects: Object3D[
   const texture = await loadChefTexture(glowSection.glowTexture);
   if (!texture) return EMPTY_GLOW_OVERLAY;
 
-  const objects: Object3D[] = [];
-  const scrollingMaterials: { material: MeshBasicMaterial; speedByte: number }[] = [];
+  const scrollingMaterials: { uvOffset: { value: number }; speedByte: number }[] = [];
+  let appliedCount = 0;
 
   for (const source of sourceObjects) {
     source.traverse((obj) => {
       const mesh = obj as Mesh;
       if (!(mesh as { isMesh?: boolean }).isMesh) return;
 
-      const material = new MeshBasicMaterial({
-        map: texture,
-        blending: AdditiveBlending,
-        transparent: true,
-        depthWrite: false,
-        side: DoubleSide,
-        color: 0xffffff,
-      });
-
-      const isSkinned = (mesh as unknown as { isSkinnedMesh?: boolean }).isSkinnedMesh;
-      let glowMesh: Object3D;
-      if (isSkinned) {
-        const skinned = mesh as unknown as SkinnedMesh;
-        const clone = new (skinned.constructor as new (...args: unknown[]) => SkinnedMesh)(mesh.geometry, material);
-        clone.bind(skinned.skeleton, IDENTITY_MATRIX);
-        glowMesh = clone;
-      } else {
-        const clone = new (mesh.constructor as new (...args: unknown[]) => Mesh)(mesh.geometry, material);
-        clone.position.copy(mesh.position);
-        clone.quaternion.copy(mesh.quaternion);
-        clone.scale.copy(mesh.scale);
-        glowMesh = clone;
-      }
-      glowMesh.name = `${mesh.name}_glow`;
-      mesh.parent?.add(glowMesh);
-      objects.push(glowMesh);
-
-      if (glowSection.movementMode === 2) scrollingMaterials.push({ material, speedByte: glowSection.speedByte });
+      const uvOffset = attachGlowInjection(mesh, texture);
+      appliedCount += 1;
+      if (glowSection.movementMode === 2) scrollingMaterials.push({ uvOffset, speedByte: glowSection.speedByte });
     });
   }
 
-  return { objects, scrollingMaterials, effPath, section: glowSection };
-}
-
-/** Disposes a glow overlay's own meshes/materials (not the shared geometry/texture, which belong to the source objects and texture cache respectively). */
-export function disposeGlowOverlay(overlay: GlowOverlay): void {
-  for (const obj of overlay.objects) {
-    obj.parent?.remove(obj);
-    const mesh = obj as Mesh;
-    (mesh.material as Material | undefined)?.dispose();
-  }
+  return { scrollingMaterials, appliedCount, effPath, section: glowSection };
 }
 
 /** Three.js units - a real point-glow needs to actually read against a full weapon at normal camera distance, not disappear into it. */
 const SOCKET_GLOW_SIZE = 0.5;
+
+/** A .eff "speed" byte of this value is the source data's own baseline; each +1 above it roughly doubles the scroll rate, per the tutorial this was reverse-engineered from. Shared by both scrolling-glow paths (this file's own SocketGlowBillboard, and CharacterController's updateGlowAnimation for the whole-mesh case) - the decode is a property of the .eff format itself, not either consumer. */
+export const GLOW_SPEED_BASE_BYTE = 0x40;
+/** UV units/second a scrolling glow texture moves at the baseline speed byte - tuned by eye, the source data has no literal units for this. */
+export const GLOW_SCROLL_UV_PER_SEC = 0.6;
 
 let socketGlowRadialMask: DataTexture | null = null;
 
@@ -465,14 +487,225 @@ function getSocketGlowRadialMask(): DataTexture {
   return texture;
 }
 
-export interface SocketGlow {
-  /** One additively-blended billboard quad per matched socket - see buildSocketGlow. */
-  objects: Mesh[];
-  /** Parallel to `objects` - non-null entries are the ones whose section used movementMode 2 (scrolling), same convention as GlowOverlay.scrollingMaterials - see updateSocketGlowBillboards in the controller, which reuses the exact same speed-byte decode as the whole-mesh path. Most sockets don't scroll (null), matching how most .eff sections checked so far don't either. */
-  speedBytes: (number | null)[];
+/** Instance-row capacity a SocketGlowBatch grows by whenever a new member doesn't fit - mirrors particleSystem.ts's ParticleTemplateBatch (same "chunked growth, never shrink on remove" reasoning, to avoid rebuild thrash on equip/despawn churn), just a smaller chunk since socket-glow counts run far below particle instance counts. */
+const SOCKET_GLOW_BATCH_CAPACITY_CHUNK = 32;
+/** Shared "hide this row" matrix (scale 0 on every axis), reused by every batch - same technique as particleSystem.ts's own ZERO_SCALE_MATRIX, kept as a separate constant here rather than imported (same "not worth coupling two otherwise-independent modules over one constant" reasoning this file's old IDENTITY_MATRIX comment used to give). */
+const SOCKET_GLOW_ZERO_SCALE_MATRIX = new Matrix4().makeScale(0, 0, 0);
+/** Every socket-glow billboard is this exact size/shape (see SOCKET_GLOW_SIZE) regardless of which texture it uses - one geometry shared by every SocketGlowBatch, never disposed (same "cheap, permanent, shared" reasoning as this project's other module-level three.js constants). */
+const SOCKET_GLOW_GEOMETRY = new PlaneGeometry(SOCKET_GLOW_SIZE, SOCKET_GLOW_SIZE);
+
+let socketGlowSceneRoot: Object3D | null = null;
+
+/** Wires the shared per-texture socket-glow batches into the real scene - call once, before any buildSocketGlow (ViewerScene does this from its constructor, alongside initParticleBatching). Every batch's InstancedMesh is added directly here, at the scene root, rather than under any one socket - same reasoning as particleSystem.ts's ParticleTemplateBatch. */
+export function initSocketGlowBatching(sceneRoot: Object3D): void {
+  socketGlowSceneRoot = sceneRoot;
 }
 
-const EMPTY_SOCKET_GLOW: SocketGlow = { objects: [], speedBytes: [] };
+const socketGlowBatches = new Map<string, SocketGlowBatch>();
+
+/** Gets (or creates, for the first socket seen using this texture) the shared batch for one glow texture - the material only ever differs by `map`, so texture identity is the natural batching key (see SocketGlowBatch's own doc comment). */
+function getOrCreateSocketGlowBatch(textureKey: string, texture: Texture): SocketGlowBatch {
+  let batch = socketGlowBatches.get(textureKey);
+  if (!batch) {
+    const material = new MeshBasicMaterial({
+      map: texture,
+      alphaMap: getSocketGlowRadialMask(),
+      blending: AdditiveBlending,
+      transparent: true,
+      depthWrite: false,
+      side: DoubleSide,
+    });
+    batch = new SocketGlowBatch(material);
+    socketGlowBatches.set(textureKey, batch);
+  }
+  return batch;
+}
+
+/** One socket's own billboard row within a shared SocketGlowBatch - not exported; SocketGlowBillboard (below) is the public handle wrapping this. */
+class SocketGlowMember {
+  row = -1;
+  visible = true;
+  readonly socket: Object3D;
+  constructor(socket: Object3D) {
+    this.socket = socket;
+  }
+}
+
+/**
+ * Every socket-glow billboard using the same glow texture (across *every*
+ * character - player and every bot alike) shares one of these: one
+ * `InstancedMesh`/`MeshBasicMaterial`/draw call for however many sockets
+ * currently use that texture, instead of one `Mesh` per socket - same
+ * "batch by shared visual identity" fix particleSystem.ts's
+ * ParticleTemplateBatch already applied to weapon particles.
+ *
+ * The batch's own InstancedMesh sits at the scene root (added via
+ * initSocketGlowBatching's sceneRoot, never parented to any one socket);
+ * each member's own screen-facing position comes from a per-row
+ * `instanceMatrix` written every frame as `compose(socket's world
+ * position, camera's world quaternion, unit scale)`. Writing the camera's
+ * own world quaternion directly as the billboard's world orientation *is*
+ * the standard screen-aligned billboard technique, and is exactly what the
+ * old per-object code already computed indirectly - it derived a *local*
+ * quaternion relative to the parent socket specifically so composing it
+ * back through the parent's own world quaternion during the normal
+ * scene-graph update would land on `camera.quaternion` as the final
+ * *world* orientation. Writing that world orientation straight into
+ * instanceMatrix is the same result, with no parent left to compose
+ * through.
+ */
+class SocketGlowBatch {
+  readonly material: MeshBasicMaterial;
+  private instancedMesh: InstancedMesh | null = null;
+  private capacity = 0;
+  private readonly members: SocketGlowMember[] = [];
+  private readonly scratchPosition = new Vector3();
+  private readonly scratchScale = new Vector3(1, 1, 1);
+  private readonly scratchMatrix = new Matrix4();
+
+  constructor(material: MeshBasicMaterial) {
+    this.material = material;
+  }
+
+  get memberCount(): number {
+    return this.members.length;
+  }
+
+  addMember(socket: Object3D): SocketGlowMember {
+    const member = new SocketGlowMember(socket);
+    this.members.push(member);
+    this.reassignRows();
+    return member;
+  }
+
+  removeMember(member: SocketGlowMember): void {
+    const index = this.members.indexOf(member);
+    if (index === -1) return;
+    this.members.splice(index, 1);
+    if (this.members.length === 0) {
+      this.disposeMesh();
+      return;
+    }
+    this.reassignRows();
+  }
+
+  /** Rebuilds the InstancedMesh (if it needs to grow) and reassigns every member's own row - infrequent (equip/spawn/despawn events), never a per-frame cost. */
+  private reassignRows(): void {
+    if (!this.instancedMesh || this.members.length > this.capacity) this.rebuildMesh(this.members.length);
+    this.members.forEach((member, row) => {
+      member.row = row;
+    });
+  }
+
+  private rebuildMesh(minCapacity: number): void {
+    const newCapacity = Math.max(SOCKET_GLOW_BATCH_CAPACITY_CHUNK, Math.ceil(minCapacity / SOCKET_GLOW_BATCH_CAPACITY_CHUNK) * SOCKET_GLOW_BATCH_CAPACITY_CHUNK);
+    this.instancedMesh?.parent?.remove(this.instancedMesh);
+    this.instancedMesh?.dispose();
+
+    const instancedMesh = new InstancedMesh(SOCKET_GLOW_GEOMETRY, this.material, newCapacity);
+    // Every row's own world position/orientation is recomputed every frame
+    // regardless of where the camera or any socket currently is - a
+    // bounding-sphere frustum test on the shared geometry alone would be
+    // meaningless here, same reasoning as particleSystem.ts's own batches.
+    instancedMesh.frustumCulled = false;
+    instancedMesh.count = newCapacity;
+    for (let i = 0; i < newCapacity; i++) instancedMesh.setMatrixAt(i, SOCKET_GLOW_ZERO_SCALE_MATRIX);
+    socketGlowSceneRoot?.add(instancedMesh);
+
+    this.instancedMesh = instancedMesh;
+    this.capacity = newCapacity;
+  }
+
+  private disposeMesh(): void {
+    this.instancedMesh?.parent?.remove(this.instancedMesh);
+    this.instancedMesh?.dispose();
+    this.instancedMesh = null;
+    this.capacity = 0;
+  }
+
+  /** Per-frame billboard positioning for one member - called from SocketGlowBillboard.update(), once per socket per frame. */
+  updateMember(member: SocketGlowMember, camera: Camera): void {
+    if (!this.instancedMesh || member.row < 0) return;
+    if (!member.visible) {
+      this.instancedMesh.setMatrixAt(member.row, SOCKET_GLOW_ZERO_SCALE_MATRIX);
+      this.instancedMesh.instanceMatrix.needsUpdate = true;
+      return;
+    }
+    member.socket.updateWorldMatrix(true, false);
+    member.socket.getWorldPosition(this.scratchPosition);
+    this.scratchMatrix.compose(this.scratchPosition, camera.quaternion, this.scratchScale);
+    this.instancedMesh.setMatrixAt(member.row, this.scratchMatrix);
+    this.instancedMesh.instanceMatrix.needsUpdate = true;
+  }
+}
+
+/**
+ * Public handle for one socket-glow billboard, replacing what used to be a
+ * raw `Mesh` in SocketGlow.objects - see SocketGlowBatch's own doc comment
+ * for why the real geometry now lives in a batch shared across
+ * sockets/characters instead of one Mesh per socket. Exposes just enough
+ * surface for CharacterController's existing call sites - `.visible`
+ * (toggled by applyWeaponVisibility, same as a real Object3D would be) and
+ * `update()` (called once a frame by updateSocketGlowBillboards) - without
+ * either needing to change shape.
+ */
+export class SocketGlowBillboard {
+  visible = true;
+
+  private batch: SocketGlowBatch | null = null;
+  private batchKey: string | null = null;
+  private member: SocketGlowMember | null = null;
+  private readonly material: MeshBasicMaterial;
+  private readonly speedByte: number | null;
+
+  constructor(socket: Object3D, textureKey: string, texture: Texture, speedByte: number | null) {
+    this.speedByte = speedByte;
+
+    const batch = getOrCreateSocketGlowBatch(textureKey, texture);
+    this.material = batch.material;
+    this.batch = batch;
+    this.batchKey = textureKey;
+    this.member = batch.addMember(socket);
+  }
+
+  /**
+   * Repositions this socket's billboard row to face the camera (or hides
+   * it - see `.visible`), and advances this billboard's own scrolling glow
+   * texture if its section used movementMode 2, same speed-byte decode
+   * CharacterController's updateGlowAnimation uses for the whole-mesh case
+   * (see GLOW_SPEED_BASE_BYTE/GLOW_SCROLL_UV_PER_SEC). `texture.offset` is
+   * mutated on the shared, texture-cache-owned Texture object (see
+   * loadChefTexture) - sockets that happen to share a texture already
+   * scroll together today, same as before this batching existed.
+   */
+  update(camera: Camera, delta: number): void {
+    if (!this.batch || !this.member) return;
+    this.member.visible = this.visible;
+    this.batch.updateMember(this.member, camera);
+
+    if (this.speedByte === null) return;
+    const texture = this.material.map;
+    if (!texture) return;
+    const speedFactor = 2 ** (this.speedByte - GLOW_SPEED_BASE_BYTE);
+    texture.offset.x = (texture.offset.x + speedFactor * GLOW_SCROLL_UV_PER_SEC * delta) % 1;
+  }
+
+  dispose(): void {
+    if (this.batch && this.member) {
+      this.batch.removeMember(this.member);
+      if (this.batch.memberCount === 0 && this.batchKey) socketGlowBatches.delete(this.batchKey);
+    }
+    this.batch = null;
+    this.member = null;
+  }
+}
+
+export interface SocketGlow {
+  /** One billboard handle per matched socket - see buildSocketGlow/SocketGlowBillboard. */
+  objects: SocketGlowBillboard[];
+}
+
+const EMPTY_SOCKET_GLOW: SocketGlow = { objects: [] };
 
 /**
  * Pairs `.eff` sections to live weapon sockets by name first - each
@@ -555,38 +788,25 @@ export async function buildSocketGlow(modelId: string, sockets: Object3D[], upgr
 
   const pairs = pairSectionsToSockets(sockets, glowSections);
 
-  const objects: Mesh[] = [];
-  const speedBytes: (number | null)[] = [];
-  const geometry = new PlaneGeometry(SOCKET_GLOW_SIZE, SOCKET_GLOW_SIZE);
+  const objects: SocketGlowBillboard[] = [];
   for (const { section, socket } of pairs) {
     const texture = await loadChefTexture(section.glowTexture);
     if (!texture) continue;
 
-    const material = new MeshBasicMaterial({
-      map: texture,
-      alphaMap: getSocketGlowRadialMask(),
-      blending: AdditiveBlending,
-      transparent: true,
-      depthWrite: false,
-      side: DoubleSide,
-    });
-    const quad = new Mesh(geometry, material);
-    quad.name = `${socket.name}_socketGlow`;
-    socket.add(quad);
-    objects.push(quad);
-    speedBytes.push(section.movementMode === 2 ? section.speedByte : null);
+    // section.glowTexture (the raw filename) is also socketGlowBatches' own
+    // batching key - every socket (any character) currently using this
+    // exact glow texture shares one batch/material/draw call, see
+    // getOrCreateSocketGlowBatch.
+    const billboard = new SocketGlowBillboard(socket, section.glowTexture, texture, section.movementMode === 2 ? section.speedByte : null);
+    objects.push(billboard);
   }
 
-  return { objects, speedBytes };
+  return { objects };
 }
 
-/** Disposes a socket glow's own billboard meshes/materials/geometry - every billboard built by one buildSocketGlow() call shares a single PlaneGeometry instance (own only by that call's result, not shared across different weapons/equips - see buildSocketGlow), so it's disposed once here rather than once per billboard. */
+/** Disposes a socket glow's own billboard handles - see SocketGlowBillboard.dispose. */
 export function disposeSocketGlow(overlay: SocketGlow): void {
-  overlay.objects[0]?.geometry.dispose();
-  for (const obj of overlay.objects) {
-    obj.parent?.remove(obj);
-    (obj.material as Material).dispose();
-  }
+  for (const obj of overlay.objects) obj.dispose();
 }
 
 let particleIndexPromise: Promise<Map<number, string>> | null = null;

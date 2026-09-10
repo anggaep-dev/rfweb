@@ -1,12 +1,14 @@
-import { AxesHelper, Euler, Mesh, MeshBasicMaterial, Quaternion, Raycaster, SphereGeometry, Vector2, Vector3 } from 'three';
+import { AxesHelper, Euler, Frustum, Matrix4, Mesh, MeshBasicMaterial, Quaternion, Raycaster, SphereGeometry, Vector2, Vector3 } from 'three';
 import type { Object3D, PerspectiveCamera, WebGLRenderer } from 'three';
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
 import { AssetController } from '../controllers/AssetController';
 import { BotController } from '../controllers/BotController';
 import { CameraController } from '../controllers/CameraController';
 import { CharacterController } from '../controllers/CharacterController';
-import type { EffectSocketInspection, WeaponDebugInfo } from '../controllers/CharacterController';
+import type { EffectSocketInspection, ParticleCullingContext, WeaponDebugInfo } from '../controllers/CharacterController';
 import { SceneController } from '../controllers/SceneController';
+import { advanceParticleBatchClocks, getParticleBatchCount, initParticleBatching, setParticleEffectCountForBudget, setParticleRandomnessEnabled } from '../rf/particleSystem';
+import { initSocketGlowBatching } from '../rf/glowEffect';
 import { classifyLocomotionDirection } from '../rf/character';
 import type { RaceGender } from '../rf/character';
 import type { AppScene } from './AppScene';
@@ -34,6 +36,15 @@ export interface ViewerDebugStats {
   heapMB: number | null;
   geometries: number;
   textures: number;
+  calls: number;
+  triangles: number;
+  particleEffects: number;
+  /** How many distinct ParticleTemplateBatch draw calls those effects actually collapsed into (see particleSystem.ts's getParticleBatchCount) - the direct signal for whether template batching is actually merging same-weapon effects across bots, since total render calls alone are dominated by character meshes and don't isolate this. */
+  particleBatches: number;
+  particleInstances: number;
+  simulatedParticles: number;
+  culledParticleEffects: number;
+  particleUpdateMs: number;
   /** The resolved animation clip key actually playing (e.g. "walk:TCROSSBOW:rt"), or null before the first frame resolves one. */
   clipKey: string | null;
   /** The currently-equipped weapon, or null when unarmed - id/name for identifying the item, token/stem for correlating an animation or placement bug back to specific source data. */
@@ -103,6 +114,8 @@ export class ViewerScene implements AppScene {
 
   private statsFrameCount = 0;
   private statsElapsed = 0;
+  private readonly particleViewProjection = new Matrix4();
+  private readonly particleCulling: ParticleCullingContext = { frustum: new Frustum(), cameraPosition: new Vector3() };
 
   // %wpedit - see setWeaponEditEnabled/setWeaponEditMode. transformControls
   // (three's own move/rotate gizmo, the same interaction model Blender's
@@ -158,6 +171,16 @@ export class ViewerScene implements AppScene {
       this.cameraController.controls.enabled = !(event as unknown as { value: boolean }).value;
     });
     this.transformControls.addEventListener('objectChange', () => this.emitWeaponEditState());
+
+    // Every ParticleEffect (player + every bot) renders through a shared
+    // per-template batch keyed off this scene's own root - see
+    // particleSystem.ts's ParticleTemplateBatch for why that cuts draw
+    // calls at high bot counts. Must be wired before any character equips
+    // a weapon/cloak and starts loading particles.
+    initParticleBatching(this.sceneController.scene);
+    // Same reasoning as initParticleBatching above, for socket-glow
+    // billboards - see glowEffect.ts's SocketGlowBatch.
+    initSocketGlowBatching(this.sceneController.scene);
   }
 
   get scene() {
@@ -422,10 +445,6 @@ export class ViewerScene implements AppScene {
 
     const { arrived } = this.characterController.update(delta);
     if (arrived) this.sceneController.hideTargetMarker();
-    this.characterController.updateSocketGlowBillboards(this.cameraController.camera, delta);
-    this.characterController.updateDebugSocketParticle(this.cameraController.camera, delta);
-    this.botController.update(delta, this.cameraController.camera);
-
     const character = this.characterController.getCharacter();
     this.cameraController.update(delta, {
       hipsBone: this.characterController.getHipsBone(),
@@ -434,17 +453,41 @@ export class ViewerScene implements AppScene {
       characterPosition: character ? character.group.position : null,
       isMoving: this.characterController.isMoving(),
     });
+    this.cameraController.camera.updateMatrixWorld();
+    this.particleViewProjection.multiplyMatrices(this.cameraController.camera.projectionMatrix, this.cameraController.camera.matrixWorldInverse);
+    this.particleCulling.frustum.setFromProjectionMatrix(this.particleViewProjection);
+    this.cameraController.camera.getWorldPosition(this.particleCulling.cameraPosition);
+    // Once per frame, not once per effect - see advanceParticleBatchClocks's
+    // own doc comment on why a per-effect call here would over-advance a
+    // batch shared by many sockets.
+    advanceParticleBatchClocks(delta);
+    setParticleEffectCountForBudget(
+      this.characterController.getParticleEffectCount() + this.botController.getParticleEffectCount(),
+    );
+    this.characterController.updateSocketGlowBillboards(this.cameraController.camera, delta);
+    this.characterController.updateDebugSocketParticle(this.cameraController.camera, delta, this.particleCulling);
+    this.botController.update(delta, this.cameraController.camera, this.particleCulling);
 
     this.statsFrameCount += 1;
     this.statsElapsed += delta;
     if (this.statsElapsed >= STATS_UPDATE_INTERVAL_SEC) {
       const perfMemory = (performance as Performance & { memory?: PerformanceMemoryInfo }).memory;
       const weapon = this.characterController.getCurrentWeapon();
+      const particleStats = this.characterController.getParticlePerformanceStats();
+      const botParticleStats = this.botController.getParticlePerformanceStats();
       this.callbacks.onStatsUpdate?.({
         fps: Math.round(this.statsFrameCount / this.statsElapsed),
         heapMB: perfMemory ? Math.round(perfMemory.usedJSHeapSize / BYTES_PER_MB) : null,
         geometries: this.renderer.info.memory.geometries,
         textures: this.renderer.info.memory.textures,
+        calls: this.renderer.info.render.calls,
+        triangles: this.renderer.info.render.triangles,
+        particleEffects: particleStats.effects + botParticleStats.effects,
+        particleBatches: getParticleBatchCount(),
+        particleInstances: particleStats.totalInstances + botParticleStats.totalInstances,
+        simulatedParticles: particleStats.simulatedInstances + botParticleStats.simulatedInstances,
+        culledParticleEffects: particleStats.culledEffects + botParticleStats.culledEffects,
+        particleUpdateMs: particleStats.updateMs + botParticleStats.updateMs,
         clipKey: this.characterController.getCurrentClipKey(),
         weapon: weapon ? { id: weapon.item.id, name: weapon.item.name, token: weapon.token, stem: weapon.stem } : null,
       });
@@ -529,6 +572,12 @@ export class ViewerScene implements AppScene {
       this.characterController.moveTo(hit);
       this.sceneController.showTargetMarker(hit);
     }
+  }
+
+  setParticleRandomnessEnabled(enabled: boolean): void {
+    setParticleRandomnessEnabled(enabled);
+    this.characterController.rebuildParticlesForRandomnessChange();
+    this.botController.rebuildParticlesForRandomnessChange();
   }
 
   dispose(): void {

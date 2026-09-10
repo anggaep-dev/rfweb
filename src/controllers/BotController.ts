@@ -3,6 +3,7 @@ import type { Camera, Scene } from 'three';
 import { RaceGender, loadCharacter } from '../rf/character';
 import { ALL_EQUIP_SLOTS, ModelType, loadUsableSlotItems } from '../rf/items';
 import { CharacterController } from './CharacterController';
+import type { ParticleCullingContext, ParticlePerformanceStats } from './CharacterController';
 
 /** Hard cap on spawnBots()'s count, so a typo (or "%addbot 99999") can't try to load/equip thousands of characters at once. */
 const MAX_ADDBOT_COUNT = 30;
@@ -15,8 +16,8 @@ const BOT_SPIRAL_RADIUS_STEP = 1.6;
 // would, to a random point within this ring of their spawn spot - the
 // minimum keeps every hop far enough to actually look like walking, rather
 // than risking a sub-arrival-threshold "hop" that snaps to stand instantly.
-const BOT_WANDER_MIN_RADIUS = 1;
-const BOT_WANDER_MAX_RADIUS = 50;
+const BOT_WANDER_MIN_RADIUS = 20;
+const BOT_WANDER_MAX_RADIUS = 100;
 // A random pause between hops (instead of instantly re-issuing the next
 // move on arrival) - without this, bots spawned in the same batch tend to
 // become idle on the same frame and all pick their next waypoint in
@@ -26,6 +27,10 @@ const BOT_WANDER_MAX_RADIUS = 50;
 // independent timing.
 const BOT_WANDER_PAUSE_MIN_SEC = 1;
 const BOT_WANDER_PAUSE_MAX_SEC = 4;
+/** Distant bots contribute neither draw traversal nor per-frame skeletal work. Kept aligned with ParticleEffect's hard render range. */
+const BOT_RENDER_DISTANCE = 250;
+/** Hidden bots still need to move and advance their mixers, just not at display refresh rate. */
+const HIDDEN_BOT_UPDATE_INTERVAL_SEC = 1 / 8;
 
 const ALL_RACE_GENDERS: RaceGender[] = [
   RaceGender.Bell_Male,
@@ -41,6 +46,8 @@ interface Bot {
   home: Vector3;
   /** Seconds left before this bot's next move - independently randomized so bots never move in lockstep. */
   pauseRemaining: number;
+  /** Delta accumulated while this bot is outside the camera's render range. */
+  hiddenUpdateElapsed: number;
 }
 
 export interface SpawnBotOptions {
@@ -89,6 +96,8 @@ export class BotController {
   private scene: Scene;
   private bots: Bot[] = [];
   private disposed = false;
+  /** Mirrors CharacterController's own debugSocketParticleWanted default - applied to every bot at spawn (see spawnBots) and forwarded live to every existing bot by setDebugSocketParticleEnabled, so `%particletest` actually reaches bots instead of only the player's own CharacterController (see RfViewer's %particletest handler). */
+  private debugSocketParticleWanted = true;
 
   constructor(scene: Scene) {
     this.scene = scene;
@@ -96,6 +105,40 @@ export class BotController {
 
   get count(): number {
     return this.bots.length;
+  }
+
+  /** Aggregated at the viewer's slower debug-stat cadence, not in the render hot path. */
+  getParticlePerformanceStats(): ParticlePerformanceStats {
+    let effects = 0;
+    let totalInstances = 0;
+    let simulatedInstances = 0;
+    let culledEffects = 0;
+    let updateMs = 0;
+    for (const bot of this.bots) {
+      const stats = bot.controller.getParticlePerformanceStats();
+      effects += stats.effects;
+      totalInstances += stats.totalInstances;
+      simulatedInstances += stats.simulatedInstances;
+      culledEffects += stats.culledEffects;
+      updateMs += stats.updateMs;
+    }
+    return { effects, totalInstances, simulatedInstances, culledEffects, updateMs };
+  }
+
+  getParticleEffectCount(): number {
+    let count = 0;
+    for (const bot of this.bots) count += bot.controller.getParticleEffectCount();
+    return count;
+  }
+
+  rebuildParticlesForRandomnessChange(): void {
+    for (const bot of this.bots) bot.controller.rebuildParticlesForRandomnessChange();
+  }
+
+  /** Forwards `%particletest` to every current bot (see debugSocketParticleWanted's own doc comment) and remembers the choice for any bot spawned afterward. */
+  setDebugSocketParticleEnabled(enabled: boolean): void {
+    this.debugSocketParticleWanted = enabled;
+    for (const bot of this.bots) bot.controller.setDebugSocketParticleEnabled(enabled);
   }
 
   /** Spawns up to MAX_ADDBOT_COUNT bots, clamped and floored to at least 1. Returns how many were actually added (a bot whose load/mount fails is skipped). See SpawnBotOptions for the optional weapon-filter/upgrade-level stress-testing hooks - omitted or empty, every slot (weapon included) just gets the normal random-per-slot equip roll. */
@@ -122,6 +165,11 @@ export class BotController {
         controller.dispose();
         return added;
       }
+      // Inherit the current %particletest state - without this, a bot
+      // spawned after `%particletest 0` would still equip with particles on
+      // (CharacterController's own default), same bug setDebugSocketParticleEnabled
+      // fixes for bots that already existed when the command ran.
+      controller.setDebugSocketParticleEnabled(this.debugSocketParticleWanted);
       // War mode, not the default Peace - a bot's whole point here is
       // visual/stress testing (see SpawnBotOptions), and Peace hides the
       // weapon mesh entirely (see CharacterController.applyWeaponVisibility)
@@ -173,7 +221,7 @@ export class BotController {
 
       // Also randomized (not 0) so bots spawned in the same batch don't all
       // take their first step on the same frame either.
-      this.bots.push({ controller, home, pauseRemaining: randomWanderPause() });
+      this.bots.push({ controller, home, pauseRemaining: randomWanderPause(), hiddenUpdateElapsed: 0 });
       added++;
     }
     return added;
@@ -198,11 +246,25 @@ export class BotController {
    * these for its own player-facing `characterController`, never for any
    * bot's own independent one.
    */
-  update(delta: number, camera: Camera): void {
+  update(delta: number, camera: Camera, particleCulling: ParticleCullingContext): void {
     for (const bot of this.bots) {
-      bot.controller.update(delta);
-      bot.controller.updateSocketGlowBillboards(camera, delta);
-      bot.controller.updateDebugSocketParticle(camera, delta);
+      const group = bot.controller.group;
+      const visible = !group || group.position.distanceToSquared(particleCulling.cameraPosition) <= BOT_RENDER_DISTANCE ** 2;
+      if (group) group.visible = visible;
+
+      // A hidden bot's mixer and movement still progress in batched time so
+      // it is in the right pose/place when it re-enters range. Skipping the
+      // socket paths here avoids walking every one of its particle effects.
+      bot.hiddenUpdateElapsed += delta;
+      if (!visible && bot.hiddenUpdateElapsed < HIDDEN_BOT_UPDATE_INTERVAL_SEC) continue;
+      const updateDelta = bot.hiddenUpdateElapsed;
+      bot.hiddenUpdateElapsed = 0;
+
+      bot.controller.update(updateDelta);
+      if (visible) {
+        bot.controller.updateSocketGlowBillboards(camera, updateDelta);
+        bot.controller.updateDebugSocketParticle(camera, updateDelta, particleCulling);
+      }
       // Re-issue the same "walk here" command a player click would, once
       // the bot isn't mid-hop *and* has waited out its own random pause -
       // covers "just arrived" (isMoving() flips false the instant update()
@@ -211,7 +273,7 @@ export class BotController {
       // in lockstep.
       if (!bot.controller.isMoving()) {
         if (bot.pauseRemaining > 0) {
-          bot.pauseRemaining -= delta;
+          bot.pauseRemaining -= updateDelta;
         } else {
           bot.controller.moveTo(pickWanderTarget(bot.home));
           bot.pauseRemaining = randomWanderPause();

@@ -1,5 +1,5 @@
 import { Box3, LoopOnce, LoopRepeat, Matrix4, Object3D, Quaternion, SkeletonHelper, Vector3 } from 'three';
-import type { AnimationAction, AnimationClip, Bone, Camera, Group, MeshBasicMaterial, Scene } from 'three';
+import type { AnimationAction, AnimationClip, Bone, Camera, Frustum, Group, Scene } from 'three';
 import { ANI_FPS } from '../rf/animation';
 import {
   CLOAK_CDN_BASE,
@@ -17,11 +17,12 @@ import { applyGradeLiveValues, buildGradeOverlay, clamp01, disposeGradeOverlay }
 import type { GradeLiveValues, GradeOverlay } from '../rf/gradeEffect';
 import type { MaterialLayer } from '../rf/materialScript';
 import {
+  GLOW_SCROLL_UV_PER_SEC,
+  GLOW_SPEED_BASE_BYTE,
   applySurfaceShine,
   buildGlowOverlay,
   buildSocketGlow,
   describeSocketEffect,
-  disposeGlowOverlay,
   disposeSocketGlow,
   resolveWeaponParticles,
 } from '../rf/glowEffect';
@@ -86,6 +87,20 @@ export interface CharacterBounds {
   box: Box3;
   center: Vector3;
   radius: number;
+}
+
+export interface ParticlePerformanceStats {
+  effects: number;
+  totalInstances: number;
+  simulatedInstances: number;
+  culledEffects: number;
+  updateMs: number;
+}
+
+/** Camera data built once by ViewerScene each frame, then shared by the player and every bot particle controller. */
+export interface ParticleCullingContext {
+  frustum: Frustum;
+  cameraPosition: Vector3;
 }
 
 export interface CharacterControllerCallbacks {
@@ -187,11 +202,6 @@ interface DepartingCloakSwayState extends CloakSwayState {
 }
 /** The animation-token equivalent of "no weapon" in the combat clip archive - "COMBAT_FWWALK_NONE_NONE_01_00" etc, the empty-handed War-mode locomotion. */
 const UNARMED_WEAPON_TOKEN = 'NONE';
-
-/** A .eff "speed" byte of this value is the source data's own baseline (see glowEffect.ts); each +1 above it roughly doubles the scroll rate, per the tutorial this was reverse-engineered from. */
-const GLOW_SPEED_BASE_BYTE = 0x40;
-/** UV units/second a scrolling glow texture moves at the baseline speed byte - tuned by eye, the source data has no literal units for this. */
-const GLOW_SCROLL_UV_PER_SEC = 0.6;
 
 /** Fetches (and caches onto character.clips) every combat clip a weapon token needs - walk/run/stand, plus walk/run's directional (backward/strafe) variants - in parallel. Best-effort: a race/token/direction combination missing one just means resolveClipName() falls back down the chain (directional armed -> plain armed -> directional unarmed -> plain unarmed). */
 async function prewarmWeaponClips(raceGender: RaceGender, character: RfCharacter, weaponToken: string): Promise<void> {
@@ -298,6 +308,7 @@ export class CharacterController {
   private slotParticles: Partial<Record<ModelType, ParticleEffect[]>> = {};
   /** Which socket + resolved .spt path each entry in slotParticles came from - side bookkeeping `spawnSlotParticles` fills in alongside `slotParticles` itself, purely so `%efedit`'s per-socket inspector (getSocketParticleEffects) can find "the effect(s) currently running for socket X" without slotParticles itself needing to change shape (it's iterated elsewhere - setDebugSocketParticleScale, updateDebugSocketParticle - as a flat per-slot array, which stays simplest for those). Cleared alongside its effect in disposeSlotParticles. */
   private particleEffectMeta = new Map<ParticleEffect, { socket: Object3D; sptPath: string }>();
+  private particlePerformance: ParticlePerformanceStats = { effects: 0, totalInstances: 0, simulatedInstances: 0, culledEffects: 0, updateMs: 0 };
   /** Live-tunable via setDebugSocketParticleScale - see DEBUG_SOCKET_PARTICLE_SCALE's own doc comment on why 1 (no scaling) is the actual derived value, not just a starting guess. */
   private debugSocketParticleScale = DEBUG_SOCKET_PARTICLE_SCALE;
   /**
@@ -389,8 +400,6 @@ export class CharacterController {
   private readonly lookMatrix = new Matrix4();
   private readonly lookTargetQuat = new Quaternion();
   private readonly worldYawQuat = new Quaternion();
-  /** Reused every frame by updateSocketGlowBillboards rather than allocated per socket per frame - same reasoning as this class's other scratch fields. */
-  private readonly socketGlowParentWorldQuat = new Quaternion();
 
   constructor(
     private readonly scene: Scene,
@@ -646,22 +655,18 @@ export class CharacterController {
     }
   }
 
-  /** A wielded weapon (and its glow/grade overlays, if it has any) is only ever visible in War mode - see setBattleMode/equipWeapon. */
+  /** A wielded weapon (and its grade overlay, if it has any) is only ever visible in War mode - see setBattleMode/equipWeapon. Whole-mesh glow no longer has a separate object to toggle - it's injected directly into the weapon mesh's own material (see glowEffect.ts's attachGlowInjection), so it's already hidden/shown along with `weaponObjects` above. */
   private applyWeaponVisibility(): void {
     const visible = this.battleMode === 'war';
     const weaponObjects = this.equippedObjects[ModelType.Weapon];
     if (weaponObjects) for (const obj of weaponObjects) obj.visible = visible;
-    const glowOverlay = this.equippedGlowOverlays[ModelType.Weapon];
-    if (glowOverlay) for (const obj of glowOverlay.objects) obj.visible = visible;
     const gradeOverlay = this.equippedGradeOverlays[ModelType.Weapon];
     if (gradeOverlay) for (const obj of gradeOverlay.objects) obj.visible = visible;
     if (this.equippedSocketGlow) for (const obj of this.equippedSocketGlow.objects) obj.visible = visible;
   }
 
+  /** Drops the stale scrollingMaterials bookkeeping for one slot before a re-equip - there's no separate glow object to dispose anymore (see glowEffect.ts's attachGlowInjection/GlowOverlay doc comments): the injected material lives inside the mesh itself, already torn down by the normal disposeObject3D traversal when that mesh is disposed. */
   private disposeGlowOverlayFor(modelType: ModelType): void {
-    const overlay = this.equippedGlowOverlays[modelType];
-    if (!overlay) return;
-    disposeGlowOverlay(overlay);
     delete this.equippedGlowOverlays[modelType];
   }
 
@@ -731,11 +736,14 @@ export class CharacterController {
     }
 
     const overlay = await buildGlowOverlay(item.model, sourceObjects, upgradeLevel);
-    if (this.character !== character || this.equippedObjects[modelType] !== sourceObjects) {
-      disposeGlowOverlay(overlay); // superseded mid-await - character swapped, or this slot got equipped again
-      return;
-    }
-    if (overlay.objects.length === 0) return;
+    // No disposal needed on the superseded-mid-await path here (unlike the
+    // socket-glow branch above) - buildGlowOverlay injects straight into
+    // sourceObjects' own materials rather than creating anything separate,
+    // so a stale write just lands on meshes that are already detached and
+    // about to be garbage-collected, same reasoning applySurfaceShineFor's
+    // own doc comment gives.
+    if (this.character !== character || this.equippedObjects[modelType] !== sourceObjects) return;
+    if (overlay.appliedCount === 0) return;
 
     this.equippedGlowOverlays[modelType] = overlay;
     if (modelType === ModelType.Weapon) this.applyWeaponVisibility();
@@ -743,38 +751,18 @@ export class CharacterController {
 
   /**
    * Per-frame upkeep for every currently-active per-socket glow billboard
-   * (see glowEffect.ts's buildSocketGlow): rotates each one to face the
-   * camera (the same billboarding concept particleSystem.ts's ParticleEffect
-   * already uses) and advances its UV scroll for whichever ones came from a
-   * movementMode-2 (scrolling) section - the same exponential speed-byte
-   * decode updateGlowAnimation already uses for the whole-mesh path, so a
-   * socket glow that scrolls doesn't read as flatter/less alive than one
-   * that would have gotten the old whole-mesh treatment. Each billboard is
-   * nested under its socket (itself nested under the weapon's own
-   * rigid-attach hierarchy, ultimately under an animated bone), so its
-   * *local* billboard quaternion has to be computed from the parent's
-   * current *world* quaternion, not just copied from the camera directly -
-   * copying the camera's world quaternion straight into a local one would
-   * only look right if the parent chain had zero net rotation, which it
-   * never does once the character's animating. No-op (and cheap) when
-   * unarmed or the weapon has no socket glow.
+   * (see glowEffect.ts's buildSocketGlow) - each one now renders through a
+   * shared per-texture SocketGlowBatch (see glowEffect.ts's own doc
+   * comment), so this just delegates to each billboard's own `update()`,
+   * which repositions its batch row to face the camera and advances its UV
+   * scroll for whichever ones came from a movementMode-2 (scrolling)
+   * section. No-op (and cheap) when unarmed or the weapon has no socket
+   * glow.
    */
   updateSocketGlowBillboards(camera: Camera, delta: number): void {
     const glow = this.equippedSocketGlow;
     if (!glow) return;
-    for (let i = 0; i < glow.objects.length; i++) {
-      const obj = glow.objects[i];
-      if (!obj.parent) continue;
-      obj.parent.getWorldQuaternion(this.socketGlowParentWorldQuat);
-      obj.quaternion.copy(this.socketGlowParentWorldQuat).invert().multiply(camera.quaternion);
-
-      const speedByte = glow.speedBytes[i];
-      if (speedByte === null) continue;
-      const texture = (obj.material as MeshBasicMaterial).map;
-      if (!texture) continue;
-      const speedFactor = 2 ** (speedByte - GLOW_SPEED_BASE_BYTE);
-      texture.offset.x = (texture.offset.x + speedFactor * GLOW_SCROLL_UV_PER_SEC * delta) % 1;
-    }
+    for (const billboard of glow.objects) billboard.update(camera, delta);
   }
 
   /**
@@ -820,14 +808,12 @@ export class CharacterController {
     await applySurfaceShine(item.model, sourceObjects, upgradeLevel);
   }
 
-  /** Advances every currently-active scrolling glow texture (movementMode 2 - see glowEffect.ts) by one frame. */
+  /** Advances every currently-active scrolling glow texture (movementMode 2 - see glowEffect.ts) by one frame - mutates each injected material's own uvOffset uniform holder (see attachGlowInjection) rather than a texture's .offset, since the glow texture is shared across every mesh currently using it (loadChefTexture's own cache) and no longer has a dedicated material of its own to carry a per-mesh offset. */
   private updateGlowAnimation(delta: number): void {
     for (const overlay of Object.values(this.equippedGlowOverlays)) {
-      for (const { material, speedByte } of overlay.scrollingMaterials) {
-        const texture = material.map;
-        if (!texture) continue;
+      for (const { uvOffset, speedByte } of overlay.scrollingMaterials) {
         const speedFactor = 2 ** (speedByte - GLOW_SPEED_BASE_BYTE);
-        texture.offset.x = (texture.offset.x + speedFactor * GLOW_SCROLL_UV_PER_SEC * delta) % 1;
+        uvOffset.value = (uvOffset.value + speedFactor * GLOW_SCROLL_UV_PER_SEC * delta) % 1;
       }
     }
   }
@@ -1101,15 +1087,45 @@ export class CharacterController {
     }
   }
 
+  rebuildParticlesForRandomnessChange(): void {
+    for (const list of Object.values(this.slotParticles)) {
+      for (const effect of list ?? []) effect.rebuildForRandomnessChange();
+    }
+  }
+
   getDebugSocketParticleScale(): number {
     return this.debugSocketParticleScale;
   }
 
-  /** Per-frame upkeep for every currently-spawned particle, across every slot (see setDebugSocketParticleEnabled) - no-op and cheap when there are none. */
-  updateDebugSocketParticle(camera: Camera, delta: number): void {
+  /** Snapshot from the most recent particle pass, consumed by ViewerScene's half-second debug stats update. */
+  getParticlePerformanceStats(): ParticlePerformanceStats {
+    return this.particlePerformance;
+  }
+
+  getParticleEffectCount(): number {
+    let count = 0;
+    for (const list of Object.values(this.slotParticles)) count += list?.length ?? 0;
+    return count;
+  }
+
+  /** Per-frame upkeep for every currently-spawned particle, across every slot. ViewerScene builds culling once and shares it with every character, so off-screen effects can skip simulation and dynamic buffer uploads. */
+  updateDebugSocketParticle(camera: Camera, delta: number, culling: ParticleCullingContext): void {
+    const startedAt = performance.now();
+    let effects = 0;
+    let totalInstances = 0;
+    let simulatedInstances = 0;
+    let culledEffects = 0;
+
     for (const list of Object.values(this.slotParticles)) {
-      for (const effect of list ?? []) effect.update(delta, camera);
+      for (const effect of list ?? []) {
+        effects += 1;
+        effect.update(delta, camera, culling.frustum, culling.cameraPosition);
+        totalInstances += effect.getInstanceCount();
+        simulatedInstances += effect.getActiveInstanceCount();
+        if (effect.isCulled()) culledEffects += 1;
+      }
     }
+    this.particlePerformance = { effects, totalInstances, simulatedInstances, culledEffects, updateMs: performance.now() - startedAt };
   }
 
   getIsFlying(): boolean {
@@ -1300,8 +1316,12 @@ export class CharacterController {
       if (!obj.parent) character.group.add(obj);
     }
     this.equippedObjects[modelType] = newObjects;
-    void this.applyGlowOverlay(modelType, item, character, newObjects);
-    void this.applySurfaceShineFor(item, newObjects);
+    // Surface shine must resolve first: it fully replaces the mesh's own
+    // material, which would silently wipe out an already-injected glow
+    // term (see glowEffect.ts's attachGlowInjection) if glow happened to
+    // land first - sequenced, not parallel, so the final material is
+    // always the one glow actually gets applied to.
+    void this.applySurfaceShineFor(item, newObjects).then(() => this.applyGlowOverlay(modelType, item, character, newObjects));
 
     return item ? 'equipped' : 'default';
   }
@@ -1396,9 +1416,15 @@ export class CharacterController {
     this.currentWeaponToken = weaponMesh.weaponToken;
     this.currentWeaponItem = item;
     this.currentWeaponStem = weaponMesh.stem;
-    void this.applyGlowOverlay(ModelType.Weapon, item, character, newObjects);
+    // Surface shine must resolve first - see equipItem's identical ordering
+    // comment on why (it fully replaces the mesh's own material, which
+    // would wipe out an already-injected glow term if glow landed first).
+    // Grade overlay is unaffected (still a separate clone mesh, like glow
+    // used to be), so it's independent and can stay parallel.
+    void this.applySurfaceShineFor(item, newObjects, this.debugWeaponUpgradeLevel).then(() =>
+      this.applyGlowOverlay(ModelType.Weapon, item, character, newObjects),
+    );
     void this.applyGradeOverlay(ModelType.Weapon, item, character, newObjects);
-    void this.applySurfaceShineFor(item, newObjects, this.debugWeaponUpgradeLevel);
     // Re-attach to whichever real particle data the new weapon's own .eff
     // offers - disposed above along with `previous`, so this is a fresh
     // attach, not a resume. Silently does nothing if this weapon has no
@@ -1528,7 +1554,6 @@ export class CharacterController {
     }
     this.equippedObjects[ModelType.Cloak] = newObjects;
     void this.applyGlowOverlay(ModelType.Cloak, item, character, newObjects);
-    void this.applySurfaceShineFor(item, newObjects);
     void this.applyCloakAnimation(stem, character, newObjects);
     // Re-attach to whichever real particle data the new cloak's own .eff
     // offers - disposed above along with `previous`, so this is a fresh
@@ -1613,8 +1638,9 @@ export class CharacterController {
       if (!obj.parent) character.group.add(obj);
     }
     this.equippedObjects[ModelType.Helmet] = newObjects;
-    void this.applyGlowOverlay(ModelType.Helmet, item, character, newObjects);
-    void this.applySurfaceShineFor(item, newObjects);
+    // Surface shine must resolve first - see equipItem's identical ordering
+    // comment on why.
+    void this.applySurfaceShineFor(item, newObjects).then(() => this.applyGlowOverlay(ModelType.Helmet, item, character, newObjects));
 
     return 'equipped';
   }

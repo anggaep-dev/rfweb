@@ -42,6 +42,14 @@ export default function RfViewer({ sceneManager, initialRaceGender, onExit }: Rf
     heapMB: null,
     geometries: 0,
     textures: 0,
+    calls: 0,
+    triangles: 0,
+    particleEffects: 0,
+    particleBatches: 0,
+    particleInstances: 0,
+    simulatedParticles: 0,
+    culledParticleEffects: 0,
+    particleUpdateMs: 0,
     clipKey: null,
     weapon: null,
   });
@@ -452,6 +460,12 @@ export default function RfViewer({ sceneManager, initialRaceGender, onExit }: Rf
     if (particletestMatch) {
       const on = particletestMatch[1] === '1';
       const ok = viewerSceneRef.current?.characterController.setDebugSocketParticleEnabled(on) ?? true;
+      // Bots each own a separate CharacterController (see BotController) -
+      // without also forwarding here, %particletest only ever reached the
+      // player's own weapon and every bot's particles kept running
+      // regardless, silently invalidating an "is it actually particles"
+      // stress-test comparison.
+      viewerSceneRef.current?.botController.setDebugSocketParticleEnabled(on);
       setCommandFeedback(
         on
           ? ok
@@ -470,6 +484,14 @@ export default function RfViewer({ sceneManager, initialRaceGender, onExit }: Rf
         viewerSceneRef.current?.characterController.setDebugSocketParticleScale(scale);
         setCommandFeedback(`Particle test scale set to ${scale} (was ${previous ?? '?'}).`);
       }
+      return;
+    }
+
+    const particleRandomMatch = /^%particlerandom\s+([01])$/.exec(trimmed);
+    if (particleRandomMatch) {
+      const enabled = particleRandomMatch[1] === '1';
+      viewerSceneRef.current?.setParticleRandomnessEnabled(enabled);
+      setCommandFeedback(`Particle randomness ${enabled ? 'on' : 'off'} - active effects rebuilt.`);
       return;
     }
 
