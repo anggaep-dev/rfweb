@@ -359,15 +359,21 @@ function buildDataTexture(base: DdsMipmap, alphaInfo: TextureAlphaInfo): DataTex
   return texture;
 }
 
-/** Decodes an already-in-memory .RFT buffer (e.g. sliced out of a parsed .RFS archive), or any other already-DDS buffer (e.g. Chef/'s glow textures - see glowEffect.ts). The returned Texture's userData.rfAlpha (see TextureAlphaInfo) tells a caller building a material from it whether/how to enable transparency - see classifyAlpha's doc comment. */
-export function decodeRftTexture(rawBuffer: ArrayBuffer): Texture {
+/**
+ * CPU-decodes an already-in-memory .RFT/.DDS buffer to plain RGBA8 pixels -
+ * the three.js-independent half of decodeRftTexture, split out so non-3D
+ * consumers (itemIcon.ts's inventory icon sprite sheets, which just need
+ * pixel data to crop from a <canvas>, not a Three.js Texture/material) don't
+ * need to pull in DataTexture/Three at all.
+ */
+export function decodeDdsPixels(rawBuffer: ArrayBuffer): DdsMipmap {
   const ddsBuffer = decodeRft(rawBuffer);
 
   // DDSLoader logs "Unsupported FourCC code" for real uncompressed RGB565
   // DDS files before returning an empty result. Detect the one verified RF
   // layout first so those valid R3T entries take the quiet manual path.
   const rgb565 = tryDecodeRgb565Uncompressed(ddsBuffer);
-  if (rgb565) return buildDataTexture(rgb565, classifyAlpha(rgb565.data));
+  if (rgb565) return rgb565;
 
   const loader = new DDSLoader();
   const ddsData = loader.parse(ddsBuffer, true);
@@ -391,9 +397,9 @@ export function decodeRftTexture(rawBuffer: ArrayBuffer): Texture {
   // support - building a CompressedTexture for it, like the branches
   // below do, silently produces mip objects the GPU-upload path can't
   // handle correctly.
+  const base = ddsData.mipmaps[0] as DdsMipmap;
   if (!COMPRESSED_FORMATS.has(format)) {
-    const base = ddsData.mipmaps[0] as DdsMipmap;
-    return buildDataTexture(base, classifyAlpha(base.data));
+    return base;
   }
 
   // Always CPU-decompress rather than building a THREE.CompressedTexture:
@@ -413,19 +419,20 @@ export function decodeRftTexture(rawBuffer: ArrayBuffer): Texture {
   // sample the BC format it was handed, the GPU texture comes back
   // black/zeroed (WebGPU texture-creation errors are async and easy to
   // miss, not a thrown JS exception) - exactly the "black rectangle,
-  // missing color" symptom this was rendering as. The CPU-decoded RGBA
-  // buffer below was already being computed unconditionally anyway (for
-  // classifyAlpha), so this isn't new decode cost - just always using its
-  // result instead of a second, format-uncertain upload path.
-  const base = ddsData.mipmaps[0] as DdsMipmap;
+  // missing color" symptom this was rendering as.
   const rgba = decompressBlockTexture(
     new Uint8Array(base.data.buffer, base.data.byteOffset, base.data.byteLength),
     base.width,
     base.height,
     format,
   );
-  const alphaInfo = classifyAlpha(rgba);
-  return buildDataTexture({ data: rgba as unknown as Uint8Array, width: base.width, height: base.height }, alphaInfo);
+  return { data: rgba as unknown as Uint8Array, width: base.width, height: base.height };
+}
+
+/** Decodes an already-in-memory .RFT buffer (e.g. sliced out of a parsed .RFS archive), or any other already-DDS buffer (e.g. Chef/'s glow textures - see glowEffect.ts). The returned Texture's userData.rfAlpha (see TextureAlphaInfo) tells a caller building a material from it whether/how to enable transparency - see classifyAlpha's doc comment. */
+export function decodeRftTexture(rawBuffer: ArrayBuffer): Texture {
+  const decoded = decodeDdsPixels(rawBuffer);
+  return buildDataTexture(decoded, classifyAlpha(decoded.data));
 }
 
 export async function loadRftTexture(url: string): Promise<Texture> {

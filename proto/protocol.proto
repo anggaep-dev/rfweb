@@ -25,8 +25,29 @@ message MovementInput {
     uint32 facing = 5;
 }
 
+// Matches CHAT_TYPE in RF_Globals.lua - see docs/websocket-protobuf.md's
+// routing table for which recipients each type reaches.
+enum ChatType {
+    CHAT_TYPE_NORMAL = 0;
+    CHAT_TYPE_PARTY = 1;
+    CHAT_TYPE_GUILD = 2;
+    CHAT_TYPE_SYSTEM = 3;
+    CHAT_TYPE_RACE = 4;
+    CHAT_TYPE_PM = 5;
+    CHAT_TYPE_TRANSPORT = 6;
+    CHAT_TYPE_MAP = 7;
+    CHAT_TYPE_IMPORTANT_ALL = 8;
+    CHAT_TYPE_SCRAMBLE = 9;
+    CHAT_TYPE_PT = 10;
+    CHAT_TYPE_WHOLE = 11;
+    CHAT_TYPE_MONSTER = 12;
+    CHAT_TYPE_TRADE = 13;
+}
+
 message ChatAllRequest {
     string message = 1;
+    // Omitted (legacy clients) is treated by the server as CHAT_TYPE_WHOLE.
+    optional ChatType chat_type = 2;
 }
 
 message WhisperRequest {
@@ -41,12 +62,101 @@ message PingRequest {
     uint32 client_time = 1;
 }
 
+// ─── Inventory (docs/inventory.md, docs/inventory-action.md) ──────────────────
+
+message InventorySlot {
+    uint32 slot_index = 1;
+    uint32 item_id = 2;
+    uint32 quantity = 3;
+    string upgrade = 4;
+    bool is_rental = 5;
+    int64 rental_expired_date = 6;
+    bool is_locked = 7;
+    string item_code = 8;
+}
+
+// set_slot/add_item/remove/move/flush remain in the schema for backend/admin
+// compatibility, but the player WebSocket rejects all of them with "action
+// not allowed" - the gameplay frontend only ever sends get (implicitly, via
+// the server's own post-login snapshot)/insert_item/sell_item/drop_item/
+// use_item, see docs/inventory-action.md.
+message InventoryGetRequest {
+}
+
+message InventorySetSlotRequest {
+    InventorySlot slot = 1;
+}
+
+message InventoryAddItemRequest {
+    uint32 item_id = 1;
+    string item_code = 2;
+    uint32 quantity = 3;
+    string upgrade = 4;
+    bool is_rental = 5;
+    int64 rental_expired_date = 6;
+    bool is_locked = 7;
+}
+
+message InventoryRemoveRequest {
+    uint32 slot_index = 1;
+    uint32 quantity = 2;
+}
+
+message InventoryMoveRequest {
+    uint32 from_slot = 1;
+    uint32 to_slot = 2;
+    uint32 quantity = 3;
+}
+
+message InventoryFlushRequest {
+}
+
+message InventoryInsertItemRequest {
+    string item_code = 1;
+    uint32 quantity = 2;
+    string upgrade = 3;
+    bool is_rental = 4;
+    int64 rental_expired_date = 5;
+}
+
+message InventorySellItemRequest {
+    uint32 slot_index = 1;
+    uint32 quantity = 2;
+}
+
+message InventoryDropItemRequest {
+    uint32 slot_index = 1;
+    uint32 quantity = 2;
+}
+
+message InventoryUseItemRequest {
+    uint32 slot_index = 1;
+    uint32 quantity = 2;
+}
+
+message InventoryRequest {
+    uint32 request_id = 1;
+    oneof action {
+        InventoryGetRequest        get         = 2;
+        InventorySetSlotRequest    set_slot    = 3;
+        InventoryAddItemRequest    add_item    = 4;
+        InventoryRemoveRequest     remove      = 5;
+        InventoryMoveRequest       move        = 6;
+        InventoryFlushRequest      flush       = 7;
+        InventoryInsertItemRequest insert_item = 8;
+        InventorySellItemRequest   sell_item   = 9;
+        InventoryDropItemRequest   drop_item   = 10;
+        InventoryUseItemRequest    use_item    = 11;
+    }
+}
+
 message ClientPacket {
     oneof payload {
-        MovementInput   movement    = 1;
-        ChatAllRequest  chat_all    = 2;
-        WhisperRequest  whisper     = 3;
-        PingRequest     ping        = 4;
+        MovementInput     movement  = 1;
+        ChatAllRequest    chat_all  = 2;
+        WhisperRequest    whisper   = 3;
+        PingRequest       ping      = 4;
+        InventoryRequest  inventory = 5;
     }
 }
 
@@ -69,6 +179,26 @@ message EntitySnapshot {
     // mid-session), so EntityUpdate's per-tick delta doesn't repeat them.
     uint32 race = 7;
     string character_id = 8;
+    // Public avatar equipment (item_code/upgrade per slot) - lets the client
+    // render another player's actual gear from this snapshot alone, without
+    // needing to wait on a separate appearance fetch to resolve first.
+    VisibleEquipment visible_equipment = 9;
+}
+
+message EquipmentVisual {
+    string item_code = 1;
+    string upgrade = 2;
+}
+
+message VisibleEquipment {
+    EquipmentVisual upper = 1;
+    EquipmentVisual lower = 2;
+    EquipmentVisual gauntlet = 3;
+    EquipmentVisual shoe = 4;
+    EquipmentVisual helmet = 5;
+    EquipmentVisual weapon = 6;
+    EquipmentVisual shield = 7;
+    EquipmentVisual cloak = 8;
 }
 
 message WorldSnapshot {
@@ -94,23 +224,36 @@ message EntityExit {
     uint32 entity_id = 1;
 }
 
+// Emitted after a successful visible-equipment change (see docs/websocket-
+// protobuf.md's InventoryResponse section) so already-tracked nearby
+// entities re-render their gear without waiting on a fresh snapshot/enter.
+message EntityAppearanceUpdate {
+    uint32 entity_id = 1;
+    VisibleEquipment visible_equipment = 2;
+}
+
 message WorldDelta {
     uint32 server_tick = 1;
     repeated EntityEnter  enters  = 2;
     repeated EntityUpdate updates = 3;
     repeated EntityExit   exits   = 4;
+    repeated EntityAppearanceUpdate appearance_updates = 5;
 }
 
 message ChatEvent {
     uint32 player_id = 1;
     string player_name = 2;
     string message = 3;
+    ChatType chat_type = 4;
 }
 
 message WhisperEvent {
     uint32 player_id = 1;
     string player_name = 2;
     string message = 3;
+    // Always CHAT_TYPE_PM.
+    ChatType chat_type = 4;
+    uint32 target_player_id = 5;
 }
 
 message SystemMessage {
@@ -128,14 +271,111 @@ message WelcomeEvent {
     uint32 player_id = 1;
 }
 
+enum InventoryActionType {
+    INVENTORY_ACTION_UNSPECIFIED = 0;
+    INVENTORY_ACTION_INSERT = 1;
+    INVENTORY_ACTION_SELL = 2;
+    INVENTORY_ACTION_DROP = 3;
+    INVENTORY_ACTION_USE = 4;
+}
+
+// Fixed equipment slots (docs/inventory-action.md's equipment table) -
+// distinct from the 100-slot bag InventorySnapshot carries; only ever
+// populated wholesale as part of a `use_item` InventoryActionResult (there is
+// no standalone "get equipment" request), see EntitySnapshot/
+// EntityAppearanceUpdate's own VisibleEquipment for the always-available
+// (but narrower - no rings/amulets/bullets) alternative used to render other
+// players' avatars.
+message EquipmentSlots {
+    InventorySlot upper = 1;
+    InventorySlot lower = 2;
+    InventorySlot gauntlet = 3;
+    InventorySlot shoe = 4;
+    InventorySlot helmet = 5;
+    InventorySlot weapon = 6;
+    InventorySlot shield = 7;
+    InventorySlot cloak = 8;
+    InventorySlot ring_1 = 9;
+    InventorySlot ring_2 = 10;
+    InventorySlot amulet_1 = 11;
+    InventorySlot amulet_2 = 12;
+    InventorySlot bullet_1 = 13;
+    InventorySlot bullet_2 = 14;
+}
+
+message CharacterEffect {
+    uint32 code = 1;
+    double unit = 2;
+    string source_item_code = 3;
+    string source_slot = 4;
+    string parameter_group = 5;
+    string parameter_name = 6;
+    repeated string parameter_candidates = 7;
+    repeated string applied_parameters = 8;
+}
+
+message CharacterStatus {
+    int64 max_hp = 1;
+    int64 max_fp = 2;
+    int64 max_sp = 3;
+    double attack_min = 4;
+    double attack_max = 5;
+    double defense = 6;
+    double max_defense = 7;
+    int64 shield_block = 8;
+    double attack_range = 9;
+    double attack_speed = 10;
+    double move_speed = 11;
+    double fire_tol = 12;
+    double water_tol = 13;
+    double soil_tol = 14;
+    double wind_tol = 15;
+    repeated CharacterEffect effects = 16;
+}
+
+// Sent once after WebSocket login (request_id = 0) and again after every
+// successful inventory request - always the full normalized 100-slot bag.
+message InventorySnapshot {
+    uint32 request_id = 1;
+    repeated InventorySlot slots = 2;
+}
+
+// insert_item/sell_item/drop_item/use_item's response - equipment/status are
+// only populated for a use_item that equipped a fixed-slot item.
+message InventoryActionResult {
+    uint32 request_id = 1;
+    repeated InventorySlot slots = 2;
+    InventoryActionType action = 3;
+    string item_code = 4;
+    uint32 quantity = 5;
+    int64 currency_delta = 6;
+    EquipmentSlots equipment = 7;
+    CharacterStatus status = 8;
+}
+
+message InventoryError {
+    uint32 request_id = 1;
+    string message = 2;
+    uint32 code = 3;
+}
+
+message InventoryResponse {
+    oneof result {
+        InventorySnapshot     snapshot      = 1;
+        InventoryError        error         = 2;
+        InventoryActionResult action_result = 3;
+    }
+}
+
 message ServerPacket {
     oneof payload {
-        WorldSnapshot world_snapshot = 1;
-        WorldDelta    world_delta    = 2;
-        ChatEvent     chat           = 3;
-        WhisperEvent  whisper        = 4;
-        SystemMessage system_message = 5;
-        PongEvent     pong           = 6;
-        WelcomeEvent  welcome        = 7;
+        WorldSnapshot     world_snapshot = 1;
+        WorldDelta        world_delta    = 2;
+        ChatEvent         chat           = 3;
+        WhisperEvent      whisper        = 4;
+        SystemMessage     system_message = 5;
+        PongEvent         pong           = 6;
+        WelcomeEvent      welcome        = 7;
+        InventoryResponse inventory      = 8;
     }
 }

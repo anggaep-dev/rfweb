@@ -28,20 +28,21 @@
   flex-shrink: 0;
 }
 
-/* ── Equipment paperdoll (design.md §5.2) ──
-   12-unit column grid so rows can mix widths (a denser row of small
-   accessory slots, wider armor slots below, rings flanking a wider center
-   slot at the bottom) instead of one uniform NxM grid - see EQUIP_SLOTS'
-   own `span` field for exactly which slot claims how many units. */
+/* ── Equipment paperdoll ──
+   No grid/flow layout at all - every slot is position:absolute at an
+   exact left/top/width/height (all in rem, computed in InventoryWindow.tsx
+   from EQUIP_SLOT_SIZE/EQUIP_HERO_SIZE/EQUIP_GAP and set inline per slot,
+   see EQUIP_SLOTS's own doc comment there for the reasoning/layout this
+   reproduces). This container has no intrinsic size of its own (absolute
+   children don't contribute to it) - width/height are set inline from
+   EQUIP_GRID_SIZE, the exact footprint EQUIP_SLOTS' positions add up to. */
 .equip-grid {
-  display: grid;
-  grid-template-columns: repeat(12, 1fr);
-  gap: var(--space-2);
+  position: relative;
   margin-bottom: var(--space-3);
 }
 
 .equip-slot {
-  aspect-ratio: 1;
+  position: absolute;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -65,7 +66,31 @@
   opacity: 0.55;
 }
 
-/* ── Currency row ── */
+/* An actually-equipped slot: solid instead of the 25%-opacity empty-slot
+   wireframe (design.md §5.2), plus the same gold "active" glow the design
+   system already uses elsewhere for a filled/selected state. */
+.equip-slot-filled {
+  border-color: var(--elevation-active-border);
+  box-shadow: var(--elevation-active-shadow);
+  color: var(--text-primary);
+}
+
+.equip-slot-filled .equip-slot-icon {
+  opacity: 1;
+}
+
+/* A real cropped-from-DDS icon (see itemIcon.ts) - unlike the generic
+   .equip-slot-icon silhouette, this renders at full slot size with no
+   opacity dimming, since it's already art, not a wireframe placeholder. */
+.equip-slot-icon-img {
+  width: 92%;
+  height: 92%;
+  object-fit: contain;
+  image-rendering: pixelated;
+}
+
+/* ── Currency row ── swatch at the left, CP/Gold stacked (not side by
+   side) and right-aligned next to it - matches the reference. */
 .inventory-currency-row {
   display: flex;
   align-items: center;
@@ -77,9 +102,17 @@
 .inventory-currency-swatch {
   width: 0.7rem;
   height: 0.7rem;
-  margin-right: auto;
+  flex-shrink: 0;
   background: var(--surface-highlight);
   border: 1px solid var(--border-chrome);
+}
+
+.inventory-currency-values {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  margin-left: auto;
 }
 
 .inventory-currency-cp {
@@ -139,11 +172,133 @@
 }
 
 .bag-slot {
+  position: relative;
   aspect-ratio: 1;
   border-radius: 2px;
   background: var(--elevation-slot-bg);
   box-shadow: var(--elevation-slot-shadow);
   border: var(--elevation-slot-border);
+  padding: 2px;
+  overflow: hidden;
+  cursor: default;
+}
+
+.bag-slot-occupied {
+  cursor: pointer;
+}
+
+.bag-slot-occupied:hover {
+  border-color: var(--border-chrome);
+}
+
+.bag-slot-selected {
+  border-color: var(--energy-cyan);
+  box-shadow: 0 0 0 1px var(--energy-cyan) inset;
+}
+
+.bag-slot-name {
+  display: block;
+  width: 100%;
+  color: var(--text-secondary);
+  font: 600 0.5rem var(--font-display);
+  line-height: 1.1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* A real cropped-from-DDS icon (see itemIcon.ts) - the bag-slot-name text
+   label is only a fallback for item_codes that never resolved one. */
+.bag-slot-icon {
+  position: absolute;
+  inset: 2px;
+  width: calc(100% - 4px);
+  height: calc(100% - 4px);
+  object-fit: contain;
+  image-rendering: pixelated;
+}
+
+.bag-slot-qty {
+  position: absolute;
+  right: 2px;
+  bottom: 1px;
+  color: var(--text-primary);
+  font: 700 0.6rem var(--font-mono);
+}
+
+.inventory-lock-icon {
+  position: absolute;
+  left: 2px;
+  bottom: 1px;
+  color: var(--text-muted);
+}
+
+/* ── Selected bag item detail + actions ── */
+.inventory-selected {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--border-subtle);
+}
+
+.inventory-selected-info {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  color: var(--text-primary);
+  font: 600 0.7rem var(--font-display);
+}
+
+.inventory-selected-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.inventory-selected-qty {
+  flex-shrink: 0;
+  color: var(--text-secondary);
+  font: 600 0.65rem var(--font-mono);
+}
+
+.inventory-selected-locked {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  flex-shrink: 0;
+  color: var(--text-muted);
+  font: 600 0.6rem var(--font-display);
+  text-transform: uppercase;
+}
+
+.inventory-selected-actions {
+  display: flex;
+  gap: var(--space-1);
+  flex-shrink: 0;
+}
+
+.inventory-selected-actions button {
+  border-radius: 2px;
+  border: 1px solid var(--border-chrome);
+  background: var(--surface-panel-alt);
+  color: var(--text-primary);
+  font: 600 0.65rem var(--font-display);
+  padding: 3px var(--space-2);
+  cursor: pointer;
+}
+
+.inventory-selected-actions button:hover:not(:disabled) {
+  border-color: var(--energy-cyan);
+  color: var(--energy-cyan);
+}
+
+.inventory-selected-actions button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 .inventory-capacity-footer {

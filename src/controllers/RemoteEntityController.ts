@@ -2,13 +2,13 @@ import { Vector3 } from 'three';
 import type { Camera, Scene } from 'three';
 import { getCharacterAppearance } from '../net/CharacterClient';
 import { rotationToYaw } from '../net/compassRotation';
-import type { EntitySnapshot, EntityUpdate } from '../net/generated/protocol';
+import type { EntitySnapshot, EntityUpdate, VisibleEquipment } from '../net/generated/protocol';
 import { RaceGender, classifyMovementAgainstFacing, loadCharacter } from '../rf/character';
 import type { LocomotionDirection } from '../rf/character';
-import type { CharacterAppearance } from '../rf/characterProfile';
+import type { CharacterAppearance, EquippedItems } from '../rf/characterProfile';
 import { CharacterController } from './CharacterController';
 import type { ParticleCullingContext } from './CharacterController';
-import { applyCharacterAppearance } from './characterAppearance';
+import { applyCharacterAppearance, applyEquipmentDiff, visibleEquipmentToEquipped } from './characterAppearance';
 import { LocomotionDebugGizmo } from './LocomotionDebugGizmo';
 import { NameTag } from './NameTag';
 
@@ -60,6 +60,36 @@ interface RemoteEntity {
   locomotionDirection: LocomotionDirection | null;
   /** Set once the appearance fetch resolves with a name (see spawn()) - null until then, so a not-yet-loaded entity simply has no tag yet rather than a placeholder one. */
   nameTag: NameTag | null;
+  /**
+   * The equipped items last actually applied to `controller`, diffed against
+   * on every EntityAppearanceUpdate (see applyAppearanceUpdate) so a live
+   * gear change only touches the slots that actually changed instead of
+   * rebuilding every mesh on each update. Empty until spawn()'s initial
+   * appearance fetch resolves - an appearance update arriving before then is
+   * simply dropped (see applyAppearanceUpdate), the same "not ready yet"
+   * treatment mount/appearance races elsewhere in this class already get.
+   */
+  equipped: EquippedItems;
+  /** True once spawn()'s initial mount+appearance fetch has resolved - see applyAppearanceUpdate's own doc comment for why an update arriving before then is dropped rather than diffed against the still-empty `equipped`. */
+  appearanceReady: boolean;
+  /**
+   * This entity's latest EntitySnapshot.visible_equipment, straight off the
+   * wire (WorldSnapshot/EntityEnter) - kept current by snap() regardless of
+   * appearanceReady, so spawn() can apply it as soon as it's ready even
+   * though snap() typically runs (synchronously, before spawn's first
+   * `await` even suspends - see getOrCreate/enter's call order) well before
+   * that. This is what actually fixes a freshly-spawned entity's gear: the
+   * REST getCharacterAppearance fetch spawn() also uses only reflects
+   * whatever the character's saved-appearance document says, which is NOT
+   * the same store real equip actions (use_item) write to any more (see
+   * docs/inventory-action.md) - a character that equipped something this
+   * session, then went out of AOI and came back (or was already online when
+   * someone else connected), would render bare-handed forever without this,
+   * since VisibleEquipment was previously only ever consumed for LIVE
+   * updates (applyAppearanceUpdate), never for the entity's own initial
+   * appearance.
+   */
+  latestVisibleEquipment: VisibleEquipment | undefined;
   /** TEMP debug gizmo (facing/moveDirection arrows + locomotion/clip label) - see LocomotionDebugGizmo's own doc comment. Set once mount() resolves (needs CharacterBounds.radius), same lifecycle as nameTag. */
   debugGizmo: LocomotionDebugGizmo | null;
   /** Set once this entity is removed - guards the async character-load/appearance-apply chain (see spawn()) against resurrecting a character (or a nametag) for an entity that's already gone by the time either finishes. */
@@ -161,6 +191,31 @@ export class RemoteEntityController {
   exit(entityId: number, selfId: number | null): void {
     if (entityId === selfId) return;
     this.remove(entityId);
+  }
+
+  /**
+   * A live gear change on an already-tracked entity (WorldDelta.
+   * appearance_updates - see protocol.proto's EntityAppearanceUpdate) -
+   * previously there was no delivery for this at all, so another player's
+   * mid-session equip/unequip stayed invisible to already-connected nearby
+   * clients until that entity left and re-entered AOI. Dropped if the
+   * entity's initial spawn()/appearance fetch hasn't resolved yet (nothing
+   * meaningful to diff against, and spawn() will apply the real appearance
+   * once it does resolve anyway).
+   */
+  applyAppearanceUpdate(entityId: number, visibleEquipment: VisibleEquipment | undefined, selfId: number | null): void {
+    if (entityId === selfId) return;
+    const remote = this.entities.get(entityId);
+    if (!remote || !remote.appearanceReady) return;
+    this.applyVisibleEquipment(remote, visibleEquipment);
+  }
+
+  /** Diffs+applies a VisibleEquipment onto one entity's controller, updating `equipped` to match - shared by applyAppearanceUpdate (a live gear change) and spawn/snap (the entity's own current/initial equipment, once appearanceReady - see latestVisibleEquipment's own doc comment). */
+  private applyVisibleEquipment(remote: RemoteEntity, visibleEquipment: VisibleEquipment | undefined): void {
+    const next = visibleEquipmentToEquipped(visibleEquipment);
+    const previous = remote.equipped;
+    remote.equipped = next;
+    void applyEquipmentDiff(remote.controller, previous, next, () => remote.removed);
   }
 
   /** Current tracked positions (raw, unscaled server world-units - see setScale) of every entity here, for OnlineScene's radar relative-position math (see RadarFrame). Order is not meaningful or stable. */
@@ -279,6 +334,15 @@ export class RemoteEntityController {
     remote.controller.setWorldYaw(remote.yaw);
     const character = remote.controller.getCharacter();
     if (character) character.group.position.copy(remote.position).multiplyScalar(this.scale);
+
+    // Always recorded (see latestVisibleEquipment's own doc comment) so
+    // spawn() has the freshest known value once it's ready to use it; only
+    // actually applied to the controller here if it already is ready - a
+    // resync (WorldSnapshot for an already-tracked entity) is the only way
+    // this client ever learns about gear a briefly-out-of-AOI entity changed
+    // while unobserved, since appearance_updates never reached us for it.
+    remote.latestVisibleEquipment = entitySnapshot.visibleEquipment;
+    if (remote.appearanceReady) this.applyVisibleEquipment(remote, entitySnapshot.visibleEquipment);
   }
 
   private getOrCreate(entitySnapshot: EntitySnapshot): RemoteEntity {
@@ -302,6 +366,9 @@ export class RemoteEntityController {
         moveDirection: LOCAL_FORWARD.clone().applyAxisAngle(UP_AXIS, initialYaw),
         locomotionDirection: null,
         nameTag: null,
+        equipped: {},
+        appearanceReady: false,
+        latestVisibleEquipment: entitySnapshot.visibleEquipment,
         debugGizmo: null,
         removed: false,
       };
@@ -328,6 +395,15 @@ export class RemoteEntityController {
       if (remote.removed || !appearance) return;
       if (appearance.name) remote.nameTag = new NameTag(this.scene, appearance.name, bounds.radius);
       await applyCharacterAppearance(remote.controller, appearance, () => remote.removed);
+      if (remote.removed) return;
+      remote.equipped = appearance.equipped ?? {};
+      remote.appearanceReady = true;
+      // Overrides the REST appearance's own `equipped` above with whatever
+      // VisibleEquipment is actually current (see latestVisibleEquipment's
+      // own doc comment) - snap() has already set this at least once by now
+      // (it runs synchronously right after getOrCreate creates this entity,
+      // before this function's first `await` even suspends).
+      this.applyVisibleEquipment(remote, remote.latestVisibleEquipment);
     } catch (err) {
       console.error(`Failed to spawn remote entity (character ${characterId}, race ${race}):`, err);
     }

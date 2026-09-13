@@ -259,7 +259,7 @@ export class ViewerScene implements AppScene {
         return `Removed ${removed} bot${removed === 1 ? '' : 's'}.`;
       }
       default:
-        return `Unknown command "%${name}". Try %addbot <count> [weaponNameFilter] [upgradeLevel] or %clearbots.`;
+        return `Unknown command "%${name}". Try %addbot <count> [weaponNameFilter] [upgradeLevel], or %clearbots.`;
     }
   }
 

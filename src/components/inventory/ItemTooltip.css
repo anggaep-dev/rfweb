@@ -1,0 +1,107 @@
+/* Positioned by InventoryWindow (left/top/width set inline per-hover, see
+   ItemTooltip.tsx) - pointer-events: none so it never steals the hover that
+   put it there in the first place, or blocks the underlying slot's own
+   mouseleave from firing when the cursor actually moves away. */
+.item-tooltip {
+  position: fixed;
+  z-index: 700;
+  pointer-events: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  background: var(--elevation-panel-bg);
+  box-shadow: var(--elevation-panel-shadow);
+  border: var(--elevation-panel-border);
+  border-radius: 3px;
+}
+
+.item-tooltip-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.item-tooltip-icon {
+  width: 2.25rem;
+  height: 2.25rem;
+  flex-shrink: 0;
+  object-fit: contain;
+  image-rendering: pixelated;
+  background: var(--elevation-slot-bg);
+  border: var(--elevation-slot-border);
+  border-radius: 2px;
+}
+
+.item-tooltip-title {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.item-tooltip-name {
+  color: var(--text-primary);
+  font: 700 0.8rem var(--font-display);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.item-tooltip-grade {
+  color: var(--energy-cyan);
+  font: 600 0.6rem var(--font-display);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.item-tooltip-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--border-subtle);
+}
+
+.item-tooltip-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2);
+  font: 500 0.68rem var(--font-display);
+}
+
+.item-tooltip-row-label {
+  color: var(--text-muted);
+}
+
+.item-tooltip-row-value {
+  color: var(--text-secondary);
+  text-align: right;
+}
+
+.item-tooltip-upgrade {
+  display: flex;
+  gap: 3px;
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--border-subtle);
+}
+
+.item-tooltip-upgrade-dot {
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: 50%;
+  background: var(--elevation-slot-bg);
+  border: 1px solid var(--border-chrome);
+}
+
+.item-tooltip-upgrade-dot-filled {
+  background: var(--elevation-active-border);
+  border-color: var(--elevation-active-border);
+  box-shadow: var(--elevation-active-shadow);
+}
+
+.item-tooltip-code {
+  color: var(--text-muted);
+  font: 500 0.6rem var(--font-mono);
+}

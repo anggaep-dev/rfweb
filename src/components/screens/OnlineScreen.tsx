@@ -12,9 +12,11 @@ import { useKeyboardMove } from '../../hooks/useKeyboardMove';
 import type { RaceGender } from '../../rf/character';
 import type { ConnectionStatus } from '../../net/WorldConnection';
 import { OnlineScene } from '../../scenes/OnlineScene';
-import type { ChatLogEntry } from '../../scenes/OnlineScene';
+import type { ChatLogEntry, EquipmentDisplay, InventoryState } from '../../scenes/OnlineScene';
 import type { SceneManager } from '../../scenes/SceneManager';
 import './OnlineScreen.css';
+
+const EMPTY_INVENTORY: InventoryState = { slots: [], gold: 0, cp: 0 };
 
 /** Capped so a long session's chat log can't grow the DOM/memory unboundedly - oldest entries just fall off. */
 const MAX_CHAT_ENTRIES = 50;
@@ -37,6 +39,8 @@ export default function OnlineScreen({ sceneManager, initialRaceGender, sessionT
   const [pingMs, setPingMs] = useState<number | null>(null);
   const [inventoryOpen, setInventoryOpen] = useState(false);
   const [chatEntries, setChatEntries] = useState<ChatLogEntry[]>([]);
+  const [inventory, setInventory] = useState<InventoryState>(EMPTY_INVENTORY);
+  const [equipment, setEquipment] = useState<EquipmentDisplay>({});
 
   // Assigned by the mount effect below, so handleMoveInput (and any other
   // future per-frame input) can reach the scene without needing it in its
@@ -56,6 +60,8 @@ export default function OnlineScreen({ sceneManager, initialRaceGender, sessionT
       onPingChange: setPingMs,
       onRadarFrame: (frame) => miniMapRef.current?.update(frame.facingRad, frame.blips),
       onChatMessage: (entry) => setChatEntries((prev) => [...prev, entry].slice(-MAX_CHAT_ENTRIES)),
+      onInventoryChange: setInventory,
+      onEquipmentChange: setEquipment,
     });
     onlineSceneRef.current = onlineScene;
     // Disposal is SceneManager's job once this scene is superseded (by
@@ -95,6 +101,16 @@ export default function OnlineScreen({ sceneManager, initialRaceGender, sessionT
     onlineSceneRef.current?.sendChatMessage(message);
   }, []);
 
+  const handleSellItem = useCallback((slotIndex: number) => {
+    onlineSceneRef.current?.sellInventoryItem(slotIndex);
+  }, []);
+  const handleDropItem = useCallback((slotIndex: number) => {
+    onlineSceneRef.current?.dropInventoryItem(slotIndex);
+  }, []);
+  const handleUseItem = useCallback((slotIndex: number) => {
+    onlineSceneRef.current?.useInventoryItem(slotIndex);
+  }, []);
+
   return (
     <div className="online-screen">
       {status === 'ready' && <MiniMap ref={miniMapRef} />}
@@ -104,7 +120,16 @@ export default function OnlineScreen({ sceneManager, initialRaceGender, sessionT
       {status === 'ready' && <HudIconRow onOpenInventory={handleToggleInventory} />}
       {status === 'ready' && <VitalsBar />}
       {status === 'ready' && <MobileControls onMove={handleMoveInput} />}
-      {status === 'ready' && inventoryOpen && <InventoryWindow onClose={handleCloseInventory} />}
+      {status === 'ready' && inventoryOpen && (
+        <InventoryWindow
+          onClose={handleCloseInventory}
+          inventory={inventory}
+          equipment={equipment}
+          onSell={handleSellItem}
+          onDrop={handleDropItem}
+          onUse={handleUseItem}
+        />
+      )}
 
       {status === 'loading' && <div className="online-screen-overlay">Loading character…</div>}
       {status === 'error' && (

@@ -62,7 +62,9 @@ truncated.
 ### `.msh` mesh (`src/rf/mesh.ts`)
 
 One file can hold several sub-objects (e.g. a weapon's blade + its FX
-sockets as separate objects). Only the non-`MESH08` variant is supported.
+sockets as separate objects). Two on-disk variants exist, both supported -
+see the "default" layout right below, and the newer `MESH08` variant (own
+subsection further down) that later content (booster cloaks) shipped with.
 
 ```
 u16   objectAmount
@@ -143,6 +145,92 @@ for an object with the indexed model but zero actual weighted vertices
 (e.g. `ACCRETIA_DEFAULT_UPPER_000.msh`'s 3rd sub-object). Gating the read on
 `weightAmount > 0` silently skips a real 4-byte `boneAmount` field on disk,
 misaligning every subsequent read for the rest of the file.
+
+#### `MESH08` variant
+
+Signaled by a 6-byte `"MESH08"` magic before `objectAmount` (everything
+else about the top-level layout - object count, and the per-object
+loop - is unchanged). Confirmed real on **every** real
+`*_COSTUMEARMOR_CLOAK_*` (booster) mesh checked - all 20 race/tier combos
+in `GDBUSTER.RFS` (`public/game-assets/item/New_Booster/Mesh/GDBUSTER.RFS`,
+a real, committed archive - see `src/rf/mesh.mesh08.test.ts`, which parses
+it directly rather than needing a synthetic fixture). Regular (non-costume)
+armor/cloak meshes checked so far are all the default format - `MESH08`
+looks like specifically what booster-era content shipped with.
+
+Ported from the reference Blender addon's own working reader (`extra/
+cbb-rf-online-addon-main/cbb_rf_online_addon/msh.py`'s `CBB_OT_ImportMSH.
+import_meshes`) - byte offsets below were verified against it directly, not
+reverse-engineered from raw bytes alone (see "How this was found" at the
+end of this subsection for the trail that led here).
+
+Every per-object field up through the trailing 31-byte skip - name,
+parentName, objectMatrix, the skip-128, `vertexAmount`/`triangleAmount`/
+`weightAmount`, texturePath/effectPath, the bbox/unknown/`weightModelType`
+tail - is **byte-identical** to the default format (confirmed: a `MESH08`
+file's own zero-vertex "dummy" objects, e.g. `Dummy_Shield_L`, are spaced
+exactly 699 bytes apart - the same 693-byte common header plus `MESH08`'s
+own 3 extra always-present `u16` counts below, each 0 for a dummy). The
+header's own `vertexAmount`/`triangleAmount` are **not** reused for
+`MESH08` - only `weightAmount` still matters (as a does-this-object-have-
+any-skinning-at-all flag - see below); `weightModelType` is never
+consulted for `MESH08` either (matches the reference addon's own "Only
+useful for non MESH08 meshes" comment on that field). Immediately after
+the shared header:
+
+```
+u16  meshVertexAmount               (MESH08's own count - ignore the header's own vertexAmount)
+meshVertexAmount × {
+  vec3  pos
+  f32[3] weight                     (first 3 of up to 4 - see below)
+  u16[4] boneIndex                  (into the bone-group table below; unsigned, no -1 sentinel)
+  vec3  normal
+  f32 u, f32 v                      (V negated: -v - NOT the default format's "1-v")
+  skip 12                           (binormal? - unused)
+}
+
+u16  triangleIndexAmount            (total INDEX count, i.e. 3x the triangle count - divide by 3)
+(triangleIndexAmount / 3) × u16[3]  (plain indices into the meshVertexAmount vertex list above)
+
+u16  boneGroupAmount
+boneGroupAmount × {
+  u32  groupBoneAmount              (1-4)
+  groupBoneAmount × char[100] boneName   (EUC-KR)
+  skip (4 - groupBoneAmount) * 100       (pad up to a fixed 4-slot/400-byte record)
+}
+```
+
+Structurally unlike the default format: vertices carry their own normal/UV/
+weight/bone-index data directly (no separate per-triangle-corner normal/UV
+arrays - a shared vertex has one normal/UV, fanned out to every triangle
+corner that references it when flattening to this project's own non-indexed
+`RfMeshObject` shape), and triangles are plain index triples into that
+vertex list rather than each carrying its own full corner data.
+
+**Weights**: a vertex's weight floats are only its first 3 values - the 4th
+is implied as `1 - sum(first 3)`, unless that sum is already ~1 (tolerance
+`1e-5`, matching the reference addon's own `WEIGHT_TOLERANCE`), in which
+case there simply isn't a 4th (padded 0 instead); if the (possibly-4)
+weights sum to ~0, they're replaced with `[1, 0, 0, 0]` outright. Bone
+*names* resolve through the bone-group table above, not a flat per-object
+table like the default format's `weightModelType === 1` case: each
+vertex's 4 `boneIndex` values index into the flattened, de-duplicated
+(first-seen-wins) list of every name across every group, in file order.
+
+**How this was found**: this project's own `%particletest`/equip pipeline
+had `MESH08` files throwing `"MESH08 mesh format is not supported yet"`
+inside `fetchBodyMeshEntry`'s own `parseMesh` call, silently dropping the
+*entire* mesh entry (geometry and texture both, via that function's
+catch-and-return-null) - the reported symptom ("missing booster/cloak
+texture") pointed at `character.ts`'s `boosterTextureName()` stem-regex
+formula, which turned out to be a red herring: extracting the real
+`GDBUSTER.RFS` texture archive found its 12 real entries match that
+formula exactly, and once `MESH08` support existed, the real mesh's own
+embedded `texturePath` field (an absolute original-author dev-machine path,
+e.g. `D:\...\tex\01_buster_BE.dds` for a booster item - itself never
+directly usable, see the `.RFT` section above) confirmed the same basename
+the formula already produced. The actual bug was `MESH08` support being
+entirely missing, not the texture-name derivation.
 
 ### `.bn` skeleton (`src/rf/skeleton.ts`)
 

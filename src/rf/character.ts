@@ -14,14 +14,15 @@ import {
   Vector3,
 } from 'three';
 import type { Texture } from 'three';
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { buildAnimationClip, parseAnimation } from './animation';
-import type { BindPose } from './animation';
+import type { BindPose, RfAnimation } from './animation';
 import { parseMesh } from './mesh';
 import type { RfMeshObject } from './mesh';
 import { buildThreeSkeleton, parseSkeleton } from './skeleton';
 import type { BuiltSkeleton, RfSkeleton } from './skeleton';
 import { decodeRftTexture } from './texture';
-import type { TextureAlphaInfo } from './texture';
+import type { TextureAlphaInfo, TextureAlphaMode } from './texture';
 
 const ASSET_BASE = '/game-assets/character/player';
 // SkinnedMesh.bind() only ever reads from the bindMatrix it's given (copies
@@ -295,7 +296,15 @@ async function fetchBuffer(url: string): Promise<ArrayBuffer> {
   return res.arrayBuffer();
 }
 
-const ANI_CDN_BASE = 'https://rfscdn.ketikart.com/rfs/character/ani';
+// Every CDN-hosted asset this file fetches (weapon/character/cloak mesh+tex,
+// animations, and the pre-converted weapon .glb) lives under one shared
+// root - overridable in one place via VITE_RFS_CDN_URL (see .env.example),
+// same pattern as AuthClient.ts's VITE_HTTP_URL/OnlineScene.ts's
+// VITE_WS_URL, for pointing a local/staging build at a different CDN
+// without editing source.
+const RFS_CDN_ROOT = (import.meta.env.VITE_RFS_CDN_URL as string | undefined) ?? 'https://rfscdn.ketikart.com/rfs';
+
+const ANI_CDN_BASE = `${RFS_CDN_ROOT}/character/ani`;
 // Same 32-byte name-field limit rfs.ts's own record layout enforces on
 // disk - a real filename longer than this got truncated before it was ever
 // written to the archive (confirmed: ~89% of real .ani entries), and
@@ -416,47 +425,7 @@ const scratchRefScale = new Vector3();
  * table on race too - that entry is cleared below pending a fresh
  * measurement against the corrected math.)
  */
-interface WeaponPlacementFixup {
-  /** Added directly to the computed local position (same units/space, i.e. relative to the attach bone). */
-  positionDelta: [number, number, number];
-  /**
-   * Local-space rotation delta as a quaternion [x, y, z, w] - reconstructed
-   * from %wpedit's reported Euler-degree "Original"/"Edited" transforms via
-   * `fixupQuat = originalQuat^-1 * editedQuat` (so that
-   * `computedQuat.multiply(fixupQuat)` reproduces the edited transform
-   * exactly for the race it was measured on) - never store this as a bare
-   * Euler-degree delta, composing those linearly is only exact for
-   * infinitesimal rotations, not one this large.
-   */
-  rotationDelta: [number, number, number, number];
-}
 
-const WEAPON_PLACEMENT_FIXUPS: Record<string, WeaponPlacementFixup> = {
-  // Re-measured against the fixed getCorrectedRigidBindInverse - Original
-  // pos=[-0.1568,-0.0214,0.4768] rotDeg=[88.9,2.3,-62.8], Edited
-  // pos=[-0.1568,-0.0214,0.4768] rotDeg=[88.7,2.3,-68.6] - a small ~5.7°
-  // single-axis twist, no position change, vs. the ~35° + 1.4-unit
-  // correction the old (buggy-retargeting) measurement needed. That drop
-  // alone is strong confirmation the retargeting fix actually worked - see
-  // the "Rigid weapon retargeting" entry in rf-format-notes.md's "Known
-  // bugs" section.
-  TCROSSBOW: {
-    positionDelta: [0, 0, 0],
-    rotationDelta: [-0.000718, -0.001589, -0.050663, 0.998714],
-  },
-};
-
-const fixupQuatScratch = new Quaternion();
-const fixupPosScratch = new Vector3();
-
-/** Applies a weapon token's placement fixup (if any) to an already-placed rigid part's local transform - see WEAPON_PLACEMENT_FIXUPS. No-op when the token has no registered fixup. */
-function applyWeaponPlacementFixup(object: Object3D, weaponToken: string | null | undefined): void {
-  if (!weaponToken) return;
-  const fixup = WEAPON_PLACEMENT_FIXUPS[weaponToken];
-  if (!fixup) return;
-  object.position.add(fixupPosScratch.set(...fixup.positionDelta));
-  object.quaternion.multiply(fixupQuatScratch.set(...fixup.rotationDelta));
-}
 
 /**
  * Computes the bind-pose inverse used to place a rigid part on the wielder's
@@ -697,7 +666,6 @@ function buildObjectsFromParsedMesh(
         const bindInverse = getCorrectedRigidBindInverse(built, rigidReference, parentIndex, referenceIndex);
         const localMatrix = bindInverse.clone().multiply(obj.objectMatrix);
         localMatrix.decompose(mesh.position, mesh.quaternion, mesh.scale);
-        applyWeaponPlacementFixup(mesh, weaponToken);
         parentBone.add(mesh);
       } else if (parentSibling) {
         // Chained to another sub-object in this file rather than a bone -
@@ -725,6 +693,15 @@ interface ParsedBodyMesh {
   objects: RfMeshObject[];
   /** Tagged with userData.pooled = true below - same reasoning as ParsedWeaponMesh.texture: shared across every equip of this stem, so disposeObject3D() must skip disposing it on an individual unequip. */
   texture: Texture | null;
+  /**
+   * Cloak-only - non-null exactly when this entry came from a `.glb` (see
+   * fetchBodyMeshEntry), carrying its embedded animation states (see
+   * parseRfGlb). Null for a raw-`.msh`-parsed entry, which has no
+   * animation data attached at all - loadCloakAnimationRig falls back to
+   * its own separate per-state `.ANI` fetch in that case, same as before
+   * this field existed.
+   */
+  animationsByState: Map<string, RfAnimation> | null;
 }
 
 // Keyed by stem alone (globally, not per cdnBase) - a resolved stem is
@@ -787,9 +764,29 @@ function textureNameCandidates(stem: string): string[] {
   return candidates;
 }
 
-async function fetchBodyMeshEntry(stem: string, cdnBase: string): Promise<ParsedBodyMesh | null> {
+/**
+ * Tries the pre-converted, textured `.glb` first when `glbCdnBase` is given
+ * (currently only for body-part/armor equips - see characterGlbCdnBase;
+ * cloaks pass none since that batch hasn't been converted yet, so they
+ * always take the raw path below unchanged). Falls back to the legacy raw
+ * `.msh`+`.dds` fetch+parse+decode on any failure - a 404 (a stem the
+ * conversion batch didn't produce or hasn't been uploaded for), or any
+ * other parse error - same safety net as loadParsedWeaponMeshUncached.
+ */
+async function fetchBodyMeshEntry(stem: string, cdnBase: string, glbCdnBase?: string): Promise<ParsedBodyMesh | null> {
   const cached = bodyMeshParseCache.get(stem);
   if (cached !== undefined) return cached;
+
+  if (glbCdnBase) {
+    try {
+      const glbBuffer = await fetchBuffer(`${glbCdnBase}/${stem}.glb`);
+      const parsed = await parseRfGlb(glbBuffer);
+      bodyMeshParseCache.set(stem, parsed);
+      return parsed;
+    } catch (err) {
+      console.warn(`No usable "${stem}.glb" on the CDN, falling back to raw .msh/.dds:`, err);
+    }
+  }
 
   let meshBuffer: ArrayBuffer;
   try {
@@ -830,7 +827,7 @@ async function fetchBodyMeshEntry(stem: string, cdnBase: string): Promise<Parsed
     return null;
   }
 
-  const parsed: ParsedBodyMesh = { objects, texture };
+  const parsed: ParsedBodyMesh = { objects, texture, animationsByState: null };
   bodyMeshParseCache.set(stem, parsed);
   return parsed;
 }
@@ -842,13 +839,16 @@ async function fetchBodyMeshEntry(stem: string, cdnBase: string): Promise<Parsed
  * a slot later, so both go through identical mesh-building logic. `cdnBase`
  * picks which CDN folder to fetch from - characterCdnBase(raceGender) for
  * body parts (covers both the default appearance and real armor tiers, see
- * CHARACTER_CDN_BASE's doc comment), CLOAK_CDN_BASE for cloaks. The actual
- * fetch+parse is pooled by stem (see fetchBodyMeshEntry above) - only the
- * per-call, per-skeleton three.js build below ever redoes work for an
- * already-seen stem.
+ * CHARACTER_CDN_BASE's doc comment), CLOAK_CDN_BASE for cloaks. `glbCdnBase`
+ * (characterGlbCdnBase(raceGender) for body parts; omitted for cloaks - see
+ * fetchBodyMeshEntry's own doc comment) is tried first when given, with the
+ * raw `cdnBase` path as an automatic fallback. The actual fetch+parse is
+ * pooled by stem (see fetchBodyMeshEntry above) - only the per-call,
+ * per-skeleton three.js build below ever redoes work for an already-seen
+ * stem.
  */
-export async function buildMeshPartObjects(stem: string, cdnBase: string, built: BuiltSkeleton): Promise<Object3D[]> {
-  const parsed = await fetchBodyMeshEntry(stem, cdnBase);
+export async function buildMeshPartObjects(stem: string, cdnBase: string, built: BuiltSkeleton, glbCdnBase?: string): Promise<Object3D[]> {
+  const parsed = await fetchBodyMeshEntry(stem, cdnBase, glbCdnBase);
   if (!parsed) return [];
 
   return buildObjectsFromParsedMesh(parsed.objects, parsed.texture, built, stem);
@@ -899,6 +899,16 @@ export interface CloakAnimationRig {
  * what actually plays on removal). ATTACK has no trigger to hook into yet
  * (no attack/combat action exists anywhere in this app today) - it's still
  * loaded so it's available in the debug preview dropdown.
+ *
+ * When this cloak's mesh came from a `.glb` (see fetchBodyMeshEntry), its
+ * animations are already embedded in that same file and parsed alongside
+ * it (see msh_to_gltf.py's GlbBuilder.add_animation / parseRfGlb) - reading
+ * them back out of `bodyMeshParseCache` here reuses that one fetch instead
+ * of re-requesting each state's raw `.ANI` separately, up to 5 requests
+ * (mesh+tex+4 states) collapsing to 1. A raw-`.msh`-parsed entry (or no
+ * cached entry at all - a cloak stem this function has never been paired
+ * with a buildMeshPartObjects call for) has no animation data attached,
+ * so this transparently falls back to the original per-state fetch.
  */
 export async function loadCloakAnimationRig(stem: string, target: Object3D): Promise<CloakAnimationRig | null> {
   const bindPoseByBone = new Map<string, BindPose>();
@@ -908,12 +918,25 @@ export async function loadCloakAnimationRig(stem: string, target: Object3D): Pro
   const targetBind = bindPoseByBone.get(target.name);
   if (targetBind) bindPoseByBone.set(stem, targetBind);
 
-  // Fetched in parallel but assigned into `clips` in CLOAK_ANI_STATES order
-  // afterward (not as each fetch resolves) so the object's key order - and
+  const embeddedAnimations = bodyMeshParseCache.get(stem)?.animationsByState;
+
+  // Fetched/read in parallel but assigned into `clips` in CLOAK_ANI_STATES
+  // order afterward (not as each resolves) so the object's key order - and
   // so getCloakAnimationStateNames' Object.keys - is stable across loads
   // instead of depending on network timing.
   const resolved = await Promise.all(
     CLOAK_ANI_STATES.map(async (state) => {
+      const embedded = embeddedAnimations?.get(state);
+      if (embedded) {
+        return [state, buildAnimationClip(state, embedded, bindPoseByBone)] as const;
+      }
+      if (embeddedAnimations) {
+        // This cloak DID come from a .glb, and it simply has no data for
+        // this state (confirmed absent at conversion time) - a raw fetch
+        // here would just be a guaranteed 404, so skip straight to "unset"
+        // instead of re-deriving that same negative result over the network.
+        return null;
+      }
       try {
         const buffer = await fetchBuffer(`${CLOAK_CDN_BASE}/ani/${stem}_${state}.ANI`);
         return [state, buildAnimationClip(state, parseAnimation(buffer), bindPoseByBone)] as const;
@@ -942,7 +965,259 @@ export async function loadCloakAnimationRig(stem: string, target: Object3D): Pro
 // .dds at extraction time; decodeRftTexture still works unchanged on them
 // (its XOR-unlock step is a no-op once the real "DDS " magic is already
 // readable at offset 0).
-const WEAPON_CDN_BASE = 'https://rfscdn.ketikart.com/rfs/weapons';
+// Singular "weapon" (not "weapons") - confirmed against real upload data,
+// not a guess (character/cloak's own doc comments have the story of
+// getting this wrong more than once before verifying with curl).
+const WEAPON_CDN_BASE = `${RFS_CDN_ROOT}/weapon`;
+
+// Pre-converted, textured .glb per weapon stem (scripts/msh_to_gltf.py) -
+// tried first (see loadParsedWeaponMesh), one request instead of two
+// (mesh+tex) and no client-side DXT/RFT decode needed, with the legacy raw
+// .msh/.dds path kept as a defensive fallback (not because it's expected
+// to ever succeed - raw weapon mesh/tex was deliberately removed from the
+// CDN once every real weapon was converted, same as character/cloak).
+const WEAPON_GLB_CDN_BASE = `${WEAPON_CDN_BASE}/glb`;
+
+const rfGlbLoader = new GLTFLoader();
+
+/**
+ * Reshapes a real `THREE.AnimationClip` (already reconstructed by
+ * GLTFLoader from a `msh_to_gltf.py`-embedded glTF node animation - see
+ * `GlbBuilder.add_animation`'s own doc comment) back into the exact
+ * `RfAnimation` shape `parseAnimation` itself produces from a raw `.ani`,
+ * so `buildAnimationClip` (completely unchanged) can build the final,
+ * bind-pose-complete clip exactly as it always has - same reasoning as
+ * `parseRfGlb` reshaping mesh data back into `RfMeshObject[]`. GLTFLoader's
+ * own track names are already exactly `${nodeName}.position`/`.quaternion`/
+ * `.scale` (see PATH_PROPERTIES in GLTFLoader.js), the same convention
+ * `buildAnimationClip` itself writes, so recovering (nodeName, property)
+ * is a plain string split, not a guess.
+ */
+function rfAnimationFromGltfClip(clip: AnimationClip, originalNameBySanitized: Map<string, string>): RfAnimation {
+  interface MutableAnimatedObject {
+    name: string;
+    rotationFrames: { time: number; quat: Quaternion }[];
+    positionFrames: { time: number; pos: Vector3 }[];
+    scaleFrames: { time: number; scale: Vector3 }[];
+  }
+  const byName = new Map<string, MutableAnimatedObject>();
+  const getObj = (name: string): MutableAnimatedObject => {
+    let obj = byName.get(name);
+    if (!obj) {
+      obj = { name, rotationFrames: [], positionFrames: [], scaleFrames: [] };
+      byName.set(name, obj);
+    }
+    return obj;
+  };
+
+  for (const track of clip.tracks) {
+    const dot = track.name.lastIndexOf('.');
+    if (dot < 0) continue;
+    // track.name's node portion is THREE's own sanitized name (built from
+    // the same already-sanitized Object3D.name every mesh node in this
+    // file also carries) - translated back to the original string so it
+    // lands in the same namespace as each RfMeshObject's own `name`
+    // (also now the original, unsanitized form - see parseRfGlb's own
+    // note above) that buildAnimationClip's bindPoseByBone lookup keys on.
+    const sanitizedNodeName = track.name.slice(0, dot);
+    const nodeName = originalNameBySanitized.get(sanitizedNodeName) ?? sanitizedNodeName;
+    const property = track.name.slice(dot + 1);
+    const obj = getObj(nodeName);
+    const { times, values } = track;
+
+    if (property === 'quaternion') {
+      for (let i = 0; i < times.length; i++) {
+        obj.rotationFrames.push({ time: times[i], quat: new Quaternion(values[i * 4], values[i * 4 + 1], values[i * 4 + 2], values[i * 4 + 3]) });
+      }
+    } else if (property === 'position') {
+      for (let i = 0; i < times.length; i++) {
+        obj.positionFrames.push({ time: times[i], pos: new Vector3(values[i * 3], values[i * 3 + 1], values[i * 3 + 2]) });
+      }
+    } else if (property === 'scale') {
+      for (let i = 0; i < times.length; i++) {
+        obj.scaleFrames.push({ time: times[i], scale: new Vector3(values[i * 3], values[i * 3 + 1], values[i * 3 + 2]) });
+      }
+    }
+  }
+
+  // durationSeconds intentionally comes from the exporter's own extras
+  // (clip.userData.durationSeconds), not clip.duration - parseAnimation's
+  // own duration can exceed the last real keyframe (a declared loop-hold
+  // frame count beyond the keyframe data - see its own doc comment), which
+  // clip.duration (computed by THREE purely from track time spans) has no
+  // way to represent.
+  const durationSeconds = typeof clip.userData.durationSeconds === 'number' ? clip.userData.durationSeconds : clip.duration;
+  return { objects: [...byName.values()], durationSeconds };
+}
+
+/**
+ * Reshapes a `scripts/msh_to_gltf.py`-produced `.glb` back into the same
+ * `RfMeshObject[]` shape `parseMesh` produces from a raw `.msh`, so
+ * `buildObjectsFromParsedMesh`'s existing rigid-attach-by-bone-name/
+ * sibling-chain/skinning logic (see its own doc comment) keeps working
+ * completely unchanged regardless of which source fed it - only the
+ * `loadParsedXMesh`/`fetchBodyMeshEntry` callers below need to know a
+ * `.glb` was involved at all.
+ *
+ * Each exported node is a flat scene root carrying its own baked `matrix`
+ * (already exactly `objectMatrix` for a rigid part - see msh_to_gltf.py's
+ * `convert_one`) and an `extras.parentName` string (glTF has no "parented
+ * by name" concept, only real scene nesting - see `GlbBuilder.add_node`'s
+ * own comment), so the original per-object parent chain survives
+ * losslessly instead of being reinterpreted as glTF hierarchy. Geometry is
+ * de-indexed back to flat per-corner arrays (glTF exports indexed geometry;
+ * `buildGeometry` expects the same non-indexed layout `parseMesh` itself
+ * produces) by walking the index buffer once.
+ *
+ * A skinned sub-object's JOINTS_0/WEIGHTS_0 accessors (present whenever the
+ * exporter saw skin weights - see `GlbBuilder.add_mesh_primitive`) are real
+ * glTF vertex attributes, which GLTFLoader already maps onto ordinary
+ * `skinIndex`/`skinWeight` BufferAttributes on the geometry - but their
+ * JOINTS_0 values are only ever local to this one mesh's own small
+ * used-bone set (this exporter has no skeleton loaded, so it can't know the
+ * live character's real bone indices), resolved back to bone NAMES via the
+ * accompanying `primitive.extras.jointNames` table (GLTFLoader assigns
+ * primitive extras onto `geometry.userData` - see `assignExtrasToUserData`
+ * in GLTFLoader.js). Deliberately not a real glTF `skins` entry: this app
+ * already has its own live, correctly-posed skeleton to bind against (the
+ * same `buildSkinAttributes`/`nameToIndex`-by-name path the raw `.msh`
+ * pipeline already uses in `buildObjectsFromParsedMesh`), so exporting a
+ * redundant duplicate joint/bone hierarchy + inverseBindMatrices here would
+ * just be extra data this function immediately discards - reconstructing
+ * `skinBoneNames`/`skinWeights` (the exact same per-vertex bone-name/weight
+ * shape `parseMesh` itself produces for a raw skinned `.msh`) is all that's
+ * actually needed.
+ *
+ * A cloak's embedded animations (see `GlbBuilder.add_animation`) are
+ * likewise reshaped back into the same `RfAnimation` shape `parseAnimation`
+ * produces from a raw `.ani` (see `rfAnimationFromGltfClip` above), so
+ * `loadCloakAnimationRig`'s existing `buildAnimationClip` call - also
+ * completely unchanged - builds the final clip exactly as it always has.
+ */
+async function parseRfGlb(
+  buffer: ArrayBuffer,
+): Promise<{ objects: RfMeshObject[]; texture: Texture | null; animationsByState: Map<string, RfAnimation> }> {
+  const gltf = await rfGlbLoader.parseAsync(buffer, '');
+  const objects: RfMeshObject[] = [];
+  let texture: Texture | null = null;
+
+  // THREE.GLTFLoader unconditionally sanitizes every node's own `.name`
+  // (PropertyBinding.sanitizeNodeName - spaces become underscores, needed
+  // for animation track-name parsing), but `parentName` values elsewhere
+  // in this file (also glTF animation track names, further below) point
+  // at the ORIGINAL unsanitized string - see msh_to_gltf.py's
+  // GlbBuilder.add_node for the full story and the real bug this fixes.
+  // `extras.name` carries that original string losslessly; this map lets
+  // both this loop and the animation-track reconstruction below translate
+  // back from THREE's sanitized names into the same original namespace
+  // `parentName` (and each RfMeshObject's own `name`) needs to stay in.
+  const originalNameBySanitized = new Map<string, string>();
+  for (const node of gltf.scene.children) {
+    const original = typeof node.userData.name === 'string' ? node.userData.name : node.name;
+    originalNameBySanitized.set(node.name, original);
+  }
+
+  for (const node of gltf.scene.children) {
+    const parentName = typeof node.userData.parentName === 'string' ? node.userData.parentName : 'NULL';
+    const objectMatrix = node.matrix.clone();
+
+    const vertices: number[] = [];
+    const normals: number[] = [];
+    const uvs: number[] = [];
+    let skinBoneNames: string[][] | null = null;
+    let skinWeights: number[][] | null = null;
+
+    if (node instanceof Mesh) {
+      const geometry = node.geometry;
+      const posAttr = geometry.getAttribute('position');
+      const normAttr = geometry.getAttribute('normal');
+      const uvAttr = geometry.getAttribute('uv');
+      const jointAttr = geometry.getAttribute('skinIndex');
+      const weightAttr = geometry.getAttribute('skinWeight');
+      const jointNames = (geometry.userData as { jointNames?: string[] }).jointNames;
+      const index = geometry.getIndex();
+      const cornerCount = index ? index.count : posAttr.count;
+
+      if (jointAttr && weightAttr && jointNames) {
+        skinBoneNames = [];
+        skinWeights = [];
+      }
+
+      for (let i = 0; i < cornerCount; i++) {
+        const vi = index ? index.getX(i) : i;
+        vertices.push(posAttr.getX(vi), posAttr.getY(vi), posAttr.getZ(vi));
+        normals.push(normAttr.getX(vi), normAttr.getY(vi), normAttr.getZ(vi));
+        uvs.push(uvAttr ? uvAttr.getX(vi) : 0, uvAttr ? uvAttr.getY(vi) : 0);
+        if (skinBoneNames && skinWeights && jointAttr && weightAttr && jointNames) {
+          skinBoneNames.push([
+            jointNames[jointAttr.getX(vi)] ?? 'NULL',
+            jointNames[jointAttr.getY(vi)] ?? 'NULL',
+            jointNames[jointAttr.getZ(vi)] ?? 'NULL',
+            jointNames[jointAttr.getW(vi)] ?? 'NULL',
+          ]);
+          skinWeights.push([weightAttr.getX(vi), weightAttr.getY(vi), weightAttr.getZ(vi), weightAttr.getW(vi)]);
+        }
+      }
+
+      // First textured material found wins - matches every other mesh
+      // source in this file (fetchBodyMeshEntry/loadParsedWeaponMesh's own
+      // legacy path), which likewise builds one shared texture/material for
+      // a whole multi-object mesh rather than per-sub-object.
+      if (!texture) {
+        const material = node.material as MeshStandardMaterial;
+        if (material?.map) {
+          texture = material.map;
+          // The exporter already classified this exact texture's alpha
+          // (classify_alpha in msh_to_gltf.py) into the glTF material's own
+          // alphaMode/alphaCutoff - GLTFLoader already turned that into
+          // material.transparent/alphaTest, so reading it back here instead
+          // of re-classifying gets the identical result materialAlphaOptions
+          // expects, just sourced from the glTF material instead of a fresh
+          // decode.
+          const alphaMode: TextureAlphaMode = material.transparent ? 'blend' : material.alphaTest > 0 ? 'mask' : 'opaque';
+          (texture.userData as { rfAlpha?: TextureAlphaInfo }).rfAlpha = {
+            alphaMode,
+            alphaTest: alphaMode === 'mask' ? material.alphaTest : null,
+          };
+          texture.userData.pooled = true;
+        }
+      }
+    }
+
+    objects.push({
+      name: (typeof node.userData.name === 'string' ? node.userData.name : node.name) || 'unnamed',
+      parentName,
+      vertices: new Float32Array(vertices),
+      normals: new Float32Array(normals),
+      uvs: new Float32Array(uvs),
+      skinBoneNames,
+      skinWeights,
+      objectMatrix,
+    });
+  }
+
+  // Cloak-only (see GlbBuilder.add_animation) - every real embedded glTF
+  // animation is a genuine clip; keyed by its own `name`, which the
+  // exporter sets to the cloak ani state ("EQUIP"/"USE"/"UNUSE"/"ATTACK").
+  const animationsByState = new Map<string, RfAnimation>();
+  for (const clip of gltf.animations) {
+    animationsByState.set(clip.name, rfAnimationFromGltfClip(clip, originalNameBySanitized));
+  }
+  // A state whose real .ANI file was found and parsed but produced zero
+  // real keyframe data has no channels to embed (invalid glTF - see
+  // add_animation) but must still round-trip as "this state exists, holds
+  // bind pose" rather than silently vanishing - see scene_extras's own
+  // doc comment in msh_to_gltf.py. assignExtrasToUserData puts scene
+  // extras onto gltf.scene.userData.
+  const statesPresent = (gltf.scene.userData as { cloakAniStatesPresent?: string[] }).cloakAniStatesPresent;
+  if (statesPresent) {
+    for (const state of statesPresent) {
+      if (!animationsByState.has(state)) animationsByState.set(state, { objects: [], durationSeconds: 0 });
+    }
+  }
+
+  return { objects, texture, animationsByState };
+}
 
 // Body-part (character/player/{Mesh,Tex}) and cloak (item/Armor/{Mesh,Tex})
 // archives went through the same pre-extraction (scripts/extract_rfs.py)
@@ -955,12 +1230,44 @@ const WEAPON_CDN_BASE = 'https://rfscdn.ketikart.com/rfs/weapons';
 // [DEFAULT, ...tiers] priority order at runtime, so a stem-name collision
 // between them was never possible), so one CDN base per race covers both
 // the base appearance and every real armor item.
-const CHARACTER_CDN_BASE = 'https://rfscdn.ketikart.com/rfs/character';
-export const CLOAK_CDN_BASE = 'https://rfscdn.ketikart.com/rfs/cloak';
+const CHARACTER_CDN_BASE = `${RFS_CDN_ROOT}/character`;
+export const CLOAK_CDN_BASE = `${RFS_CDN_ROOT}/cloak`;
+
+// Pre-converted, textured, animated .glb per cloak stem (scripts/
+// msh_to_gltf.py's cloak category - mesh+tex+embedded EQUIP/USE/UNUSE/
+// ATTACK animations in one file) - tried first by fetchBodyMeshEntry, with
+// the legacy raw .msh/.dds/.ANI path as an automatic fallback (kept as a
+// defensive no-op, not because it's expected to ever succeed - raw
+// mesh/tex/ani was deliberately removed from the CDN once every real cloak
+// was converted, confirmed against real upload data, not a guess). Same
+// bucket as CLOAK_CDN_BASE's raw path, no separate "glb" segment - a real
+// cloak .glb sits directly at `cloak/{stem}.glb`, replacing the old
+// `cloak/{mesh,tex,ani}/...` layout entirely rather than living alongside it.
+export const CLOAK_GLB_CDN_BASE = CLOAK_CDN_BASE;
 
 /** Per-race base URL for body-part mesh/tex (both the default appearance and real armor items - see CHARACTER_CDN_BASE above). */
 export function characterCdnBase(raceGender: RaceGender): string {
   return `${CHARACTER_CDN_BASE}/${RACE_CONFIGS[raceGender].meshTexCode}`;
+}
+
+/**
+ * Per-race base URL for the pre-converted, textured body-part `.glb` batch
+ * (scripts/msh_to_gltf.py, catalog-driven armor conversion) - tried first
+ * by fetchBodyMeshEntry, falling back to the legacy raw .msh/.dds path on
+ * any failure (kept as a defensive no-op, not because it's expected to
+ * ever succeed - raw mesh/tex was deliberately removed from the CDN once
+ * every real body part was converted, confirmed against real upload data,
+ * not a guess). Same bucket as characterCdnBase's raw path, no separate
+ * "glb" segment - a real body-part .glb sits directly at
+ * `character/{code}/{stem}.glb`, replacing the old `character/{code}/
+ * {mesh,tex}/...` layout entirely rather than living alongside it. (Two
+ * earlier guesses - a doubled `character/glb/{code}/glb/...` and a
+ * once-real `character/glb/{code}/...` - each matched a real upload that
+ * was later replaced; if this 404s against real data again, re-verify
+ * with curl before guessing a third time.)
+ */
+export function characterGlbCdnBase(raceGender: RaceGender): string {
+  return characterCdnBase(raceGender);
 }
 
 // Weapon meshes' rigid sub-objects have a parentName that names a bone
@@ -1018,37 +1325,55 @@ interface ParsedWeaponMesh {
 // demand, on whichever equip first needs a given stem (no eager warm-up).
 const weaponMeshPoolCache = new Map<string, Promise<ParsedWeaponMesh | null>>();
 
+/**
+ * Tries the pre-converted, textured `.glb` first (see WEAPON_GLB_CDN_BASE) -
+ * one request, no client-side DXT/RFT decode. Falls back to the legacy raw
+ * `.msh`+`.dds` fetch+parse+decode whenever the `.glb` isn't there (a 404,
+ * currently the case for every stem until the CDN upload happens) or fails
+ * to parse for any other reason, so this is safe to ship ahead of that
+ * upload and stays safe afterward for any stem the conversion batch itself
+ * couldn't produce (see msh_to_gltf.py's own mesh/texture failure logs).
+ */
+async function loadParsedWeaponMeshUncached(stem: string): Promise<ParsedWeaponMesh | null> {
+  try {
+    const glbBuffer = await fetchBuffer(`${WEAPON_GLB_CDN_BASE}/${stem}.glb`);
+    return await parseRfGlb(glbBuffer);
+  } catch (err) {
+    console.warn(`No usable "${stem}.glb" on the weapon CDN, falling back to raw .msh/.dds:`, err);
+  }
+
+  let meshBuffer: ArrayBuffer;
+  try {
+    meshBuffer = await fetchBuffer(`${WEAPON_CDN_BASE}/mesh/${stem}.msh`);
+  } catch (err) {
+    console.warn(`No "${stem}.msh" on the weapon CDN:`, err);
+    return null;
+  }
+
+  let texture: Texture | null = null;
+  try {
+    const texBuffer = await fetchBuffer(`${WEAPON_CDN_BASE}/tex/${stem}.dds`);
+    texture = decodeRftTexture(texBuffer);
+    texture.userData.pooled = true;
+  } catch (err) {
+    console.warn(`No usable texture for ${stem}:`, err);
+  }
+
+  let objects: RfMeshObject[];
+  try {
+    objects = parseMesh(meshBuffer);
+  } catch (err) {
+    console.warn(`Failed to parse "${stem}.msh":`, err);
+    return null;
+  }
+
+  return { objects, texture };
+}
+
 function loadParsedWeaponMesh(stem: string): Promise<ParsedWeaponMesh | null> {
   let cached = weaponMeshPoolCache.get(stem);
   if (!cached) {
-    cached = (async (): Promise<ParsedWeaponMesh | null> => {
-      let meshBuffer: ArrayBuffer;
-      try {
-        meshBuffer = await fetchBuffer(`${WEAPON_CDN_BASE}/mesh/${stem}.msh`);
-      } catch (err) {
-        console.warn(`No "${stem}.msh" on the weapon CDN:`, err);
-        return null;
-      }
-
-      let texture: Texture | null = null;
-      try {
-        const texBuffer = await fetchBuffer(`${WEAPON_CDN_BASE}/tex/${stem}.dds`);
-        texture = decodeRftTexture(texBuffer);
-        texture.userData.pooled = true;
-      } catch (err) {
-        console.warn(`No usable texture for ${stem}:`, err);
-      }
-
-      let objects: RfMeshObject[];
-      try {
-        objects = parseMesh(meshBuffer);
-      } catch (err) {
-        console.warn(`Failed to parse "${stem}.msh":`, err);
-        return null;
-      }
-
-      return { objects, texture };
-    })();
+    cached = loadParsedWeaponMeshUncached(stem);
     weaponMeshPoolCache.set(stem, cached);
   }
   return cached;
@@ -1134,6 +1459,7 @@ const DEFAULT_APPEARANCE_VARIANT_COUNT = 5;
  */
 function preloadDefaultAppearance(raceGender: RaceGender, onFileLoaded?: () => void): Promise<void> {
   const cdnBase = characterCdnBase(raceGender);
+  const glbCdnBase = characterGlbCdnBase(raceGender);
   const nameToken = RACE_CONFIGS[raceGender].nameToken;
   const stems: string[] = [];
   for (const token of DEFAULT_APPEARANCE_PART_TOKENS) {
@@ -1143,7 +1469,7 @@ function preloadDefaultAppearance(raceGender: RaceGender, onFileLoaded?: () => v
   }
   return Promise.all(
     stems.map((stem) =>
-      fetchBodyMeshEntry(stem, cdnBase).then(() => {
+      fetchBodyMeshEntry(stem, cdnBase, glbCdnBase).then(() => {
         onFileLoaded?.();
       }),
     ),

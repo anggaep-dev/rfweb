@@ -4,20 +4,30 @@ import type { WebGPURenderer } from 'three/webgpu';
 import { CameraController } from '../controllers/CameraController';
 import { CharacterController, WALK_SPEED_RADIUS_PER_SEC } from '../controllers/CharacterController';
 import type { ParticleCullingContext } from '../controllers/CharacterController';
-import { applyCharacterAppearance } from '../controllers/characterAppearance';
+import { applyCharacterAppearance, applyEquipmentDiff, visibleEquipmentToEquipped } from '../controllers/characterAppearance';
 import { LocomotionDebugGizmo } from '../controllers/LocomotionDebugGizmo';
 import { NameTag } from '../controllers/NameTag';
 import { RemoteEntityController } from '../controllers/RemoteEntityController';
 import { SceneController } from '../controllers/SceneController';
 import { getCharacterProfile } from '../net/CharacterClient';
 import { facingToRotation, quantizeDirectionVector, quantizeToCompass } from '../net/compassRotation';
-import type { EntitySnapshot, EntityUpdate, ServerPacket } from '../net/generated/protocol';
+import type {
+  EntitySnapshot,
+  EntityUpdate,
+  EquipmentSlots,
+  InventoryResponse,
+  InventorySlot,
+  ServerPacket,
+  VisibleEquipment,
+} from '../net/generated/protocol';
 import { SERVER_PORT, isSecurePage, pageHostname } from '../net/serverHost';
 import type { ConnectionStatus } from '../net/WorldConnection';
 import { WorldConnection } from '../net/WorldConnection';
 import { classifyLocomotionDirectionStable, classifyMovementAgainstFacing, loadCharacter } from '../rf/character';
 import type { LocomotionDirection, RaceGender } from '../rf/character';
+import type { EquippedItems } from '../rf/characterProfile';
 import { initSocketGlowBatching } from '../rf/glowEffect';
+import { preloadItemIconSheets } from '../rf/itemIcon';
 import { advanceParticleBatchClocks, initParticleBatching, setParticleEffectCountForBudget } from '../rf/particleSystem';
 import type { AppScene } from './AppScene';
 
@@ -29,6 +39,88 @@ export interface OnlineSceneCallbacks {
   onPingChange?: (pingMs: number | null) => void;
   onRadarFrame?: (frame: RadarFrame) => void;
   onChatMessage?: (entry: ChatLogEntry) => void;
+  onInventoryChange?: (state: InventoryState) => void;
+  onEquipmentChange?: (equipment: EquipmentDisplay) => void;
+}
+
+export interface InventoryState {
+  /** Always exactly 100 entries, indexed by slot_index - see normalizeInventorySlots. Empty until the server's post-login InventorySnapshot (request_id 0) arrives. */
+  slots: InventorySlot[];
+  gold: number;
+  cp: number;
+}
+
+/** EquipmentSlots' own 14 fixed slots (docs/inventory-action.md) - upper/lower/gauntlet/shoe/helmet/weapon/shield/cloak/ring1/ring2/amulet1/amulet2/bullet1/bullet2. */
+export type EquipmentSlotKey = keyof EquipmentSlots;
+
+/**
+ * What InventoryWindow actually needs per equipped slot - item_code (for
+ * name lookup/display) and upgrade, everything else InventorySlot/
+ * EquipmentVisual carry is irrelevant here. A slot with no entry means
+ * "nothing equipped there, or (for the 6 accessory slots) simply not known
+ * yet" - see mergeVisibleEquipment/mergeEquipmentSlots' own doc comments for
+ * why those two cases can't be told apart for ring/amulet/bullet slots.
+ */
+export type EquipmentDisplay = Partial<Record<EquipmentSlotKey, { itemCode: string; upgrade: string }>>;
+
+/** Every EquipmentSlotKey VisibleEquipment (EntitySnapshot/EntityAppearanceUpdate) actually carries - the 6 accessory slots (rings/amulets/bullets) aren't part of that message at all, see EquipmentDisplay's own doc comment. */
+const VISIBLE_EQUIPMENT_KEYS: (keyof VisibleEquipment & EquipmentSlotKey)[] = [
+  'upper',
+  'lower',
+  'gauntlet',
+  'shoe',
+  'helmet',
+  'weapon',
+  'shield',
+  'cloak',
+];
+
+/** Merges a VisibleEquipment (always available - EntitySnapshot on connect, EntityAppearanceUpdate on every later gear change) into an EquipmentDisplay, touching only the 8 slots it actually carries so accessory-slot state from a previous mergeEquipmentSlots call survives. */
+function mergeVisibleEquipment(equipment: EquipmentDisplay, visibleEquipment: VisibleEquipment | undefined): EquipmentDisplay {
+  const next = { ...equipment };
+  for (const key of VISIBLE_EQUIPMENT_KEYS) {
+    const visual = visibleEquipment?.[key];
+    if (visual?.itemCode) next[key] = { itemCode: visual.itemCode, upgrade: visual.upgrade };
+    else delete next[key];
+  }
+  return next;
+}
+
+/**
+ * Merges an EquipmentSlots (only ever arrives on a use_item InventoryActionResult
+ * that equipped something - see docs/inventory-action.md) into an
+ * EquipmentDisplay - unlike mergeVisibleEquipment this is the ONLY source
+ * this client ever has for the 6 accessory slots (ring1/ring2/amulet1/
+ * amulet2/bullet1/bullet2), so those stay unknown (simply absent, rendered
+ * as empty) until the player equips one themselves at least once this
+ * session.
+ */
+function mergeEquipmentSlots(equipment: EquipmentDisplay, equipmentSlots: EquipmentSlots): EquipmentDisplay {
+  const next = { ...equipment };
+  for (const key of Object.keys(equipmentSlots) as EquipmentSlotKey[]) {
+    const slot = equipmentSlots[key];
+    if (slot?.itemCode) next[key] = { itemCode: slot.itemCode, upgrade: slot.upgrade };
+    else delete next[key];
+  }
+  return next;
+}
+
+/** Normalizes an InventorySnapshot/InventoryActionResult's `slots` (which the server documents as "the full normalized 100-slot inventory", but doesn't guarantee array order/completeness) into a fixed 100-length array indexed by slot_index, so InventoryWindow can index it directly instead of re-searching on every render. */
+function normalizeInventorySlots(slots: InventorySlot[]): InventorySlot[] {
+  const normalized: InventorySlot[] = Array.from({ length: 100 }, (_, slotIndex) => ({
+    slotIndex,
+    itemId: 0,
+    quantity: 0,
+    upgrade: '',
+    isRental: false,
+    rentalExpiredDate: 0,
+    isLocked: false,
+    itemCode: '',
+  }));
+  for (const slot of slots) {
+    if (slot.slotIndex >= 0 && slot.slotIndex < 100) normalized[slot.slotIndex] = slot;
+  }
+  return normalized;
 }
 
 export interface ChatLogEntry {
@@ -164,6 +256,33 @@ export class OnlineScene implements AppScene {
   private hasServerSelfPosition = false;
   /** Assigns each incoming ChatLogEntry a locally-unique id - see its own doc comment. */
   private nextChatEntryId = 1;
+  /**
+   * The local player's own equipped items, as last actually applied to
+   * characterController - diffed against on every new VisibleEquipment (see
+   * applyLocalVisibleEquipment) the same way RemoteEntityController diffs a
+   * remote entity's own equipped map. Kept in sync with equipmentDisplay's
+   * own 8 VisibleEquipment-backed slots - this one only exists because
+   * applyEquipmentDiff/CharacterController work in ModelType terms, not
+   * EquipmentSlotKey.
+   */
+  private localEquipped: EquippedItems = {};
+  /** InventoryWindow's own equip-paperdoll state for the local player - see EquipmentDisplay's own doc comment for what each slot means and where it comes from. */
+  private equipmentDisplay: EquipmentDisplay = {};
+  /**
+   * True once characterController.mount() + the initial REST-based
+   * applyCharacterAppearance have resolved (see mount()) - guards
+   * applyLocalVisibleEquipment against diffing/equipping onto a controller
+   * that doesn't have a character mounted yet. The first WorldSnapshot can
+   * (and typically does) arrive before that finishes, since it's sent right
+   * after WelcomeEvent while the character's own mesh assets are often still
+   * loading over the network - see pendingSelfVisibleEquipment.
+   */
+  private localAppearanceReady = false;
+  /** The latest self VisibleEquipment seen before localAppearanceReady (see applyLocalVisibleEquipment) - applied once mount() finishes. Always set together with hasPendingSelfVisibleEquipment, which alone distinguishes "none received yet" from "received, and the player genuinely has nothing equipped". */
+  private pendingSelfVisibleEquipment: VisibleEquipment | undefined;
+  private hasPendingSelfVisibleEquipment = false;
+  /** The 100-slot bag, gold, and CP InventoryWindow renders - see InventoryState's own doc comment. gold/cp seed from the REST CharacterProfile fetch in mount() (there's no protobuf way to ask for current currency on its own) and are then only ever adjusted by a later InventoryActionResult.currencyDelta (sell_item is the only action that produces one right now). */
+  private inventoryState: InventoryState = { slots: normalizeInventorySlots([]), gold: 0, cp: 0 };
   private nameTag: NameTag | null = null;
   /** TEMP debug gizmo (facing/moveDirection arrows + locomotion/clip label) - see LocomotionDebugGizmo's own doc comment. */
   private debugGizmo: LocomotionDebugGizmo | null = null;
@@ -248,6 +367,21 @@ export class OnlineScene implements AppScene {
     this.connection.sendChatAll(trimmed);
   }
 
+  /** See InventoryWindow's own Sell button - `quantity = 0` (the default) sells the slot's full stack, per docs/inventory-action.md. */
+  sellInventoryItem(slotIndex: number, quantity = 0): void {
+    this.connection.sellSlotItem(slotIndex, quantity);
+  }
+
+  /** See InventoryWindow's own Drop button - `quantity = 0` (the default) drops the slot's full stack. */
+  dropInventoryItem(slotIndex: number, quantity = 0): void {
+    this.connection.dropSlotItem(slotIndex, quantity);
+  }
+
+  /** See InventoryWindow's own Use/Equip button - `quantity = 0` (the default) uses/equips 1; for an equipment item_code the server equips it instead of consuming it. */
+  useInventoryItem(slotIndex: number, quantity = 0): void {
+    this.connection.useSlotItem(slotIndex, quantity);
+  }
+
   async mount(): Promise<void> {
     this.connection.onStatusChange = (status) => this.callbacks.onConnectionStatusChange?.(status);
     this.connection.onPacket = (payload) => this.handlePacket(payload);
@@ -258,6 +392,11 @@ export class OnlineScene implements AppScene {
     this.connection.connect(
       `${wsUrl}${separator}token=${encodeURIComponent(this.sessionToken)}&character=${encodeURIComponent(this.characterId)}`,
     );
+
+    // Fire-and-forget, not on the critical path to 'ready' below - a head
+    // start on decoding InventoryWindow's icon sheets so its first real open
+    // doesn't stall on that, not a dependency of entering the world.
+    preloadItemIconSheets();
 
     window.addEventListener('keydown', this.handleRunKeyDown);
     window.addEventListener('keyup', this.handleRunKeyUp);
@@ -280,6 +419,25 @@ export class OnlineScene implements AppScene {
       if (this.disposed) return;
       if (profile) await applyCharacterAppearance(this.characterController, profile, () => this.disposed);
       if (this.disposed) return;
+      this.localEquipped = profile?.equipped ?? {};
+      // From here on, the WorldSnapshot/EntityAppearanceUpdate-driven
+      // VisibleEquipment path is authoritative for the local player's own
+      // rendered gear (see pendingSelfVisibleEquipment/
+      // applyLocalVisibleEquipment's own doc comments) - the REST profile's
+      // `equipped` above was only ever a best-effort placeholder shown
+      // before the first real WorldSnapshot arrives. If one already arrived
+      // while this awaited, apply it now as the correction.
+      this.localAppearanceReady = true;
+      if (this.hasPendingSelfVisibleEquipment) {
+        this.hasPendingSelfVisibleEquipment = false;
+        this.applyLocalVisibleEquipment(this.pendingSelfVisibleEquipment);
+      }
+      // gold/cp have no dedicated protobuf "get currency" request (see
+      // inventoryState's own doc comment) - seeded from the same REST
+      // profile fetch as equipped/name, so also cosmetic-only-degraded (both
+      // just read 0) if that fetch failed above.
+      this.inventoryState = { ...this.inventoryState, gold: profile?.gold ?? 0, cp: profile?.cp ?? 0 };
+      this.callbacks.onInventoryChange?.(this.inventoryState);
       // Skipped (not faked with a placeholder) if the profile fetch failed above - same cosmetic-only degradation as the appearance/equipment it came bundled with.
       if (profile?.name) this.nameTag = new NameTag(this.sceneController.scene, profile.name, bounds.radius);
       this.debugGizmo = new LocomotionDebugGizmo(this.sceneController.scene, bounds.radius);
@@ -516,14 +674,25 @@ export class OnlineScene implements AppScene {
         break;
       case 'worldSnapshot': {
         const selfSnapshot = payload.worldSnapshot.entities.find((entity) => entity.entityId === this.myPlayerId);
-        if (selfSnapshot) this.snapServerSelfPosition(selfSnapshot);
+        if (selfSnapshot) {
+          this.snapServerSelfPosition(selfSnapshot);
+          // The first (and, on every later resync, freshest) place the local
+          // player's own VisibleEquipment is available - see
+          // applyLocalVisibleEquipment's own doc comment for why this is now
+          // authoritative over the REST profile fetch mount() seeds
+          // localEquipped/equipmentDisplay from.
+          this.applyLocalVisibleEquipment(selfSnapshot.visibleEquipment);
+        }
         this.remoteEntityController.applySnapshot(payload.worldSnapshot.entities, this.myPlayerId);
         break;
       }
       case 'worldDelta': {
-        const { enters, updates, exits } = payload.worldDelta;
+        const { enters, updates, exits, appearanceUpdates } = payload.worldDelta;
         for (const enter of enters) {
-          if (enter.entityId === this.myPlayerId && enter.entity) this.snapServerSelfPosition(enter.entity);
+          if (enter.entityId === this.myPlayerId && enter.entity) {
+            this.snapServerSelfPosition(enter.entity);
+            this.applyLocalVisibleEquipment(enter.entity.visibleEquipment);
+          }
           this.remoteEntityController.enter(enter.entityId, enter.entity, this.myPlayerId);
         }
         for (const update of updates) {
@@ -531,6 +700,10 @@ export class OnlineScene implements AppScene {
           this.remoteEntityController.update(update.entityId, update, this.myPlayerId);
         }
         for (const exit of exits) this.remoteEntityController.exit(exit.entityId, this.myPlayerId);
+        for (const appearanceUpdate of appearanceUpdates) {
+          if (appearanceUpdate.entityId === this.myPlayerId) this.applyLocalVisibleEquipment(appearanceUpdate.visibleEquipment);
+          else this.remoteEntityController.applyAppearanceUpdate(appearanceUpdate.entityId, appearanceUpdate.visibleEquipment, this.myPlayerId);
+        }
         break;
       }
       case 'chat':
@@ -552,6 +725,42 @@ export class OnlineScene implements AppScene {
       case 'systemMessage':
         this.callbacks.onChatMessage?.({ id: this.nextChatEntryId++, kind: 'system', message: payload.systemMessage.message });
         break;
+      case 'inventory':
+        this.handleInventoryResponse(payload.inventory);
+        break;
+    }
+  }
+
+  private handleInventoryResponse(response: InventoryResponse): void {
+    switch (response.result?.$case) {
+      case 'snapshot':
+        this.inventoryState = { ...this.inventoryState, slots: normalizeInventorySlots(response.result.snapshot.slots) };
+        this.callbacks.onInventoryChange?.(this.inventoryState);
+        break;
+      case 'actionResult': {
+        const { slots, currencyDelta, equipment } = response.result.actionResult;
+        this.inventoryState = {
+          slots: normalizeInventorySlots(slots),
+          gold: this.inventoryState.gold + currencyDelta,
+          cp: this.inventoryState.cp,
+        };
+        this.callbacks.onInventoryChange?.(this.inventoryState);
+        if (equipment) {
+          this.equipmentDisplay = mergeEquipmentSlots(this.equipmentDisplay, equipment);
+          this.callbacks.onEquipmentChange?.(this.equipmentDisplay);
+        }
+        break;
+      }
+      case 'error':
+        // Reuses the chat log's existing 'system' kind - see ChatBox -
+        // rather than a dedicated toast component, same as every other
+        // server-side rejection this scene surfaces today.
+        this.callbacks.onChatMessage?.({
+          id: this.nextChatEntryId++,
+          kind: 'system',
+          message: `Inventory: ${response.result.error.message}`,
+        });
+        break;
     }
   }
 
@@ -564,6 +773,44 @@ export class OnlineScene implements AppScene {
     this.serverSelfPosition.x += update.dx;
     this.serverSelfPosition.y += update.dy;
     this.serverSelfPosition.z += update.dz;
+  }
+
+  /**
+   * Applies the local player's own latest server-reported VisibleEquipment -
+   * from the self entity in a WorldSnapshot/EntityEnter (initial/resync) or
+   * an EntityAppearanceUpdate targeting myPlayerId (a live gear change) -
+   * onto both equipmentDisplay (InventoryWindow's paperdoll, updated
+   * unconditionally: it doesn't need a mounted 3D character) and the actual
+   * 3D character (via applyEquipmentDiff, deferred - see
+   * pendingSelfVisibleEquipment - until localAppearanceReady, since a
+   * WorldSnapshot can arrive before characterController.mount() has
+   * actually finished loading the character's meshes).
+   *
+   * This is the real fix for "a character's equipped armor doesn't render
+   * on first login": mount()'s own REST CharacterProfile.equipped fetch
+   * only reflects that character's saved-appearance document, which isn't
+   * the same store real equip actions (use_item) write to any more (see
+   * docs/inventory-action.md) - VisibleEquipment is the only channel that's
+   * actually current. Before this, VisibleEquipment was only ever consumed
+   * here for live updates, never for the local player's own initial
+   * appearance, so a character that had equipped something in an earlier
+   * session (or via `%**`/a use_item this session while temporarily
+   * disconnected) rendered bare/default until the next live gear change
+   * happened to correct it.
+   */
+  private applyLocalVisibleEquipment(visibleEquipment: EntitySnapshot['visibleEquipment']): void {
+    this.equipmentDisplay = mergeVisibleEquipment(this.equipmentDisplay, visibleEquipment);
+    this.callbacks.onEquipmentChange?.(this.equipmentDisplay);
+
+    if (!this.localAppearanceReady) {
+      this.pendingSelfVisibleEquipment = visibleEquipment;
+      this.hasPendingSelfVisibleEquipment = true;
+      return;
+    }
+    const next = visibleEquipmentToEquipped(visibleEquipment);
+    const previous = this.localEquipped;
+    this.localEquipped = next;
+    void applyEquipmentDiff(this.characterController, previous, next, () => this.disposed);
   }
 
   private handleRunKeyChange(event: KeyboardEvent, pressed: boolean): void {

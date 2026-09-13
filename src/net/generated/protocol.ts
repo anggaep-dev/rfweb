@@ -9,6 +9,166 @@ import { BinaryReader, BinaryWriter } from "@bufbuild/protobuf/wire";
 
 export const protobufPackage = "protocol";
 
+/**
+ * Matches CHAT_TYPE in RF_Globals.lua - see docs/websocket-protobuf.md's
+ * routing table for which recipients each type reaches.
+ */
+export enum ChatType {
+  CHAT_TYPE_NORMAL = 0,
+  CHAT_TYPE_PARTY = 1,
+  CHAT_TYPE_GUILD = 2,
+  CHAT_TYPE_SYSTEM = 3,
+  CHAT_TYPE_RACE = 4,
+  CHAT_TYPE_PM = 5,
+  CHAT_TYPE_TRANSPORT = 6,
+  CHAT_TYPE_MAP = 7,
+  CHAT_TYPE_IMPORTANT_ALL = 8,
+  CHAT_TYPE_SCRAMBLE = 9,
+  CHAT_TYPE_PT = 10,
+  CHAT_TYPE_WHOLE = 11,
+  CHAT_TYPE_MONSTER = 12,
+  CHAT_TYPE_TRADE = 13,
+  UNRECOGNIZED = -1,
+}
+
+export function chatTypeFromJSON(object: any): ChatType {
+  switch (object) {
+    case 0:
+    case "CHAT_TYPE_NORMAL":
+      return ChatType.CHAT_TYPE_NORMAL;
+    case 1:
+    case "CHAT_TYPE_PARTY":
+      return ChatType.CHAT_TYPE_PARTY;
+    case 2:
+    case "CHAT_TYPE_GUILD":
+      return ChatType.CHAT_TYPE_GUILD;
+    case 3:
+    case "CHAT_TYPE_SYSTEM":
+      return ChatType.CHAT_TYPE_SYSTEM;
+    case 4:
+    case "CHAT_TYPE_RACE":
+      return ChatType.CHAT_TYPE_RACE;
+    case 5:
+    case "CHAT_TYPE_PM":
+      return ChatType.CHAT_TYPE_PM;
+    case 6:
+    case "CHAT_TYPE_TRANSPORT":
+      return ChatType.CHAT_TYPE_TRANSPORT;
+    case 7:
+    case "CHAT_TYPE_MAP":
+      return ChatType.CHAT_TYPE_MAP;
+    case 8:
+    case "CHAT_TYPE_IMPORTANT_ALL":
+      return ChatType.CHAT_TYPE_IMPORTANT_ALL;
+    case 9:
+    case "CHAT_TYPE_SCRAMBLE":
+      return ChatType.CHAT_TYPE_SCRAMBLE;
+    case 10:
+    case "CHAT_TYPE_PT":
+      return ChatType.CHAT_TYPE_PT;
+    case 11:
+    case "CHAT_TYPE_WHOLE":
+      return ChatType.CHAT_TYPE_WHOLE;
+    case 12:
+    case "CHAT_TYPE_MONSTER":
+      return ChatType.CHAT_TYPE_MONSTER;
+    case 13:
+    case "CHAT_TYPE_TRADE":
+      return ChatType.CHAT_TYPE_TRADE;
+    case -1:
+    case "UNRECOGNIZED":
+    default:
+      return ChatType.UNRECOGNIZED;
+  }
+}
+
+export function chatTypeToJSON(object: ChatType): string {
+  switch (object) {
+    case ChatType.CHAT_TYPE_NORMAL:
+      return "CHAT_TYPE_NORMAL";
+    case ChatType.CHAT_TYPE_PARTY:
+      return "CHAT_TYPE_PARTY";
+    case ChatType.CHAT_TYPE_GUILD:
+      return "CHAT_TYPE_GUILD";
+    case ChatType.CHAT_TYPE_SYSTEM:
+      return "CHAT_TYPE_SYSTEM";
+    case ChatType.CHAT_TYPE_RACE:
+      return "CHAT_TYPE_RACE";
+    case ChatType.CHAT_TYPE_PM:
+      return "CHAT_TYPE_PM";
+    case ChatType.CHAT_TYPE_TRANSPORT:
+      return "CHAT_TYPE_TRANSPORT";
+    case ChatType.CHAT_TYPE_MAP:
+      return "CHAT_TYPE_MAP";
+    case ChatType.CHAT_TYPE_IMPORTANT_ALL:
+      return "CHAT_TYPE_IMPORTANT_ALL";
+    case ChatType.CHAT_TYPE_SCRAMBLE:
+      return "CHAT_TYPE_SCRAMBLE";
+    case ChatType.CHAT_TYPE_PT:
+      return "CHAT_TYPE_PT";
+    case ChatType.CHAT_TYPE_WHOLE:
+      return "CHAT_TYPE_WHOLE";
+    case ChatType.CHAT_TYPE_MONSTER:
+      return "CHAT_TYPE_MONSTER";
+    case ChatType.CHAT_TYPE_TRADE:
+      return "CHAT_TYPE_TRADE";
+    case ChatType.UNRECOGNIZED:
+    default:
+      return "UNRECOGNIZED";
+  }
+}
+
+export enum InventoryActionType {
+  INVENTORY_ACTION_UNSPECIFIED = 0,
+  INVENTORY_ACTION_INSERT = 1,
+  INVENTORY_ACTION_SELL = 2,
+  INVENTORY_ACTION_DROP = 3,
+  INVENTORY_ACTION_USE = 4,
+  UNRECOGNIZED = -1,
+}
+
+export function inventoryActionTypeFromJSON(object: any): InventoryActionType {
+  switch (object) {
+    case 0:
+    case "INVENTORY_ACTION_UNSPECIFIED":
+      return InventoryActionType.INVENTORY_ACTION_UNSPECIFIED;
+    case 1:
+    case "INVENTORY_ACTION_INSERT":
+      return InventoryActionType.INVENTORY_ACTION_INSERT;
+    case 2:
+    case "INVENTORY_ACTION_SELL":
+      return InventoryActionType.INVENTORY_ACTION_SELL;
+    case 3:
+    case "INVENTORY_ACTION_DROP":
+      return InventoryActionType.INVENTORY_ACTION_DROP;
+    case 4:
+    case "INVENTORY_ACTION_USE":
+      return InventoryActionType.INVENTORY_ACTION_USE;
+    case -1:
+    case "UNRECOGNIZED":
+    default:
+      return InventoryActionType.UNRECOGNIZED;
+  }
+}
+
+export function inventoryActionTypeToJSON(object: InventoryActionType): string {
+  switch (object) {
+    case InventoryActionType.INVENTORY_ACTION_UNSPECIFIED:
+      return "INVENTORY_ACTION_UNSPECIFIED";
+    case InventoryActionType.INVENTORY_ACTION_INSERT:
+      return "INVENTORY_ACTION_INSERT";
+    case InventoryActionType.INVENTORY_ACTION_SELL:
+      return "INVENTORY_ACTION_SELL";
+    case InventoryActionType.INVENTORY_ACTION_DROP:
+      return "INVENTORY_ACTION_DROP";
+    case InventoryActionType.INVENTORY_ACTION_USE:
+      return "INVENTORY_ACTION_USE";
+    case InventoryActionType.UNRECOGNIZED:
+    default:
+      return "UNRECOGNIZED";
+  }
+}
+
 export interface MovementInput {
   sequence: number;
   dirX: number;
@@ -33,6 +193,8 @@ export interface MovementInput {
 
 export interface ChatAllRequest {
   message: string;
+  /** Omitted (legacy clients) is treated by the server as CHAT_TYPE_WHOLE. */
+  chatType?: ChatType | undefined;
 }
 
 export interface WhisperRequest {
@@ -49,12 +211,101 @@ export interface PingRequest {
   clientTime: number;
 }
 
+export interface InventorySlot {
+  slotIndex: number;
+  itemId: number;
+  quantity: number;
+  upgrade: string;
+  isRental: boolean;
+  rentalExpiredDate: number;
+  isLocked: boolean;
+  itemCode: string;
+}
+
+/**
+ * set_slot/add_item/remove/move/flush remain in the schema for backend/admin
+ * compatibility, but the player WebSocket rejects all of them with "action
+ * not allowed" - the gameplay frontend only ever sends get (implicitly, via
+ * the server's own post-login snapshot)/insert_item/sell_item/drop_item/
+ * use_item, see docs/inventory-action.md.
+ */
+export interface InventoryGetRequest {
+}
+
+export interface InventorySetSlotRequest {
+  slot?: InventorySlot | undefined;
+}
+
+export interface InventoryAddItemRequest {
+  itemId: number;
+  itemCode: string;
+  quantity: number;
+  upgrade: string;
+  isRental: boolean;
+  rentalExpiredDate: number;
+  isLocked: boolean;
+}
+
+export interface InventoryRemoveRequest {
+  slotIndex: number;
+  quantity: number;
+}
+
+export interface InventoryMoveRequest {
+  fromSlot: number;
+  toSlot: number;
+  quantity: number;
+}
+
+export interface InventoryFlushRequest {
+}
+
+export interface InventoryInsertItemRequest {
+  itemCode: string;
+  quantity: number;
+  upgrade: string;
+  isRental: boolean;
+  rentalExpiredDate: number;
+}
+
+export interface InventorySellItemRequest {
+  slotIndex: number;
+  quantity: number;
+}
+
+export interface InventoryDropItemRequest {
+  slotIndex: number;
+  quantity: number;
+}
+
+export interface InventoryUseItemRequest {
+  slotIndex: number;
+  quantity: number;
+}
+
+export interface InventoryRequest {
+  requestId: number;
+  action?:
+    | { $case: "get"; get: InventoryGetRequest }
+    | { $case: "setSlot"; setSlot: InventorySetSlotRequest }
+    | { $case: "addItem"; addItem: InventoryAddItemRequest }
+    | { $case: "remove"; remove: InventoryRemoveRequest }
+    | { $case: "move"; move: InventoryMoveRequest }
+    | { $case: "flush"; flush: InventoryFlushRequest }
+    | { $case: "insertItem"; insertItem: InventoryInsertItemRequest }
+    | { $case: "sellItem"; sellItem: InventorySellItemRequest }
+    | { $case: "dropItem"; dropItem: InventoryDropItemRequest }
+    | { $case: "useItem"; useItem: InventoryUseItemRequest }
+    | undefined;
+}
+
 export interface ClientPacket {
   payload?:
     | { $case: "movement"; movement: MovementInput }
     | { $case: "chatAll"; chatAll: ChatAllRequest }
     | { $case: "whisper"; whisper: WhisperRequest }
     | { $case: "ping"; ping: PingRequest }
+    | { $case: "inventory"; inventory: InventoryRequest }
     | undefined;
 }
 
@@ -77,6 +328,28 @@ export interface EntitySnapshot {
    */
   race: number;
   characterId: string;
+  /**
+   * Public avatar equipment (item_code/upgrade per slot) - lets the client
+   * render another player's actual gear from this snapshot alone, without
+   * needing to wait on a separate appearance fetch to resolve first.
+   */
+  visibleEquipment?: VisibleEquipment | undefined;
+}
+
+export interface EquipmentVisual {
+  itemCode: string;
+  upgrade: string;
+}
+
+export interface VisibleEquipment {
+  upper?: EquipmentVisual | undefined;
+  lower?: EquipmentVisual | undefined;
+  gauntlet?: EquipmentVisual | undefined;
+  shoe?: EquipmentVisual | undefined;
+  helmet?: EquipmentVisual | undefined;
+  weapon?: EquipmentVisual | undefined;
+  shield?: EquipmentVisual | undefined;
+  cloak?: EquipmentVisual | undefined;
 }
 
 export interface WorldSnapshot {
@@ -102,23 +375,38 @@ export interface EntityExit {
   entityId: number;
 }
 
+/**
+ * Emitted after a successful visible-equipment change (see docs/websocket-
+ * protobuf.md's InventoryResponse section) so already-tracked nearby
+ * entities re-render their gear without waiting on a fresh snapshot/enter.
+ */
+export interface EntityAppearanceUpdate {
+  entityId: number;
+  visibleEquipment?: VisibleEquipment | undefined;
+}
+
 export interface WorldDelta {
   serverTick: number;
   enters: EntityEnter[];
   updates: EntityUpdate[];
   exits: EntityExit[];
+  appearanceUpdates: EntityAppearanceUpdate[];
 }
 
 export interface ChatEvent {
   playerId: number;
   playerName: string;
   message: string;
+  chatType: ChatType;
 }
 
 export interface WhisperEvent {
   playerId: number;
   playerName: string;
   message: string;
+  /** Always CHAT_TYPE_PM. */
+  chatType: ChatType;
+  targetPlayerId: number;
 }
 
 export interface SystemMessage {
@@ -138,6 +426,99 @@ export interface WelcomeEvent {
   playerId: number;
 }
 
+/**
+ * Fixed equipment slots (docs/inventory-action.md's equipment table) -
+ * distinct from the 100-slot bag InventorySnapshot carries; only ever
+ * populated wholesale as part of a `use_item` InventoryActionResult (there is
+ * no standalone "get equipment" request), see EntitySnapshot/
+ * EntityAppearanceUpdate's own VisibleEquipment for the always-available
+ * (but narrower - no rings/amulets/bullets) alternative used to render other
+ * players' avatars.
+ */
+export interface EquipmentSlots {
+  upper?: InventorySlot | undefined;
+  lower?: InventorySlot | undefined;
+  gauntlet?: InventorySlot | undefined;
+  shoe?: InventorySlot | undefined;
+  helmet?: InventorySlot | undefined;
+  weapon?: InventorySlot | undefined;
+  shield?: InventorySlot | undefined;
+  cloak?: InventorySlot | undefined;
+  ring1?: InventorySlot | undefined;
+  ring2?: InventorySlot | undefined;
+  amulet1?: InventorySlot | undefined;
+  amulet2?: InventorySlot | undefined;
+  bullet1?: InventorySlot | undefined;
+  bullet2?: InventorySlot | undefined;
+}
+
+export interface CharacterEffect {
+  code: number;
+  unit: number;
+  sourceItemCode: string;
+  sourceSlot: string;
+  parameterGroup: string;
+  parameterName: string;
+  parameterCandidates: string[];
+  appliedParameters: string[];
+}
+
+export interface CharacterStatus {
+  maxHp: number;
+  maxFp: number;
+  maxSp: number;
+  attackMin: number;
+  attackMax: number;
+  defense: number;
+  maxDefense: number;
+  shieldBlock: number;
+  attackRange: number;
+  attackSpeed: number;
+  moveSpeed: number;
+  fireTol: number;
+  waterTol: number;
+  soilTol: number;
+  windTol: number;
+  effects: CharacterEffect[];
+}
+
+/**
+ * Sent once after WebSocket login (request_id = 0) and again after every
+ * successful inventory request - always the full normalized 100-slot bag.
+ */
+export interface InventorySnapshot {
+  requestId: number;
+  slots: InventorySlot[];
+}
+
+/**
+ * insert_item/sell_item/drop_item/use_item's response - equipment/status are
+ * only populated for a use_item that equipped a fixed-slot item.
+ */
+export interface InventoryActionResult {
+  requestId: number;
+  slots: InventorySlot[];
+  action: InventoryActionType;
+  itemCode: string;
+  quantity: number;
+  currencyDelta: number;
+  equipment?: EquipmentSlots | undefined;
+  status?: CharacterStatus | undefined;
+}
+
+export interface InventoryError {
+  requestId: number;
+  message: string;
+  code: number;
+}
+
+export interface InventoryResponse {
+  result?: { $case: "snapshot"; snapshot: InventorySnapshot } | { $case: "error"; error: InventoryError } | {
+    $case: "actionResult";
+    actionResult: InventoryActionResult;
+  } | undefined;
+}
+
 export interface ServerPacket {
   payload?:
     | { $case: "worldSnapshot"; worldSnapshot: WorldSnapshot }
@@ -147,6 +528,7 @@ export interface ServerPacket {
     | { $case: "systemMessage"; systemMessage: SystemMessage }
     | { $case: "pong"; pong: PongEvent }
     | { $case: "welcome"; welcome: WelcomeEvent }
+    | { $case: "inventory"; inventory: InventoryResponse }
     | undefined;
 }
 
@@ -292,13 +674,16 @@ export const MovementInput: MessageFns<MovementInput> = {
 };
 
 function createBaseChatAllRequest(): ChatAllRequest {
-  return { message: "" };
+  return { message: "", chatType: undefined };
 }
 
 export const ChatAllRequest: MessageFns<ChatAllRequest> = {
   encode(message: ChatAllRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
     if (message.message !== "") {
       writer.uint32(10).string(message.message);
+    }
+    if (message.chatType !== undefined) {
+      writer.uint32(16).int32(message.chatType);
     }
     return writer;
   },
@@ -324,6 +709,14 @@ export const ChatAllRequest: MessageFns<ChatAllRequest> = {
             message.message = reader.string();
             continue;
           }
+          case 2: {
+            if (tag !== 16) {
+              break;
+            }
+
+            message.chatType = reader.int32() as any;
+            continue;
+          }
         }
         if ((tag & 7) === 4 || tag === 0) {
           break;
@@ -337,13 +730,23 @@ export const ChatAllRequest: MessageFns<ChatAllRequest> = {
   },
 
   fromJSON(object: any): ChatAllRequest {
-    return { message: isSet(object.message) ? globalThis.String(object.message) : "" };
+    return {
+      message: isSet(object.message) ? globalThis.String(object.message) : "",
+      chatType: isSet(object.chatType)
+        ? chatTypeFromJSON(object.chatType)
+        : isSet(object.chat_type)
+        ? chatTypeFromJSON(object.chat_type)
+        : undefined,
+    };
   },
 
   toJSON(message: ChatAllRequest): unknown {
     const obj: any = {};
     if (message.message !== "") {
       obj.message = message.message;
+    }
+    if (message.chatType !== undefined) {
+      obj.chatType = chatTypeToJSON(message.chatType);
     }
     return obj;
   },
@@ -354,6 +757,7 @@ export const ChatAllRequest: MessageFns<ChatAllRequest> = {
   fromPartial<I extends Exact<DeepPartial<ChatAllRequest>, I>>(object: I): ChatAllRequest {
     const message = createBaseChatAllRequest();
     message.message = object.message ?? "";
+    message.chatType = object.chatType ?? undefined;
     return message;
   },
 };
@@ -520,6 +924,1501 @@ export const PingRequest: MessageFns<PingRequest> = {
   },
 };
 
+function createBaseInventorySlot(): InventorySlot {
+  return {
+    slotIndex: 0,
+    itemId: 0,
+    quantity: 0,
+    upgrade: "",
+    isRental: false,
+    rentalExpiredDate: 0,
+    isLocked: false,
+    itemCode: "",
+  };
+}
+
+export const InventorySlot: MessageFns<InventorySlot> = {
+  encode(message: InventorySlot, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.slotIndex !== 0) {
+      writer.uint32(8).uint32(message.slotIndex);
+    }
+    if (message.itemId !== 0) {
+      writer.uint32(16).uint32(message.itemId);
+    }
+    if (message.quantity !== 0) {
+      writer.uint32(24).uint32(message.quantity);
+    }
+    if (message.upgrade !== "") {
+      writer.uint32(34).string(message.upgrade);
+    }
+    if (message.isRental !== false) {
+      writer.uint32(40).bool(message.isRental);
+    }
+    if (message.rentalExpiredDate !== 0) {
+      writer.uint32(48).int64(message.rentalExpiredDate);
+    }
+    if (message.isLocked !== false) {
+      writer.uint32(56).bool(message.isLocked);
+    }
+    if (message.itemCode !== "") {
+      writer.uint32(66).string(message.itemCode);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): InventorySlot {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const previousRecursionDepth = (reader as any).__tsProtoDecodeDepth ?? 0;
+    if (previousRecursionDepth >= 100) {
+      throw new globalThis.Error("protobuf decode recursion limit exceeded");
+    }
+    (reader as any).__tsProtoDecodeDepth = previousRecursionDepth + 1;
+    try {
+      const end = length === undefined ? reader.len : reader.pos + length;
+      const message = createBaseInventorySlot();
+      while (reader.pos < end) {
+        const tag = reader.uint32();
+        switch (tag >>> 3) {
+          case 1: {
+            if (tag !== 8) {
+              break;
+            }
+
+            message.slotIndex = reader.uint32();
+            continue;
+          }
+          case 2: {
+            if (tag !== 16) {
+              break;
+            }
+
+            message.itemId = reader.uint32();
+            continue;
+          }
+          case 3: {
+            if (tag !== 24) {
+              break;
+            }
+
+            message.quantity = reader.uint32();
+            continue;
+          }
+          case 4: {
+            if (tag !== 34) {
+              break;
+            }
+
+            message.upgrade = reader.string();
+            continue;
+          }
+          case 5: {
+            if (tag !== 40) {
+              break;
+            }
+
+            message.isRental = reader.bool();
+            continue;
+          }
+          case 6: {
+            if (tag !== 48) {
+              break;
+            }
+
+            message.rentalExpiredDate = longToNumber(reader.int64());
+            continue;
+          }
+          case 7: {
+            if (tag !== 56) {
+              break;
+            }
+
+            message.isLocked = reader.bool();
+            continue;
+          }
+          case 8: {
+            if (tag !== 66) {
+              break;
+            }
+
+            message.itemCode = reader.string();
+            continue;
+          }
+        }
+        if ((tag & 7) === 4 || tag === 0) {
+          break;
+        }
+        reader.skip(tag & 7);
+      }
+      return message;
+    } finally {
+      (reader as any).__tsProtoDecodeDepth = previousRecursionDepth;
+    }
+  },
+
+  fromJSON(object: any): InventorySlot {
+    return {
+      slotIndex: isSet(object.slotIndex)
+        ? globalThis.Number(object.slotIndex)
+        : isSet(object.slot_index)
+        ? globalThis.Number(object.slot_index)
+        : 0,
+      itemId: isSet(object.itemId)
+        ? globalThis.Number(object.itemId)
+        : isSet(object.item_id)
+        ? globalThis.Number(object.item_id)
+        : 0,
+      quantity: isSet(object.quantity) ? globalThis.Number(object.quantity) : 0,
+      upgrade: isSet(object.upgrade) ? globalThis.String(object.upgrade) : "",
+      isRental: isSet(object.isRental)
+        ? globalThis.Boolean(object.isRental)
+        : isSet(object.is_rental)
+        ? globalThis.Boolean(object.is_rental)
+        : false,
+      rentalExpiredDate: isSet(object.rentalExpiredDate)
+        ? globalThis.Number(object.rentalExpiredDate)
+        : isSet(object.rental_expired_date)
+        ? globalThis.Number(object.rental_expired_date)
+        : 0,
+      isLocked: isSet(object.isLocked)
+        ? globalThis.Boolean(object.isLocked)
+        : isSet(object.is_locked)
+        ? globalThis.Boolean(object.is_locked)
+        : false,
+      itemCode: isSet(object.itemCode)
+        ? globalThis.String(object.itemCode)
+        : isSet(object.item_code)
+        ? globalThis.String(object.item_code)
+        : "",
+    };
+  },
+
+  toJSON(message: InventorySlot): unknown {
+    const obj: any = {};
+    if (message.slotIndex !== 0) {
+      obj.slotIndex = Math.round(message.slotIndex);
+    }
+    if (message.itemId !== 0) {
+      obj.itemId = Math.round(message.itemId);
+    }
+    if (message.quantity !== 0) {
+      obj.quantity = Math.round(message.quantity);
+    }
+    if (message.upgrade !== "") {
+      obj.upgrade = message.upgrade;
+    }
+    if (message.isRental !== false) {
+      obj.isRental = message.isRental;
+    }
+    if (message.rentalExpiredDate !== 0) {
+      obj.rentalExpiredDate = Math.round(message.rentalExpiredDate);
+    }
+    if (message.isLocked !== false) {
+      obj.isLocked = message.isLocked;
+    }
+    if (message.itemCode !== "") {
+      obj.itemCode = message.itemCode;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<InventorySlot>, I>>(base?: I): InventorySlot {
+    return InventorySlot.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<InventorySlot>, I>>(object: I): InventorySlot {
+    const message = createBaseInventorySlot();
+    message.slotIndex = object.slotIndex ?? 0;
+    message.itemId = object.itemId ?? 0;
+    message.quantity = object.quantity ?? 0;
+    message.upgrade = object.upgrade ?? "";
+    message.isRental = object.isRental ?? false;
+    message.rentalExpiredDate = object.rentalExpiredDate ?? 0;
+    message.isLocked = object.isLocked ?? false;
+    message.itemCode = object.itemCode ?? "";
+    return message;
+  },
+};
+
+function createBaseInventoryGetRequest(): InventoryGetRequest {
+  return {};
+}
+
+export const InventoryGetRequest: MessageFns<InventoryGetRequest> = {
+  encode(_: InventoryGetRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): InventoryGetRequest {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const previousRecursionDepth = (reader as any).__tsProtoDecodeDepth ?? 0;
+    if (previousRecursionDepth >= 100) {
+      throw new globalThis.Error("protobuf decode recursion limit exceeded");
+    }
+    (reader as any).__tsProtoDecodeDepth = previousRecursionDepth + 1;
+    try {
+      const end = length === undefined ? reader.len : reader.pos + length;
+      const message = createBaseInventoryGetRequest();
+      while (reader.pos < end) {
+        const tag = reader.uint32();
+        switch (tag >>> 3) {
+        }
+        if ((tag & 7) === 4 || tag === 0) {
+          break;
+        }
+        reader.skip(tag & 7);
+      }
+      return message;
+    } finally {
+      (reader as any).__tsProtoDecodeDepth = previousRecursionDepth;
+    }
+  },
+
+  fromJSON(_: any): InventoryGetRequest {
+    return {};
+  },
+
+  toJSON(_: InventoryGetRequest): unknown {
+    const obj: any = {};
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<InventoryGetRequest>, I>>(base?: I): InventoryGetRequest {
+    return InventoryGetRequest.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<InventoryGetRequest>, I>>(_: I): InventoryGetRequest {
+    const message = createBaseInventoryGetRequest();
+    return message;
+  },
+};
+
+function createBaseInventorySetSlotRequest(): InventorySetSlotRequest {
+  return { slot: undefined };
+}
+
+export const InventorySetSlotRequest: MessageFns<InventorySetSlotRequest> = {
+  encode(message: InventorySetSlotRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.slot !== undefined) {
+      InventorySlot.encode(message.slot, writer.uint32(10).fork()).join();
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): InventorySetSlotRequest {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const previousRecursionDepth = (reader as any).__tsProtoDecodeDepth ?? 0;
+    if (previousRecursionDepth >= 100) {
+      throw new globalThis.Error("protobuf decode recursion limit exceeded");
+    }
+    (reader as any).__tsProtoDecodeDepth = previousRecursionDepth + 1;
+    try {
+      const end = length === undefined ? reader.len : reader.pos + length;
+      const message = createBaseInventorySetSlotRequest();
+      while (reader.pos < end) {
+        const tag = reader.uint32();
+        switch (tag >>> 3) {
+          case 1: {
+            if (tag !== 10) {
+              break;
+            }
+
+            message.slot = InventorySlot.decode(reader, reader.uint32());
+            continue;
+          }
+        }
+        if ((tag & 7) === 4 || tag === 0) {
+          break;
+        }
+        reader.skip(tag & 7);
+      }
+      return message;
+    } finally {
+      (reader as any).__tsProtoDecodeDepth = previousRecursionDepth;
+    }
+  },
+
+  fromJSON(object: any): InventorySetSlotRequest {
+    return { slot: isSet(object.slot) ? InventorySlot.fromJSON(object.slot) : undefined };
+  },
+
+  toJSON(message: InventorySetSlotRequest): unknown {
+    const obj: any = {};
+    if (message.slot !== undefined) {
+      obj.slot = InventorySlot.toJSON(message.slot);
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<InventorySetSlotRequest>, I>>(base?: I): InventorySetSlotRequest {
+    return InventorySetSlotRequest.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<InventorySetSlotRequest>, I>>(object: I): InventorySetSlotRequest {
+    const message = createBaseInventorySetSlotRequest();
+    message.slot = (object.slot !== undefined && object.slot !== null)
+      ? InventorySlot.fromPartial(object.slot)
+      : undefined;
+    return message;
+  },
+};
+
+function createBaseInventoryAddItemRequest(): InventoryAddItemRequest {
+  return { itemId: 0, itemCode: "", quantity: 0, upgrade: "", isRental: false, rentalExpiredDate: 0, isLocked: false };
+}
+
+export const InventoryAddItemRequest: MessageFns<InventoryAddItemRequest> = {
+  encode(message: InventoryAddItemRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.itemId !== 0) {
+      writer.uint32(8).uint32(message.itemId);
+    }
+    if (message.itemCode !== "") {
+      writer.uint32(18).string(message.itemCode);
+    }
+    if (message.quantity !== 0) {
+      writer.uint32(24).uint32(message.quantity);
+    }
+    if (message.upgrade !== "") {
+      writer.uint32(34).string(message.upgrade);
+    }
+    if (message.isRental !== false) {
+      writer.uint32(40).bool(message.isRental);
+    }
+    if (message.rentalExpiredDate !== 0) {
+      writer.uint32(48).int64(message.rentalExpiredDate);
+    }
+    if (message.isLocked !== false) {
+      writer.uint32(56).bool(message.isLocked);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): InventoryAddItemRequest {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const previousRecursionDepth = (reader as any).__tsProtoDecodeDepth ?? 0;
+    if (previousRecursionDepth >= 100) {
+      throw new globalThis.Error("protobuf decode recursion limit exceeded");
+    }
+    (reader as any).__tsProtoDecodeDepth = previousRecursionDepth + 1;
+    try {
+      const end = length === undefined ? reader.len : reader.pos + length;
+      const message = createBaseInventoryAddItemRequest();
+      while (reader.pos < end) {
+        const tag = reader.uint32();
+        switch (tag >>> 3) {
+          case 1: {
+            if (tag !== 8) {
+              break;
+            }
+
+            message.itemId = reader.uint32();
+            continue;
+          }
+          case 2: {
+            if (tag !== 18) {
+              break;
+            }
+
+            message.itemCode = reader.string();
+            continue;
+          }
+          case 3: {
+            if (tag !== 24) {
+              break;
+            }
+
+            message.quantity = reader.uint32();
+            continue;
+          }
+          case 4: {
+            if (tag !== 34) {
+              break;
+            }
+
+            message.upgrade = reader.string();
+            continue;
+          }
+          case 5: {
+            if (tag !== 40) {
+              break;
+            }
+
+            message.isRental = reader.bool();
+            continue;
+          }
+          case 6: {
+            if (tag !== 48) {
+              break;
+            }
+
+            message.rentalExpiredDate = longToNumber(reader.int64());
+            continue;
+          }
+          case 7: {
+            if (tag !== 56) {
+              break;
+            }
+
+            message.isLocked = reader.bool();
+            continue;
+          }
+        }
+        if ((tag & 7) === 4 || tag === 0) {
+          break;
+        }
+        reader.skip(tag & 7);
+      }
+      return message;
+    } finally {
+      (reader as any).__tsProtoDecodeDepth = previousRecursionDepth;
+    }
+  },
+
+  fromJSON(object: any): InventoryAddItemRequest {
+    return {
+      itemId: isSet(object.itemId)
+        ? globalThis.Number(object.itemId)
+        : isSet(object.item_id)
+        ? globalThis.Number(object.item_id)
+        : 0,
+      itemCode: isSet(object.itemCode)
+        ? globalThis.String(object.itemCode)
+        : isSet(object.item_code)
+        ? globalThis.String(object.item_code)
+        : "",
+      quantity: isSet(object.quantity) ? globalThis.Number(object.quantity) : 0,
+      upgrade: isSet(object.upgrade) ? globalThis.String(object.upgrade) : "",
+      isRental: isSet(object.isRental)
+        ? globalThis.Boolean(object.isRental)
+        : isSet(object.is_rental)
+        ? globalThis.Boolean(object.is_rental)
+        : false,
+      rentalExpiredDate: isSet(object.rentalExpiredDate)
+        ? globalThis.Number(object.rentalExpiredDate)
+        : isSet(object.rental_expired_date)
+        ? globalThis.Number(object.rental_expired_date)
+        : 0,
+      isLocked: isSet(object.isLocked)
+        ? globalThis.Boolean(object.isLocked)
+        : isSet(object.is_locked)
+        ? globalThis.Boolean(object.is_locked)
+        : false,
+    };
+  },
+
+  toJSON(message: InventoryAddItemRequest): unknown {
+    const obj: any = {};
+    if (message.itemId !== 0) {
+      obj.itemId = Math.round(message.itemId);
+    }
+    if (message.itemCode !== "") {
+      obj.itemCode = message.itemCode;
+    }
+    if (message.quantity !== 0) {
+      obj.quantity = Math.round(message.quantity);
+    }
+    if (message.upgrade !== "") {
+      obj.upgrade = message.upgrade;
+    }
+    if (message.isRental !== false) {
+      obj.isRental = message.isRental;
+    }
+    if (message.rentalExpiredDate !== 0) {
+      obj.rentalExpiredDate = Math.round(message.rentalExpiredDate);
+    }
+    if (message.isLocked !== false) {
+      obj.isLocked = message.isLocked;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<InventoryAddItemRequest>, I>>(base?: I): InventoryAddItemRequest {
+    return InventoryAddItemRequest.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<InventoryAddItemRequest>, I>>(object: I): InventoryAddItemRequest {
+    const message = createBaseInventoryAddItemRequest();
+    message.itemId = object.itemId ?? 0;
+    message.itemCode = object.itemCode ?? "";
+    message.quantity = object.quantity ?? 0;
+    message.upgrade = object.upgrade ?? "";
+    message.isRental = object.isRental ?? false;
+    message.rentalExpiredDate = object.rentalExpiredDate ?? 0;
+    message.isLocked = object.isLocked ?? false;
+    return message;
+  },
+};
+
+function createBaseInventoryRemoveRequest(): InventoryRemoveRequest {
+  return { slotIndex: 0, quantity: 0 };
+}
+
+export const InventoryRemoveRequest: MessageFns<InventoryRemoveRequest> = {
+  encode(message: InventoryRemoveRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.slotIndex !== 0) {
+      writer.uint32(8).uint32(message.slotIndex);
+    }
+    if (message.quantity !== 0) {
+      writer.uint32(16).uint32(message.quantity);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): InventoryRemoveRequest {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const previousRecursionDepth = (reader as any).__tsProtoDecodeDepth ?? 0;
+    if (previousRecursionDepth >= 100) {
+      throw new globalThis.Error("protobuf decode recursion limit exceeded");
+    }
+    (reader as any).__tsProtoDecodeDepth = previousRecursionDepth + 1;
+    try {
+      const end = length === undefined ? reader.len : reader.pos + length;
+      const message = createBaseInventoryRemoveRequest();
+      while (reader.pos < end) {
+        const tag = reader.uint32();
+        switch (tag >>> 3) {
+          case 1: {
+            if (tag !== 8) {
+              break;
+            }
+
+            message.slotIndex = reader.uint32();
+            continue;
+          }
+          case 2: {
+            if (tag !== 16) {
+              break;
+            }
+
+            message.quantity = reader.uint32();
+            continue;
+          }
+        }
+        if ((tag & 7) === 4 || tag === 0) {
+          break;
+        }
+        reader.skip(tag & 7);
+      }
+      return message;
+    } finally {
+      (reader as any).__tsProtoDecodeDepth = previousRecursionDepth;
+    }
+  },
+
+  fromJSON(object: any): InventoryRemoveRequest {
+    return {
+      slotIndex: isSet(object.slotIndex)
+        ? globalThis.Number(object.slotIndex)
+        : isSet(object.slot_index)
+        ? globalThis.Number(object.slot_index)
+        : 0,
+      quantity: isSet(object.quantity) ? globalThis.Number(object.quantity) : 0,
+    };
+  },
+
+  toJSON(message: InventoryRemoveRequest): unknown {
+    const obj: any = {};
+    if (message.slotIndex !== 0) {
+      obj.slotIndex = Math.round(message.slotIndex);
+    }
+    if (message.quantity !== 0) {
+      obj.quantity = Math.round(message.quantity);
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<InventoryRemoveRequest>, I>>(base?: I): InventoryRemoveRequest {
+    return InventoryRemoveRequest.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<InventoryRemoveRequest>, I>>(object: I): InventoryRemoveRequest {
+    const message = createBaseInventoryRemoveRequest();
+    message.slotIndex = object.slotIndex ?? 0;
+    message.quantity = object.quantity ?? 0;
+    return message;
+  },
+};
+
+function createBaseInventoryMoveRequest(): InventoryMoveRequest {
+  return { fromSlot: 0, toSlot: 0, quantity: 0 };
+}
+
+export const InventoryMoveRequest: MessageFns<InventoryMoveRequest> = {
+  encode(message: InventoryMoveRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.fromSlot !== 0) {
+      writer.uint32(8).uint32(message.fromSlot);
+    }
+    if (message.toSlot !== 0) {
+      writer.uint32(16).uint32(message.toSlot);
+    }
+    if (message.quantity !== 0) {
+      writer.uint32(24).uint32(message.quantity);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): InventoryMoveRequest {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const previousRecursionDepth = (reader as any).__tsProtoDecodeDepth ?? 0;
+    if (previousRecursionDepth >= 100) {
+      throw new globalThis.Error("protobuf decode recursion limit exceeded");
+    }
+    (reader as any).__tsProtoDecodeDepth = previousRecursionDepth + 1;
+    try {
+      const end = length === undefined ? reader.len : reader.pos + length;
+      const message = createBaseInventoryMoveRequest();
+      while (reader.pos < end) {
+        const tag = reader.uint32();
+        switch (tag >>> 3) {
+          case 1: {
+            if (tag !== 8) {
+              break;
+            }
+
+            message.fromSlot = reader.uint32();
+            continue;
+          }
+          case 2: {
+            if (tag !== 16) {
+              break;
+            }
+
+            message.toSlot = reader.uint32();
+            continue;
+          }
+          case 3: {
+            if (tag !== 24) {
+              break;
+            }
+
+            message.quantity = reader.uint32();
+            continue;
+          }
+        }
+        if ((tag & 7) === 4 || tag === 0) {
+          break;
+        }
+        reader.skip(tag & 7);
+      }
+      return message;
+    } finally {
+      (reader as any).__tsProtoDecodeDepth = previousRecursionDepth;
+    }
+  },
+
+  fromJSON(object: any): InventoryMoveRequest {
+    return {
+      fromSlot: isSet(object.fromSlot)
+        ? globalThis.Number(object.fromSlot)
+        : isSet(object.from_slot)
+        ? globalThis.Number(object.from_slot)
+        : 0,
+      toSlot: isSet(object.toSlot)
+        ? globalThis.Number(object.toSlot)
+        : isSet(object.to_slot)
+        ? globalThis.Number(object.to_slot)
+        : 0,
+      quantity: isSet(object.quantity) ? globalThis.Number(object.quantity) : 0,
+    };
+  },
+
+  toJSON(message: InventoryMoveRequest): unknown {
+    const obj: any = {};
+    if (message.fromSlot !== 0) {
+      obj.fromSlot = Math.round(message.fromSlot);
+    }
+    if (message.toSlot !== 0) {
+      obj.toSlot = Math.round(message.toSlot);
+    }
+    if (message.quantity !== 0) {
+      obj.quantity = Math.round(message.quantity);
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<InventoryMoveRequest>, I>>(base?: I): InventoryMoveRequest {
+    return InventoryMoveRequest.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<InventoryMoveRequest>, I>>(object: I): InventoryMoveRequest {
+    const message = createBaseInventoryMoveRequest();
+    message.fromSlot = object.fromSlot ?? 0;
+    message.toSlot = object.toSlot ?? 0;
+    message.quantity = object.quantity ?? 0;
+    return message;
+  },
+};
+
+function createBaseInventoryFlushRequest(): InventoryFlushRequest {
+  return {};
+}
+
+export const InventoryFlushRequest: MessageFns<InventoryFlushRequest> = {
+  encode(_: InventoryFlushRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): InventoryFlushRequest {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const previousRecursionDepth = (reader as any).__tsProtoDecodeDepth ?? 0;
+    if (previousRecursionDepth >= 100) {
+      throw new globalThis.Error("protobuf decode recursion limit exceeded");
+    }
+    (reader as any).__tsProtoDecodeDepth = previousRecursionDepth + 1;
+    try {
+      const end = length === undefined ? reader.len : reader.pos + length;
+      const message = createBaseInventoryFlushRequest();
+      while (reader.pos < end) {
+        const tag = reader.uint32();
+        switch (tag >>> 3) {
+        }
+        if ((tag & 7) === 4 || tag === 0) {
+          break;
+        }
+        reader.skip(tag & 7);
+      }
+      return message;
+    } finally {
+      (reader as any).__tsProtoDecodeDepth = previousRecursionDepth;
+    }
+  },
+
+  fromJSON(_: any): InventoryFlushRequest {
+    return {};
+  },
+
+  toJSON(_: InventoryFlushRequest): unknown {
+    const obj: any = {};
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<InventoryFlushRequest>, I>>(base?: I): InventoryFlushRequest {
+    return InventoryFlushRequest.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<InventoryFlushRequest>, I>>(_: I): InventoryFlushRequest {
+    const message = createBaseInventoryFlushRequest();
+    return message;
+  },
+};
+
+function createBaseInventoryInsertItemRequest(): InventoryInsertItemRequest {
+  return { itemCode: "", quantity: 0, upgrade: "", isRental: false, rentalExpiredDate: 0 };
+}
+
+export const InventoryInsertItemRequest: MessageFns<InventoryInsertItemRequest> = {
+  encode(message: InventoryInsertItemRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.itemCode !== "") {
+      writer.uint32(10).string(message.itemCode);
+    }
+    if (message.quantity !== 0) {
+      writer.uint32(16).uint32(message.quantity);
+    }
+    if (message.upgrade !== "") {
+      writer.uint32(26).string(message.upgrade);
+    }
+    if (message.isRental !== false) {
+      writer.uint32(32).bool(message.isRental);
+    }
+    if (message.rentalExpiredDate !== 0) {
+      writer.uint32(40).int64(message.rentalExpiredDate);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): InventoryInsertItemRequest {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const previousRecursionDepth = (reader as any).__tsProtoDecodeDepth ?? 0;
+    if (previousRecursionDepth >= 100) {
+      throw new globalThis.Error("protobuf decode recursion limit exceeded");
+    }
+    (reader as any).__tsProtoDecodeDepth = previousRecursionDepth + 1;
+    try {
+      const end = length === undefined ? reader.len : reader.pos + length;
+      const message = createBaseInventoryInsertItemRequest();
+      while (reader.pos < end) {
+        const tag = reader.uint32();
+        switch (tag >>> 3) {
+          case 1: {
+            if (tag !== 10) {
+              break;
+            }
+
+            message.itemCode = reader.string();
+            continue;
+          }
+          case 2: {
+            if (tag !== 16) {
+              break;
+            }
+
+            message.quantity = reader.uint32();
+            continue;
+          }
+          case 3: {
+            if (tag !== 26) {
+              break;
+            }
+
+            message.upgrade = reader.string();
+            continue;
+          }
+          case 4: {
+            if (tag !== 32) {
+              break;
+            }
+
+            message.isRental = reader.bool();
+            continue;
+          }
+          case 5: {
+            if (tag !== 40) {
+              break;
+            }
+
+            message.rentalExpiredDate = longToNumber(reader.int64());
+            continue;
+          }
+        }
+        if ((tag & 7) === 4 || tag === 0) {
+          break;
+        }
+        reader.skip(tag & 7);
+      }
+      return message;
+    } finally {
+      (reader as any).__tsProtoDecodeDepth = previousRecursionDepth;
+    }
+  },
+
+  fromJSON(object: any): InventoryInsertItemRequest {
+    return {
+      itemCode: isSet(object.itemCode)
+        ? globalThis.String(object.itemCode)
+        : isSet(object.item_code)
+        ? globalThis.String(object.item_code)
+        : "",
+      quantity: isSet(object.quantity) ? globalThis.Number(object.quantity) : 0,
+      upgrade: isSet(object.upgrade) ? globalThis.String(object.upgrade) : "",
+      isRental: isSet(object.isRental)
+        ? globalThis.Boolean(object.isRental)
+        : isSet(object.is_rental)
+        ? globalThis.Boolean(object.is_rental)
+        : false,
+      rentalExpiredDate: isSet(object.rentalExpiredDate)
+        ? globalThis.Number(object.rentalExpiredDate)
+        : isSet(object.rental_expired_date)
+        ? globalThis.Number(object.rental_expired_date)
+        : 0,
+    };
+  },
+
+  toJSON(message: InventoryInsertItemRequest): unknown {
+    const obj: any = {};
+    if (message.itemCode !== "") {
+      obj.itemCode = message.itemCode;
+    }
+    if (message.quantity !== 0) {
+      obj.quantity = Math.round(message.quantity);
+    }
+    if (message.upgrade !== "") {
+      obj.upgrade = message.upgrade;
+    }
+    if (message.isRental !== false) {
+      obj.isRental = message.isRental;
+    }
+    if (message.rentalExpiredDate !== 0) {
+      obj.rentalExpiredDate = Math.round(message.rentalExpiredDate);
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<InventoryInsertItemRequest>, I>>(base?: I): InventoryInsertItemRequest {
+    return InventoryInsertItemRequest.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<InventoryInsertItemRequest>, I>>(object: I): InventoryInsertItemRequest {
+    const message = createBaseInventoryInsertItemRequest();
+    message.itemCode = object.itemCode ?? "";
+    message.quantity = object.quantity ?? 0;
+    message.upgrade = object.upgrade ?? "";
+    message.isRental = object.isRental ?? false;
+    message.rentalExpiredDate = object.rentalExpiredDate ?? 0;
+    return message;
+  },
+};
+
+function createBaseInventorySellItemRequest(): InventorySellItemRequest {
+  return { slotIndex: 0, quantity: 0 };
+}
+
+export const InventorySellItemRequest: MessageFns<InventorySellItemRequest> = {
+  encode(message: InventorySellItemRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.slotIndex !== 0) {
+      writer.uint32(8).uint32(message.slotIndex);
+    }
+    if (message.quantity !== 0) {
+      writer.uint32(16).uint32(message.quantity);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): InventorySellItemRequest {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const previousRecursionDepth = (reader as any).__tsProtoDecodeDepth ?? 0;
+    if (previousRecursionDepth >= 100) {
+      throw new globalThis.Error("protobuf decode recursion limit exceeded");
+    }
+    (reader as any).__tsProtoDecodeDepth = previousRecursionDepth + 1;
+    try {
+      const end = length === undefined ? reader.len : reader.pos + length;
+      const message = createBaseInventorySellItemRequest();
+      while (reader.pos < end) {
+        const tag = reader.uint32();
+        switch (tag >>> 3) {
+          case 1: {
+            if (tag !== 8) {
+              break;
+            }
+
+            message.slotIndex = reader.uint32();
+            continue;
+          }
+          case 2: {
+            if (tag !== 16) {
+              break;
+            }
+
+            message.quantity = reader.uint32();
+            continue;
+          }
+        }
+        if ((tag & 7) === 4 || tag === 0) {
+          break;
+        }
+        reader.skip(tag & 7);
+      }
+      return message;
+    } finally {
+      (reader as any).__tsProtoDecodeDepth = previousRecursionDepth;
+    }
+  },
+
+  fromJSON(object: any): InventorySellItemRequest {
+    return {
+      slotIndex: isSet(object.slotIndex)
+        ? globalThis.Number(object.slotIndex)
+        : isSet(object.slot_index)
+        ? globalThis.Number(object.slot_index)
+        : 0,
+      quantity: isSet(object.quantity) ? globalThis.Number(object.quantity) : 0,
+    };
+  },
+
+  toJSON(message: InventorySellItemRequest): unknown {
+    const obj: any = {};
+    if (message.slotIndex !== 0) {
+      obj.slotIndex = Math.round(message.slotIndex);
+    }
+    if (message.quantity !== 0) {
+      obj.quantity = Math.round(message.quantity);
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<InventorySellItemRequest>, I>>(base?: I): InventorySellItemRequest {
+    return InventorySellItemRequest.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<InventorySellItemRequest>, I>>(object: I): InventorySellItemRequest {
+    const message = createBaseInventorySellItemRequest();
+    message.slotIndex = object.slotIndex ?? 0;
+    message.quantity = object.quantity ?? 0;
+    return message;
+  },
+};
+
+function createBaseInventoryDropItemRequest(): InventoryDropItemRequest {
+  return { slotIndex: 0, quantity: 0 };
+}
+
+export const InventoryDropItemRequest: MessageFns<InventoryDropItemRequest> = {
+  encode(message: InventoryDropItemRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.slotIndex !== 0) {
+      writer.uint32(8).uint32(message.slotIndex);
+    }
+    if (message.quantity !== 0) {
+      writer.uint32(16).uint32(message.quantity);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): InventoryDropItemRequest {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const previousRecursionDepth = (reader as any).__tsProtoDecodeDepth ?? 0;
+    if (previousRecursionDepth >= 100) {
+      throw new globalThis.Error("protobuf decode recursion limit exceeded");
+    }
+    (reader as any).__tsProtoDecodeDepth = previousRecursionDepth + 1;
+    try {
+      const end = length === undefined ? reader.len : reader.pos + length;
+      const message = createBaseInventoryDropItemRequest();
+      while (reader.pos < end) {
+        const tag = reader.uint32();
+        switch (tag >>> 3) {
+          case 1: {
+            if (tag !== 8) {
+              break;
+            }
+
+            message.slotIndex = reader.uint32();
+            continue;
+          }
+          case 2: {
+            if (tag !== 16) {
+              break;
+            }
+
+            message.quantity = reader.uint32();
+            continue;
+          }
+        }
+        if ((tag & 7) === 4 || tag === 0) {
+          break;
+        }
+        reader.skip(tag & 7);
+      }
+      return message;
+    } finally {
+      (reader as any).__tsProtoDecodeDepth = previousRecursionDepth;
+    }
+  },
+
+  fromJSON(object: any): InventoryDropItemRequest {
+    return {
+      slotIndex: isSet(object.slotIndex)
+        ? globalThis.Number(object.slotIndex)
+        : isSet(object.slot_index)
+        ? globalThis.Number(object.slot_index)
+        : 0,
+      quantity: isSet(object.quantity) ? globalThis.Number(object.quantity) : 0,
+    };
+  },
+
+  toJSON(message: InventoryDropItemRequest): unknown {
+    const obj: any = {};
+    if (message.slotIndex !== 0) {
+      obj.slotIndex = Math.round(message.slotIndex);
+    }
+    if (message.quantity !== 0) {
+      obj.quantity = Math.round(message.quantity);
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<InventoryDropItemRequest>, I>>(base?: I): InventoryDropItemRequest {
+    return InventoryDropItemRequest.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<InventoryDropItemRequest>, I>>(object: I): InventoryDropItemRequest {
+    const message = createBaseInventoryDropItemRequest();
+    message.slotIndex = object.slotIndex ?? 0;
+    message.quantity = object.quantity ?? 0;
+    return message;
+  },
+};
+
+function createBaseInventoryUseItemRequest(): InventoryUseItemRequest {
+  return { slotIndex: 0, quantity: 0 };
+}
+
+export const InventoryUseItemRequest: MessageFns<InventoryUseItemRequest> = {
+  encode(message: InventoryUseItemRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.slotIndex !== 0) {
+      writer.uint32(8).uint32(message.slotIndex);
+    }
+    if (message.quantity !== 0) {
+      writer.uint32(16).uint32(message.quantity);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): InventoryUseItemRequest {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const previousRecursionDepth = (reader as any).__tsProtoDecodeDepth ?? 0;
+    if (previousRecursionDepth >= 100) {
+      throw new globalThis.Error("protobuf decode recursion limit exceeded");
+    }
+    (reader as any).__tsProtoDecodeDepth = previousRecursionDepth + 1;
+    try {
+      const end = length === undefined ? reader.len : reader.pos + length;
+      const message = createBaseInventoryUseItemRequest();
+      while (reader.pos < end) {
+        const tag = reader.uint32();
+        switch (tag >>> 3) {
+          case 1: {
+            if (tag !== 8) {
+              break;
+            }
+
+            message.slotIndex = reader.uint32();
+            continue;
+          }
+          case 2: {
+            if (tag !== 16) {
+              break;
+            }
+
+            message.quantity = reader.uint32();
+            continue;
+          }
+        }
+        if ((tag & 7) === 4 || tag === 0) {
+          break;
+        }
+        reader.skip(tag & 7);
+      }
+      return message;
+    } finally {
+      (reader as any).__tsProtoDecodeDepth = previousRecursionDepth;
+    }
+  },
+
+  fromJSON(object: any): InventoryUseItemRequest {
+    return {
+      slotIndex: isSet(object.slotIndex)
+        ? globalThis.Number(object.slotIndex)
+        : isSet(object.slot_index)
+        ? globalThis.Number(object.slot_index)
+        : 0,
+      quantity: isSet(object.quantity) ? globalThis.Number(object.quantity) : 0,
+    };
+  },
+
+  toJSON(message: InventoryUseItemRequest): unknown {
+    const obj: any = {};
+    if (message.slotIndex !== 0) {
+      obj.slotIndex = Math.round(message.slotIndex);
+    }
+    if (message.quantity !== 0) {
+      obj.quantity = Math.round(message.quantity);
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<InventoryUseItemRequest>, I>>(base?: I): InventoryUseItemRequest {
+    return InventoryUseItemRequest.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<InventoryUseItemRequest>, I>>(object: I): InventoryUseItemRequest {
+    const message = createBaseInventoryUseItemRequest();
+    message.slotIndex = object.slotIndex ?? 0;
+    message.quantity = object.quantity ?? 0;
+    return message;
+  },
+};
+
+function createBaseInventoryRequest(): InventoryRequest {
+  return { requestId: 0, action: undefined };
+}
+
+export const InventoryRequest: MessageFns<InventoryRequest> = {
+  encode(message: InventoryRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.requestId !== 0) {
+      writer.uint32(8).uint32(message.requestId);
+    }
+    switch (message.action?.$case) {
+      case "get":
+        InventoryGetRequest.encode(message.action.get, writer.uint32(18).fork()).join();
+        break;
+      case "setSlot":
+        InventorySetSlotRequest.encode(message.action.setSlot, writer.uint32(26).fork()).join();
+        break;
+      case "addItem":
+        InventoryAddItemRequest.encode(message.action.addItem, writer.uint32(34).fork()).join();
+        break;
+      case "remove":
+        InventoryRemoveRequest.encode(message.action.remove, writer.uint32(42).fork()).join();
+        break;
+      case "move":
+        InventoryMoveRequest.encode(message.action.move, writer.uint32(50).fork()).join();
+        break;
+      case "flush":
+        InventoryFlushRequest.encode(message.action.flush, writer.uint32(58).fork()).join();
+        break;
+      case "insertItem":
+        InventoryInsertItemRequest.encode(message.action.insertItem, writer.uint32(66).fork()).join();
+        break;
+      case "sellItem":
+        InventorySellItemRequest.encode(message.action.sellItem, writer.uint32(74).fork()).join();
+        break;
+      case "dropItem":
+        InventoryDropItemRequest.encode(message.action.dropItem, writer.uint32(82).fork()).join();
+        break;
+      case "useItem":
+        InventoryUseItemRequest.encode(message.action.useItem, writer.uint32(90).fork()).join();
+        break;
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): InventoryRequest {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const previousRecursionDepth = (reader as any).__tsProtoDecodeDepth ?? 0;
+    if (previousRecursionDepth >= 100) {
+      throw new globalThis.Error("protobuf decode recursion limit exceeded");
+    }
+    (reader as any).__tsProtoDecodeDepth = previousRecursionDepth + 1;
+    try {
+      const end = length === undefined ? reader.len : reader.pos + length;
+      const message = createBaseInventoryRequest();
+      while (reader.pos < end) {
+        const tag = reader.uint32();
+        switch (tag >>> 3) {
+          case 1: {
+            if (tag !== 8) {
+              break;
+            }
+
+            message.requestId = reader.uint32();
+            continue;
+          }
+          case 2: {
+            if (tag !== 18) {
+              break;
+            }
+
+            message.action = { $case: "get", get: InventoryGetRequest.decode(reader, reader.uint32()) };
+            continue;
+          }
+          case 3: {
+            if (tag !== 26) {
+              break;
+            }
+
+            message.action = { $case: "setSlot", setSlot: InventorySetSlotRequest.decode(reader, reader.uint32()) };
+            continue;
+          }
+          case 4: {
+            if (tag !== 34) {
+              break;
+            }
+
+            message.action = { $case: "addItem", addItem: InventoryAddItemRequest.decode(reader, reader.uint32()) };
+            continue;
+          }
+          case 5: {
+            if (tag !== 42) {
+              break;
+            }
+
+            message.action = { $case: "remove", remove: InventoryRemoveRequest.decode(reader, reader.uint32()) };
+            continue;
+          }
+          case 6: {
+            if (tag !== 50) {
+              break;
+            }
+
+            message.action = { $case: "move", move: InventoryMoveRequest.decode(reader, reader.uint32()) };
+            continue;
+          }
+          case 7: {
+            if (tag !== 58) {
+              break;
+            }
+
+            message.action = { $case: "flush", flush: InventoryFlushRequest.decode(reader, reader.uint32()) };
+            continue;
+          }
+          case 8: {
+            if (tag !== 66) {
+              break;
+            }
+
+            message.action = {
+              $case: "insertItem",
+              insertItem: InventoryInsertItemRequest.decode(reader, reader.uint32()),
+            };
+            continue;
+          }
+          case 9: {
+            if (tag !== 74) {
+              break;
+            }
+
+            message.action = { $case: "sellItem", sellItem: InventorySellItemRequest.decode(reader, reader.uint32()) };
+            continue;
+          }
+          case 10: {
+            if (tag !== 82) {
+              break;
+            }
+
+            message.action = { $case: "dropItem", dropItem: InventoryDropItemRequest.decode(reader, reader.uint32()) };
+            continue;
+          }
+          case 11: {
+            if (tag !== 90) {
+              break;
+            }
+
+            message.action = { $case: "useItem", useItem: InventoryUseItemRequest.decode(reader, reader.uint32()) };
+            continue;
+          }
+        }
+        if ((tag & 7) === 4 || tag === 0) {
+          break;
+        }
+        reader.skip(tag & 7);
+      }
+      return message;
+    } finally {
+      (reader as any).__tsProtoDecodeDepth = previousRecursionDepth;
+    }
+  },
+
+  fromJSON(object: any): InventoryRequest {
+    return {
+      requestId: isSet(object.requestId)
+        ? globalThis.Number(object.requestId)
+        : isSet(object.request_id)
+        ? globalThis.Number(object.request_id)
+        : 0,
+      action: isSet(object.get)
+        ? { $case: "get", get: InventoryGetRequest.fromJSON(object.get) }
+        : isSet(object.setSlot)
+        ? { $case: "setSlot", setSlot: InventorySetSlotRequest.fromJSON(object.setSlot) }
+        : isSet(object.set_slot)
+        ? { $case: "setSlot", setSlot: InventorySetSlotRequest.fromJSON(object.set_slot) }
+        : isSet(object.addItem)
+        ? { $case: "addItem", addItem: InventoryAddItemRequest.fromJSON(object.addItem) }
+        : isSet(object.add_item)
+        ? { $case: "addItem", addItem: InventoryAddItemRequest.fromJSON(object.add_item) }
+        : isSet(object.remove)
+        ? { $case: "remove", remove: InventoryRemoveRequest.fromJSON(object.remove) }
+        : isSet(object.move)
+        ? { $case: "move", move: InventoryMoveRequest.fromJSON(object.move) }
+        : isSet(object.flush)
+        ? { $case: "flush", flush: InventoryFlushRequest.fromJSON(object.flush) }
+        : isSet(object.insertItem)
+        ? { $case: "insertItem", insertItem: InventoryInsertItemRequest.fromJSON(object.insertItem) }
+        : isSet(object.insert_item)
+        ? { $case: "insertItem", insertItem: InventoryInsertItemRequest.fromJSON(object.insert_item) }
+        : isSet(object.sellItem)
+        ? { $case: "sellItem", sellItem: InventorySellItemRequest.fromJSON(object.sellItem) }
+        : isSet(object.sell_item)
+        ? { $case: "sellItem", sellItem: InventorySellItemRequest.fromJSON(object.sell_item) }
+        : isSet(object.dropItem)
+        ? { $case: "dropItem", dropItem: InventoryDropItemRequest.fromJSON(object.dropItem) }
+        : isSet(object.drop_item)
+        ? { $case: "dropItem", dropItem: InventoryDropItemRequest.fromJSON(object.drop_item) }
+        : isSet(object.useItem)
+        ? { $case: "useItem", useItem: InventoryUseItemRequest.fromJSON(object.useItem) }
+        : isSet(object.use_item)
+        ? { $case: "useItem", useItem: InventoryUseItemRequest.fromJSON(object.use_item) }
+        : undefined,
+    };
+  },
+
+  toJSON(message: InventoryRequest): unknown {
+    const obj: any = {};
+    if (message.requestId !== 0) {
+      obj.requestId = Math.round(message.requestId);
+    }
+    if (message.action?.$case === "get") {
+      obj.get = InventoryGetRequest.toJSON(message.action.get);
+    } else if (message.action?.$case === "setSlot") {
+      obj.setSlot = InventorySetSlotRequest.toJSON(message.action.setSlot);
+    } else if (message.action?.$case === "addItem") {
+      obj.addItem = InventoryAddItemRequest.toJSON(message.action.addItem);
+    } else if (message.action?.$case === "remove") {
+      obj.remove = InventoryRemoveRequest.toJSON(message.action.remove);
+    } else if (message.action?.$case === "move") {
+      obj.move = InventoryMoveRequest.toJSON(message.action.move);
+    } else if (message.action?.$case === "flush") {
+      obj.flush = InventoryFlushRequest.toJSON(message.action.flush);
+    } else if (message.action?.$case === "insertItem") {
+      obj.insertItem = InventoryInsertItemRequest.toJSON(message.action.insertItem);
+    } else if (message.action?.$case === "sellItem") {
+      obj.sellItem = InventorySellItemRequest.toJSON(message.action.sellItem);
+    } else if (message.action?.$case === "dropItem") {
+      obj.dropItem = InventoryDropItemRequest.toJSON(message.action.dropItem);
+    } else if (message.action?.$case === "useItem") {
+      obj.useItem = InventoryUseItemRequest.toJSON(message.action.useItem);
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<InventoryRequest>, I>>(base?: I): InventoryRequest {
+    return InventoryRequest.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<InventoryRequest>, I>>(object: I): InventoryRequest {
+    const message = createBaseInventoryRequest();
+    message.requestId = object.requestId ?? 0;
+    switch (object.action?.$case) {
+      case "get": {
+        if (object.action?.get !== undefined && object.action?.get !== null) {
+          message.action = { $case: "get", get: InventoryGetRequest.fromPartial(object.action.get) };
+        }
+        break;
+      }
+      case "setSlot": {
+        if (object.action?.setSlot !== undefined && object.action?.setSlot !== null) {
+          message.action = { $case: "setSlot", setSlot: InventorySetSlotRequest.fromPartial(object.action.setSlot) };
+        }
+        break;
+      }
+      case "addItem": {
+        if (object.action?.addItem !== undefined && object.action?.addItem !== null) {
+          message.action = { $case: "addItem", addItem: InventoryAddItemRequest.fromPartial(object.action.addItem) };
+        }
+        break;
+      }
+      case "remove": {
+        if (object.action?.remove !== undefined && object.action?.remove !== null) {
+          message.action = { $case: "remove", remove: InventoryRemoveRequest.fromPartial(object.action.remove) };
+        }
+        break;
+      }
+      case "move": {
+        if (object.action?.move !== undefined && object.action?.move !== null) {
+          message.action = { $case: "move", move: InventoryMoveRequest.fromPartial(object.action.move) };
+        }
+        break;
+      }
+      case "flush": {
+        if (object.action?.flush !== undefined && object.action?.flush !== null) {
+          message.action = { $case: "flush", flush: InventoryFlushRequest.fromPartial(object.action.flush) };
+        }
+        break;
+      }
+      case "insertItem": {
+        if (object.action?.insertItem !== undefined && object.action?.insertItem !== null) {
+          message.action = {
+            $case: "insertItem",
+            insertItem: InventoryInsertItemRequest.fromPartial(object.action.insertItem),
+          };
+        }
+        break;
+      }
+      case "sellItem": {
+        if (object.action?.sellItem !== undefined && object.action?.sellItem !== null) {
+          message.action = {
+            $case: "sellItem",
+            sellItem: InventorySellItemRequest.fromPartial(object.action.sellItem),
+          };
+        }
+        break;
+      }
+      case "dropItem": {
+        if (object.action?.dropItem !== undefined && object.action?.dropItem !== null) {
+          message.action = {
+            $case: "dropItem",
+            dropItem: InventoryDropItemRequest.fromPartial(object.action.dropItem),
+          };
+        }
+        break;
+      }
+      case "useItem": {
+        if (object.action?.useItem !== undefined && object.action?.useItem !== null) {
+          message.action = { $case: "useItem", useItem: InventoryUseItemRequest.fromPartial(object.action.useItem) };
+        }
+        break;
+      }
+    }
+    return message;
+  },
+};
+
 function createBaseClientPacket(): ClientPacket {
   return { payload: undefined };
 }
@@ -538,6 +2437,9 @@ export const ClientPacket: MessageFns<ClientPacket> = {
         break;
       case "ping":
         PingRequest.encode(message.payload.ping, writer.uint32(34).fork()).join();
+        break;
+      case "inventory":
+        InventoryRequest.encode(message.payload.inventory, writer.uint32(42).fork()).join();
         break;
     }
     return writer;
@@ -588,6 +2490,14 @@ export const ClientPacket: MessageFns<ClientPacket> = {
             message.payload = { $case: "ping", ping: PingRequest.decode(reader, reader.uint32()) };
             continue;
           }
+          case 5: {
+            if (tag !== 42) {
+              break;
+            }
+
+            message.payload = { $case: "inventory", inventory: InventoryRequest.decode(reader, reader.uint32()) };
+            continue;
+          }
         }
         if ((tag & 7) === 4 || tag === 0) {
           break;
@@ -612,6 +2522,8 @@ export const ClientPacket: MessageFns<ClientPacket> = {
         ? { $case: "whisper", whisper: WhisperRequest.fromJSON(object.whisper) }
         : isSet(object.ping)
         ? { $case: "ping", ping: PingRequest.fromJSON(object.ping) }
+        : isSet(object.inventory)
+        ? { $case: "inventory", inventory: InventoryRequest.fromJSON(object.inventory) }
         : undefined,
     };
   },
@@ -626,6 +2538,8 @@ export const ClientPacket: MessageFns<ClientPacket> = {
       obj.whisper = WhisperRequest.toJSON(message.payload.whisper);
     } else if (message.payload?.$case === "ping") {
       obj.ping = PingRequest.toJSON(message.payload.ping);
+    } else if (message.payload?.$case === "inventory") {
+      obj.inventory = InventoryRequest.toJSON(message.payload.inventory);
     }
     return obj;
   },
@@ -660,13 +2574,29 @@ export const ClientPacket: MessageFns<ClientPacket> = {
         }
         break;
       }
+      case "inventory": {
+        if (object.payload?.inventory !== undefined && object.payload?.inventory !== null) {
+          message.payload = { $case: "inventory", inventory: InventoryRequest.fromPartial(object.payload.inventory) };
+        }
+        break;
+      }
     }
     return message;
   },
 };
 
 function createBaseEntitySnapshot(): EntitySnapshot {
-  return { entityId: 0, x: 0, y: 0, z: 0, rotation: 0, state: 0, race: 0, characterId: "" };
+  return {
+    entityId: 0,
+    x: 0,
+    y: 0,
+    z: 0,
+    rotation: 0,
+    state: 0,
+    race: 0,
+    characterId: "",
+    visibleEquipment: undefined,
+  };
 }
 
 export const EntitySnapshot: MessageFns<EntitySnapshot> = {
@@ -694,6 +2624,9 @@ export const EntitySnapshot: MessageFns<EntitySnapshot> = {
     }
     if (message.characterId !== "") {
       writer.uint32(66).string(message.characterId);
+    }
+    if (message.visibleEquipment !== undefined) {
+      VisibleEquipment.encode(message.visibleEquipment, writer.uint32(74).fork()).join();
     }
     return writer;
   },
@@ -775,6 +2708,14 @@ export const EntitySnapshot: MessageFns<EntitySnapshot> = {
             message.characterId = reader.string();
             continue;
           }
+          case 9: {
+            if (tag !== 74) {
+              break;
+            }
+
+            message.visibleEquipment = VisibleEquipment.decode(reader, reader.uint32());
+            continue;
+          }
         }
         if ((tag & 7) === 4 || tag === 0) {
           break;
@@ -805,6 +2746,11 @@ export const EntitySnapshot: MessageFns<EntitySnapshot> = {
         : isSet(object.character_id)
         ? globalThis.String(object.character_id)
         : "",
+      visibleEquipment: isSet(object.visibleEquipment)
+        ? VisibleEquipment.fromJSON(object.visibleEquipment)
+        : isSet(object.visible_equipment)
+        ? VisibleEquipment.fromJSON(object.visible_equipment)
+        : undefined,
     };
   },
 
@@ -834,6 +2780,9 @@ export const EntitySnapshot: MessageFns<EntitySnapshot> = {
     if (message.characterId !== "") {
       obj.characterId = message.characterId;
     }
+    if (message.visibleEquipment !== undefined) {
+      obj.visibleEquipment = VisibleEquipment.toJSON(message.visibleEquipment);
+    }
     return obj;
   },
 
@@ -850,6 +2799,304 @@ export const EntitySnapshot: MessageFns<EntitySnapshot> = {
     message.state = object.state ?? 0;
     message.race = object.race ?? 0;
     message.characterId = object.characterId ?? "";
+    message.visibleEquipment = (object.visibleEquipment !== undefined && object.visibleEquipment !== null)
+      ? VisibleEquipment.fromPartial(object.visibleEquipment)
+      : undefined;
+    return message;
+  },
+};
+
+function createBaseEquipmentVisual(): EquipmentVisual {
+  return { itemCode: "", upgrade: "" };
+}
+
+export const EquipmentVisual: MessageFns<EquipmentVisual> = {
+  encode(message: EquipmentVisual, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.itemCode !== "") {
+      writer.uint32(10).string(message.itemCode);
+    }
+    if (message.upgrade !== "") {
+      writer.uint32(18).string(message.upgrade);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): EquipmentVisual {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const previousRecursionDepth = (reader as any).__tsProtoDecodeDepth ?? 0;
+    if (previousRecursionDepth >= 100) {
+      throw new globalThis.Error("protobuf decode recursion limit exceeded");
+    }
+    (reader as any).__tsProtoDecodeDepth = previousRecursionDepth + 1;
+    try {
+      const end = length === undefined ? reader.len : reader.pos + length;
+      const message = createBaseEquipmentVisual();
+      while (reader.pos < end) {
+        const tag = reader.uint32();
+        switch (tag >>> 3) {
+          case 1: {
+            if (tag !== 10) {
+              break;
+            }
+
+            message.itemCode = reader.string();
+            continue;
+          }
+          case 2: {
+            if (tag !== 18) {
+              break;
+            }
+
+            message.upgrade = reader.string();
+            continue;
+          }
+        }
+        if ((tag & 7) === 4 || tag === 0) {
+          break;
+        }
+        reader.skip(tag & 7);
+      }
+      return message;
+    } finally {
+      (reader as any).__tsProtoDecodeDepth = previousRecursionDepth;
+    }
+  },
+
+  fromJSON(object: any): EquipmentVisual {
+    return {
+      itemCode: isSet(object.itemCode)
+        ? globalThis.String(object.itemCode)
+        : isSet(object.item_code)
+        ? globalThis.String(object.item_code)
+        : "",
+      upgrade: isSet(object.upgrade) ? globalThis.String(object.upgrade) : "",
+    };
+  },
+
+  toJSON(message: EquipmentVisual): unknown {
+    const obj: any = {};
+    if (message.itemCode !== "") {
+      obj.itemCode = message.itemCode;
+    }
+    if (message.upgrade !== "") {
+      obj.upgrade = message.upgrade;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<EquipmentVisual>, I>>(base?: I): EquipmentVisual {
+    return EquipmentVisual.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<EquipmentVisual>, I>>(object: I): EquipmentVisual {
+    const message = createBaseEquipmentVisual();
+    message.itemCode = object.itemCode ?? "";
+    message.upgrade = object.upgrade ?? "";
+    return message;
+  },
+};
+
+function createBaseVisibleEquipment(): VisibleEquipment {
+  return {
+    upper: undefined,
+    lower: undefined,
+    gauntlet: undefined,
+    shoe: undefined,
+    helmet: undefined,
+    weapon: undefined,
+    shield: undefined,
+    cloak: undefined,
+  };
+}
+
+export const VisibleEquipment: MessageFns<VisibleEquipment> = {
+  encode(message: VisibleEquipment, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.upper !== undefined) {
+      EquipmentVisual.encode(message.upper, writer.uint32(10).fork()).join();
+    }
+    if (message.lower !== undefined) {
+      EquipmentVisual.encode(message.lower, writer.uint32(18).fork()).join();
+    }
+    if (message.gauntlet !== undefined) {
+      EquipmentVisual.encode(message.gauntlet, writer.uint32(26).fork()).join();
+    }
+    if (message.shoe !== undefined) {
+      EquipmentVisual.encode(message.shoe, writer.uint32(34).fork()).join();
+    }
+    if (message.helmet !== undefined) {
+      EquipmentVisual.encode(message.helmet, writer.uint32(42).fork()).join();
+    }
+    if (message.weapon !== undefined) {
+      EquipmentVisual.encode(message.weapon, writer.uint32(50).fork()).join();
+    }
+    if (message.shield !== undefined) {
+      EquipmentVisual.encode(message.shield, writer.uint32(58).fork()).join();
+    }
+    if (message.cloak !== undefined) {
+      EquipmentVisual.encode(message.cloak, writer.uint32(66).fork()).join();
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): VisibleEquipment {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const previousRecursionDepth = (reader as any).__tsProtoDecodeDepth ?? 0;
+    if (previousRecursionDepth >= 100) {
+      throw new globalThis.Error("protobuf decode recursion limit exceeded");
+    }
+    (reader as any).__tsProtoDecodeDepth = previousRecursionDepth + 1;
+    try {
+      const end = length === undefined ? reader.len : reader.pos + length;
+      const message = createBaseVisibleEquipment();
+      while (reader.pos < end) {
+        const tag = reader.uint32();
+        switch (tag >>> 3) {
+          case 1: {
+            if (tag !== 10) {
+              break;
+            }
+
+            message.upper = EquipmentVisual.decode(reader, reader.uint32());
+            continue;
+          }
+          case 2: {
+            if (tag !== 18) {
+              break;
+            }
+
+            message.lower = EquipmentVisual.decode(reader, reader.uint32());
+            continue;
+          }
+          case 3: {
+            if (tag !== 26) {
+              break;
+            }
+
+            message.gauntlet = EquipmentVisual.decode(reader, reader.uint32());
+            continue;
+          }
+          case 4: {
+            if (tag !== 34) {
+              break;
+            }
+
+            message.shoe = EquipmentVisual.decode(reader, reader.uint32());
+            continue;
+          }
+          case 5: {
+            if (tag !== 42) {
+              break;
+            }
+
+            message.helmet = EquipmentVisual.decode(reader, reader.uint32());
+            continue;
+          }
+          case 6: {
+            if (tag !== 50) {
+              break;
+            }
+
+            message.weapon = EquipmentVisual.decode(reader, reader.uint32());
+            continue;
+          }
+          case 7: {
+            if (tag !== 58) {
+              break;
+            }
+
+            message.shield = EquipmentVisual.decode(reader, reader.uint32());
+            continue;
+          }
+          case 8: {
+            if (tag !== 66) {
+              break;
+            }
+
+            message.cloak = EquipmentVisual.decode(reader, reader.uint32());
+            continue;
+          }
+        }
+        if ((tag & 7) === 4 || tag === 0) {
+          break;
+        }
+        reader.skip(tag & 7);
+      }
+      return message;
+    } finally {
+      (reader as any).__tsProtoDecodeDepth = previousRecursionDepth;
+    }
+  },
+
+  fromJSON(object: any): VisibleEquipment {
+    return {
+      upper: isSet(object.upper) ? EquipmentVisual.fromJSON(object.upper) : undefined,
+      lower: isSet(object.lower) ? EquipmentVisual.fromJSON(object.lower) : undefined,
+      gauntlet: isSet(object.gauntlet) ? EquipmentVisual.fromJSON(object.gauntlet) : undefined,
+      shoe: isSet(object.shoe) ? EquipmentVisual.fromJSON(object.shoe) : undefined,
+      helmet: isSet(object.helmet) ? EquipmentVisual.fromJSON(object.helmet) : undefined,
+      weapon: isSet(object.weapon) ? EquipmentVisual.fromJSON(object.weapon) : undefined,
+      shield: isSet(object.shield) ? EquipmentVisual.fromJSON(object.shield) : undefined,
+      cloak: isSet(object.cloak) ? EquipmentVisual.fromJSON(object.cloak) : undefined,
+    };
+  },
+
+  toJSON(message: VisibleEquipment): unknown {
+    const obj: any = {};
+    if (message.upper !== undefined) {
+      obj.upper = EquipmentVisual.toJSON(message.upper);
+    }
+    if (message.lower !== undefined) {
+      obj.lower = EquipmentVisual.toJSON(message.lower);
+    }
+    if (message.gauntlet !== undefined) {
+      obj.gauntlet = EquipmentVisual.toJSON(message.gauntlet);
+    }
+    if (message.shoe !== undefined) {
+      obj.shoe = EquipmentVisual.toJSON(message.shoe);
+    }
+    if (message.helmet !== undefined) {
+      obj.helmet = EquipmentVisual.toJSON(message.helmet);
+    }
+    if (message.weapon !== undefined) {
+      obj.weapon = EquipmentVisual.toJSON(message.weapon);
+    }
+    if (message.shield !== undefined) {
+      obj.shield = EquipmentVisual.toJSON(message.shield);
+    }
+    if (message.cloak !== undefined) {
+      obj.cloak = EquipmentVisual.toJSON(message.cloak);
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<VisibleEquipment>, I>>(base?: I): VisibleEquipment {
+    return VisibleEquipment.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<VisibleEquipment>, I>>(object: I): VisibleEquipment {
+    const message = createBaseVisibleEquipment();
+    message.upper = (object.upper !== undefined && object.upper !== null)
+      ? EquipmentVisual.fromPartial(object.upper)
+      : undefined;
+    message.lower = (object.lower !== undefined && object.lower !== null)
+      ? EquipmentVisual.fromPartial(object.lower)
+      : undefined;
+    message.gauntlet = (object.gauntlet !== undefined && object.gauntlet !== null)
+      ? EquipmentVisual.fromPartial(object.gauntlet)
+      : undefined;
+    message.shoe = (object.shoe !== undefined && object.shoe !== null)
+      ? EquipmentVisual.fromPartial(object.shoe)
+      : undefined;
+    message.helmet = (object.helmet !== undefined && object.helmet !== null)
+      ? EquipmentVisual.fromPartial(object.helmet)
+      : undefined;
+    message.weapon = (object.weapon !== undefined && object.weapon !== null)
+      ? EquipmentVisual.fromPartial(object.weapon)
+      : undefined;
+    message.shield = (object.shield !== undefined && object.shield !== null)
+      ? EquipmentVisual.fromPartial(object.shield)
+      : undefined;
+    message.cloak = (object.cloak !== undefined && object.cloak !== null)
+      ? EquipmentVisual.fromPartial(object.cloak)
+      : undefined;
     return message;
   },
 };
@@ -1262,8 +3509,103 @@ export const EntityExit: MessageFns<EntityExit> = {
   },
 };
 
+function createBaseEntityAppearanceUpdate(): EntityAppearanceUpdate {
+  return { entityId: 0, visibleEquipment: undefined };
+}
+
+export const EntityAppearanceUpdate: MessageFns<EntityAppearanceUpdate> = {
+  encode(message: EntityAppearanceUpdate, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.entityId !== 0) {
+      writer.uint32(8).uint32(message.entityId);
+    }
+    if (message.visibleEquipment !== undefined) {
+      VisibleEquipment.encode(message.visibleEquipment, writer.uint32(18).fork()).join();
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): EntityAppearanceUpdate {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const previousRecursionDepth = (reader as any).__tsProtoDecodeDepth ?? 0;
+    if (previousRecursionDepth >= 100) {
+      throw new globalThis.Error("protobuf decode recursion limit exceeded");
+    }
+    (reader as any).__tsProtoDecodeDepth = previousRecursionDepth + 1;
+    try {
+      const end = length === undefined ? reader.len : reader.pos + length;
+      const message = createBaseEntityAppearanceUpdate();
+      while (reader.pos < end) {
+        const tag = reader.uint32();
+        switch (tag >>> 3) {
+          case 1: {
+            if (tag !== 8) {
+              break;
+            }
+
+            message.entityId = reader.uint32();
+            continue;
+          }
+          case 2: {
+            if (tag !== 18) {
+              break;
+            }
+
+            message.visibleEquipment = VisibleEquipment.decode(reader, reader.uint32());
+            continue;
+          }
+        }
+        if ((tag & 7) === 4 || tag === 0) {
+          break;
+        }
+        reader.skip(tag & 7);
+      }
+      return message;
+    } finally {
+      (reader as any).__tsProtoDecodeDepth = previousRecursionDepth;
+    }
+  },
+
+  fromJSON(object: any): EntityAppearanceUpdate {
+    return {
+      entityId: isSet(object.entityId)
+        ? globalThis.Number(object.entityId)
+        : isSet(object.entity_id)
+        ? globalThis.Number(object.entity_id)
+        : 0,
+      visibleEquipment: isSet(object.visibleEquipment)
+        ? VisibleEquipment.fromJSON(object.visibleEquipment)
+        : isSet(object.visible_equipment)
+        ? VisibleEquipment.fromJSON(object.visible_equipment)
+        : undefined,
+    };
+  },
+
+  toJSON(message: EntityAppearanceUpdate): unknown {
+    const obj: any = {};
+    if (message.entityId !== 0) {
+      obj.entityId = Math.round(message.entityId);
+    }
+    if (message.visibleEquipment !== undefined) {
+      obj.visibleEquipment = VisibleEquipment.toJSON(message.visibleEquipment);
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<EntityAppearanceUpdate>, I>>(base?: I): EntityAppearanceUpdate {
+    return EntityAppearanceUpdate.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<EntityAppearanceUpdate>, I>>(object: I): EntityAppearanceUpdate {
+    const message = createBaseEntityAppearanceUpdate();
+    message.entityId = object.entityId ?? 0;
+    message.visibleEquipment = (object.visibleEquipment !== undefined && object.visibleEquipment !== null)
+      ? VisibleEquipment.fromPartial(object.visibleEquipment)
+      : undefined;
+    return message;
+  },
+};
+
 function createBaseWorldDelta(): WorldDelta {
-  return { serverTick: 0, enters: [], updates: [], exits: [] };
+  return { serverTick: 0, enters: [], updates: [], exits: [], appearanceUpdates: [] };
 }
 
 export const WorldDelta: MessageFns<WorldDelta> = {
@@ -1279,6 +3621,9 @@ export const WorldDelta: MessageFns<WorldDelta> = {
     }
     for (const v of message.exits) {
       EntityExit.encode(v!, writer.uint32(34).fork()).join();
+    }
+    for (const v of message.appearanceUpdates) {
+      EntityAppearanceUpdate.encode(v!, writer.uint32(42).fork()).join();
     }
     return writer;
   },
@@ -1328,6 +3673,14 @@ export const WorldDelta: MessageFns<WorldDelta> = {
             message.exits.push(EntityExit.decode(reader, reader.uint32()));
             continue;
           }
+          case 5: {
+            if (tag !== 42) {
+              break;
+            }
+
+            message.appearanceUpdates.push(EntityAppearanceUpdate.decode(reader, reader.uint32()));
+            continue;
+          }
         }
         if ((tag & 7) === 4 || tag === 0) {
           break;
@@ -1352,6 +3705,11 @@ export const WorldDelta: MessageFns<WorldDelta> = {
         ? object.updates.map((e: any) => EntityUpdate.fromJSON(e))
         : [],
       exits: globalThis.Array.isArray(object?.exits) ? object.exits.map((e: any) => EntityExit.fromJSON(e)) : [],
+      appearanceUpdates: globalThis.Array.isArray(object?.appearanceUpdates)
+        ? object.appearanceUpdates.map((e: any) => EntityAppearanceUpdate.fromJSON(e))
+        : globalThis.Array.isArray(object?.appearance_updates)
+        ? object.appearance_updates.map((e: any) => EntityAppearanceUpdate.fromJSON(e))
+        : [],
     };
   },
 
@@ -1369,6 +3727,9 @@ export const WorldDelta: MessageFns<WorldDelta> = {
     if (message.exits?.length) {
       obj.exits = message.exits.map((e) => EntityExit.toJSON(e));
     }
+    if (message.appearanceUpdates?.length) {
+      obj.appearanceUpdates = message.appearanceUpdates.map((e) => EntityAppearanceUpdate.toJSON(e));
+    }
     return obj;
   },
 
@@ -1381,12 +3742,13 @@ export const WorldDelta: MessageFns<WorldDelta> = {
     message.enters = object.enters?.map((e) => EntityEnter.fromPartial(e)) || [];
     message.updates = object.updates?.map((e) => EntityUpdate.fromPartial(e)) || [];
     message.exits = object.exits?.map((e) => EntityExit.fromPartial(e)) || [];
+    message.appearanceUpdates = object.appearanceUpdates?.map((e) => EntityAppearanceUpdate.fromPartial(e)) || [];
     return message;
   },
 };
 
 function createBaseChatEvent(): ChatEvent {
-  return { playerId: 0, playerName: "", message: "" };
+  return { playerId: 0, playerName: "", message: "", chatType: 0 };
 }
 
 export const ChatEvent: MessageFns<ChatEvent> = {
@@ -1399,6 +3761,9 @@ export const ChatEvent: MessageFns<ChatEvent> = {
     }
     if (message.message !== "") {
       writer.uint32(26).string(message.message);
+    }
+    if (message.chatType !== 0) {
+      writer.uint32(32).int32(message.chatType);
     }
     return writer;
   },
@@ -1440,6 +3805,14 @@ export const ChatEvent: MessageFns<ChatEvent> = {
             message.message = reader.string();
             continue;
           }
+          case 4: {
+            if (tag !== 32) {
+              break;
+            }
+
+            message.chatType = reader.int32() as any;
+            continue;
+          }
         }
         if ((tag & 7) === 4 || tag === 0) {
           break;
@@ -1465,6 +3838,11 @@ export const ChatEvent: MessageFns<ChatEvent> = {
         ? globalThis.String(object.player_name)
         : "",
       message: isSet(object.message) ? globalThis.String(object.message) : "",
+      chatType: isSet(object.chatType)
+        ? chatTypeFromJSON(object.chatType)
+        : isSet(object.chat_type)
+        ? chatTypeFromJSON(object.chat_type)
+        : 0,
     };
   },
 
@@ -1479,6 +3857,9 @@ export const ChatEvent: MessageFns<ChatEvent> = {
     if (message.message !== "") {
       obj.message = message.message;
     }
+    if (message.chatType !== 0) {
+      obj.chatType = chatTypeToJSON(message.chatType);
+    }
     return obj;
   },
 
@@ -1490,12 +3871,13 @@ export const ChatEvent: MessageFns<ChatEvent> = {
     message.playerId = object.playerId ?? 0;
     message.playerName = object.playerName ?? "";
     message.message = object.message ?? "";
+    message.chatType = object.chatType ?? 0;
     return message;
   },
 };
 
 function createBaseWhisperEvent(): WhisperEvent {
-  return { playerId: 0, playerName: "", message: "" };
+  return { playerId: 0, playerName: "", message: "", chatType: 0, targetPlayerId: 0 };
 }
 
 export const WhisperEvent: MessageFns<WhisperEvent> = {
@@ -1508,6 +3890,12 @@ export const WhisperEvent: MessageFns<WhisperEvent> = {
     }
     if (message.message !== "") {
       writer.uint32(26).string(message.message);
+    }
+    if (message.chatType !== 0) {
+      writer.uint32(32).int32(message.chatType);
+    }
+    if (message.targetPlayerId !== 0) {
+      writer.uint32(40).uint32(message.targetPlayerId);
     }
     return writer;
   },
@@ -1549,6 +3937,22 @@ export const WhisperEvent: MessageFns<WhisperEvent> = {
             message.message = reader.string();
             continue;
           }
+          case 4: {
+            if (tag !== 32) {
+              break;
+            }
+
+            message.chatType = reader.int32() as any;
+            continue;
+          }
+          case 5: {
+            if (tag !== 40) {
+              break;
+            }
+
+            message.targetPlayerId = reader.uint32();
+            continue;
+          }
         }
         if ((tag & 7) === 4 || tag === 0) {
           break;
@@ -1574,6 +3978,16 @@ export const WhisperEvent: MessageFns<WhisperEvent> = {
         ? globalThis.String(object.player_name)
         : "",
       message: isSet(object.message) ? globalThis.String(object.message) : "",
+      chatType: isSet(object.chatType)
+        ? chatTypeFromJSON(object.chatType)
+        : isSet(object.chat_type)
+        ? chatTypeFromJSON(object.chat_type)
+        : 0,
+      targetPlayerId: isSet(object.targetPlayerId)
+        ? globalThis.Number(object.targetPlayerId)
+        : isSet(object.target_player_id)
+        ? globalThis.Number(object.target_player_id)
+        : 0,
     };
   },
 
@@ -1588,6 +4002,12 @@ export const WhisperEvent: MessageFns<WhisperEvent> = {
     if (message.message !== "") {
       obj.message = message.message;
     }
+    if (message.chatType !== 0) {
+      obj.chatType = chatTypeToJSON(message.chatType);
+    }
+    if (message.targetPlayerId !== 0) {
+      obj.targetPlayerId = Math.round(message.targetPlayerId);
+    }
     return obj;
   },
 
@@ -1599,6 +4019,8 @@ export const WhisperEvent: MessageFns<WhisperEvent> = {
     message.playerId = object.playerId ?? 0;
     message.playerName = object.playerName ?? "";
     message.message = object.message ?? "";
+    message.chatType = object.chatType ?? 0;
+    message.targetPlayerId = object.targetPlayerId ?? 0;
     return message;
   },
 };
@@ -1816,6 +4238,1478 @@ export const WelcomeEvent: MessageFns<WelcomeEvent> = {
   },
 };
 
+function createBaseEquipmentSlots(): EquipmentSlots {
+  return {
+    upper: undefined,
+    lower: undefined,
+    gauntlet: undefined,
+    shoe: undefined,
+    helmet: undefined,
+    weapon: undefined,
+    shield: undefined,
+    cloak: undefined,
+    ring1: undefined,
+    ring2: undefined,
+    amulet1: undefined,
+    amulet2: undefined,
+    bullet1: undefined,
+    bullet2: undefined,
+  };
+}
+
+export const EquipmentSlots: MessageFns<EquipmentSlots> = {
+  encode(message: EquipmentSlots, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.upper !== undefined) {
+      InventorySlot.encode(message.upper, writer.uint32(10).fork()).join();
+    }
+    if (message.lower !== undefined) {
+      InventorySlot.encode(message.lower, writer.uint32(18).fork()).join();
+    }
+    if (message.gauntlet !== undefined) {
+      InventorySlot.encode(message.gauntlet, writer.uint32(26).fork()).join();
+    }
+    if (message.shoe !== undefined) {
+      InventorySlot.encode(message.shoe, writer.uint32(34).fork()).join();
+    }
+    if (message.helmet !== undefined) {
+      InventorySlot.encode(message.helmet, writer.uint32(42).fork()).join();
+    }
+    if (message.weapon !== undefined) {
+      InventorySlot.encode(message.weapon, writer.uint32(50).fork()).join();
+    }
+    if (message.shield !== undefined) {
+      InventorySlot.encode(message.shield, writer.uint32(58).fork()).join();
+    }
+    if (message.cloak !== undefined) {
+      InventorySlot.encode(message.cloak, writer.uint32(66).fork()).join();
+    }
+    if (message.ring1 !== undefined) {
+      InventorySlot.encode(message.ring1, writer.uint32(74).fork()).join();
+    }
+    if (message.ring2 !== undefined) {
+      InventorySlot.encode(message.ring2, writer.uint32(82).fork()).join();
+    }
+    if (message.amulet1 !== undefined) {
+      InventorySlot.encode(message.amulet1, writer.uint32(90).fork()).join();
+    }
+    if (message.amulet2 !== undefined) {
+      InventorySlot.encode(message.amulet2, writer.uint32(98).fork()).join();
+    }
+    if (message.bullet1 !== undefined) {
+      InventorySlot.encode(message.bullet1, writer.uint32(106).fork()).join();
+    }
+    if (message.bullet2 !== undefined) {
+      InventorySlot.encode(message.bullet2, writer.uint32(114).fork()).join();
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): EquipmentSlots {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const previousRecursionDepth = (reader as any).__tsProtoDecodeDepth ?? 0;
+    if (previousRecursionDepth >= 100) {
+      throw new globalThis.Error("protobuf decode recursion limit exceeded");
+    }
+    (reader as any).__tsProtoDecodeDepth = previousRecursionDepth + 1;
+    try {
+      const end = length === undefined ? reader.len : reader.pos + length;
+      const message = createBaseEquipmentSlots();
+      while (reader.pos < end) {
+        const tag = reader.uint32();
+        switch (tag >>> 3) {
+          case 1: {
+            if (tag !== 10) {
+              break;
+            }
+
+            message.upper = InventorySlot.decode(reader, reader.uint32());
+            continue;
+          }
+          case 2: {
+            if (tag !== 18) {
+              break;
+            }
+
+            message.lower = InventorySlot.decode(reader, reader.uint32());
+            continue;
+          }
+          case 3: {
+            if (tag !== 26) {
+              break;
+            }
+
+            message.gauntlet = InventorySlot.decode(reader, reader.uint32());
+            continue;
+          }
+          case 4: {
+            if (tag !== 34) {
+              break;
+            }
+
+            message.shoe = InventorySlot.decode(reader, reader.uint32());
+            continue;
+          }
+          case 5: {
+            if (tag !== 42) {
+              break;
+            }
+
+            message.helmet = InventorySlot.decode(reader, reader.uint32());
+            continue;
+          }
+          case 6: {
+            if (tag !== 50) {
+              break;
+            }
+
+            message.weapon = InventorySlot.decode(reader, reader.uint32());
+            continue;
+          }
+          case 7: {
+            if (tag !== 58) {
+              break;
+            }
+
+            message.shield = InventorySlot.decode(reader, reader.uint32());
+            continue;
+          }
+          case 8: {
+            if (tag !== 66) {
+              break;
+            }
+
+            message.cloak = InventorySlot.decode(reader, reader.uint32());
+            continue;
+          }
+          case 9: {
+            if (tag !== 74) {
+              break;
+            }
+
+            message.ring1 = InventorySlot.decode(reader, reader.uint32());
+            continue;
+          }
+          case 10: {
+            if (tag !== 82) {
+              break;
+            }
+
+            message.ring2 = InventorySlot.decode(reader, reader.uint32());
+            continue;
+          }
+          case 11: {
+            if (tag !== 90) {
+              break;
+            }
+
+            message.amulet1 = InventorySlot.decode(reader, reader.uint32());
+            continue;
+          }
+          case 12: {
+            if (tag !== 98) {
+              break;
+            }
+
+            message.amulet2 = InventorySlot.decode(reader, reader.uint32());
+            continue;
+          }
+          case 13: {
+            if (tag !== 106) {
+              break;
+            }
+
+            message.bullet1 = InventorySlot.decode(reader, reader.uint32());
+            continue;
+          }
+          case 14: {
+            if (tag !== 114) {
+              break;
+            }
+
+            message.bullet2 = InventorySlot.decode(reader, reader.uint32());
+            continue;
+          }
+        }
+        if ((tag & 7) === 4 || tag === 0) {
+          break;
+        }
+        reader.skip(tag & 7);
+      }
+      return message;
+    } finally {
+      (reader as any).__tsProtoDecodeDepth = previousRecursionDepth;
+    }
+  },
+
+  fromJSON(object: any): EquipmentSlots {
+    return {
+      upper: isSet(object.upper) ? InventorySlot.fromJSON(object.upper) : undefined,
+      lower: isSet(object.lower) ? InventorySlot.fromJSON(object.lower) : undefined,
+      gauntlet: isSet(object.gauntlet) ? InventorySlot.fromJSON(object.gauntlet) : undefined,
+      shoe: isSet(object.shoe) ? InventorySlot.fromJSON(object.shoe) : undefined,
+      helmet: isSet(object.helmet) ? InventorySlot.fromJSON(object.helmet) : undefined,
+      weapon: isSet(object.weapon) ? InventorySlot.fromJSON(object.weapon) : undefined,
+      shield: isSet(object.shield) ? InventorySlot.fromJSON(object.shield) : undefined,
+      cloak: isSet(object.cloak) ? InventorySlot.fromJSON(object.cloak) : undefined,
+      ring1: isSet(object.ring1)
+        ? InventorySlot.fromJSON(object.ring1)
+        : isSet(object.ring_1)
+        ? InventorySlot.fromJSON(object.ring_1)
+        : undefined,
+      ring2: isSet(object.ring2)
+        ? InventorySlot.fromJSON(object.ring2)
+        : isSet(object.ring_2)
+        ? InventorySlot.fromJSON(object.ring_2)
+        : undefined,
+      amulet1: isSet(object.amulet1)
+        ? InventorySlot.fromJSON(object.amulet1)
+        : isSet(object.amulet_1)
+        ? InventorySlot.fromJSON(object.amulet_1)
+        : undefined,
+      amulet2: isSet(object.amulet2)
+        ? InventorySlot.fromJSON(object.amulet2)
+        : isSet(object.amulet_2)
+        ? InventorySlot.fromJSON(object.amulet_2)
+        : undefined,
+      bullet1: isSet(object.bullet1)
+        ? InventorySlot.fromJSON(object.bullet1)
+        : isSet(object.bullet_1)
+        ? InventorySlot.fromJSON(object.bullet_1)
+        : undefined,
+      bullet2: isSet(object.bullet2)
+        ? InventorySlot.fromJSON(object.bullet2)
+        : isSet(object.bullet_2)
+        ? InventorySlot.fromJSON(object.bullet_2)
+        : undefined,
+    };
+  },
+
+  toJSON(message: EquipmentSlots): unknown {
+    const obj: any = {};
+    if (message.upper !== undefined) {
+      obj.upper = InventorySlot.toJSON(message.upper);
+    }
+    if (message.lower !== undefined) {
+      obj.lower = InventorySlot.toJSON(message.lower);
+    }
+    if (message.gauntlet !== undefined) {
+      obj.gauntlet = InventorySlot.toJSON(message.gauntlet);
+    }
+    if (message.shoe !== undefined) {
+      obj.shoe = InventorySlot.toJSON(message.shoe);
+    }
+    if (message.helmet !== undefined) {
+      obj.helmet = InventorySlot.toJSON(message.helmet);
+    }
+    if (message.weapon !== undefined) {
+      obj.weapon = InventorySlot.toJSON(message.weapon);
+    }
+    if (message.shield !== undefined) {
+      obj.shield = InventorySlot.toJSON(message.shield);
+    }
+    if (message.cloak !== undefined) {
+      obj.cloak = InventorySlot.toJSON(message.cloak);
+    }
+    if (message.ring1 !== undefined) {
+      obj.ring1 = InventorySlot.toJSON(message.ring1);
+    }
+    if (message.ring2 !== undefined) {
+      obj.ring2 = InventorySlot.toJSON(message.ring2);
+    }
+    if (message.amulet1 !== undefined) {
+      obj.amulet1 = InventorySlot.toJSON(message.amulet1);
+    }
+    if (message.amulet2 !== undefined) {
+      obj.amulet2 = InventorySlot.toJSON(message.amulet2);
+    }
+    if (message.bullet1 !== undefined) {
+      obj.bullet1 = InventorySlot.toJSON(message.bullet1);
+    }
+    if (message.bullet2 !== undefined) {
+      obj.bullet2 = InventorySlot.toJSON(message.bullet2);
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<EquipmentSlots>, I>>(base?: I): EquipmentSlots {
+    return EquipmentSlots.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<EquipmentSlots>, I>>(object: I): EquipmentSlots {
+    const message = createBaseEquipmentSlots();
+    message.upper = (object.upper !== undefined && object.upper !== null)
+      ? InventorySlot.fromPartial(object.upper)
+      : undefined;
+    message.lower = (object.lower !== undefined && object.lower !== null)
+      ? InventorySlot.fromPartial(object.lower)
+      : undefined;
+    message.gauntlet = (object.gauntlet !== undefined && object.gauntlet !== null)
+      ? InventorySlot.fromPartial(object.gauntlet)
+      : undefined;
+    message.shoe = (object.shoe !== undefined && object.shoe !== null)
+      ? InventorySlot.fromPartial(object.shoe)
+      : undefined;
+    message.helmet = (object.helmet !== undefined && object.helmet !== null)
+      ? InventorySlot.fromPartial(object.helmet)
+      : undefined;
+    message.weapon = (object.weapon !== undefined && object.weapon !== null)
+      ? InventorySlot.fromPartial(object.weapon)
+      : undefined;
+    message.shield = (object.shield !== undefined && object.shield !== null)
+      ? InventorySlot.fromPartial(object.shield)
+      : undefined;
+    message.cloak = (object.cloak !== undefined && object.cloak !== null)
+      ? InventorySlot.fromPartial(object.cloak)
+      : undefined;
+    message.ring1 = (object.ring1 !== undefined && object.ring1 !== null)
+      ? InventorySlot.fromPartial(object.ring1)
+      : undefined;
+    message.ring2 = (object.ring2 !== undefined && object.ring2 !== null)
+      ? InventorySlot.fromPartial(object.ring2)
+      : undefined;
+    message.amulet1 = (object.amulet1 !== undefined && object.amulet1 !== null)
+      ? InventorySlot.fromPartial(object.amulet1)
+      : undefined;
+    message.amulet2 = (object.amulet2 !== undefined && object.amulet2 !== null)
+      ? InventorySlot.fromPartial(object.amulet2)
+      : undefined;
+    message.bullet1 = (object.bullet1 !== undefined && object.bullet1 !== null)
+      ? InventorySlot.fromPartial(object.bullet1)
+      : undefined;
+    message.bullet2 = (object.bullet2 !== undefined && object.bullet2 !== null)
+      ? InventorySlot.fromPartial(object.bullet2)
+      : undefined;
+    return message;
+  },
+};
+
+function createBaseCharacterEffect(): CharacterEffect {
+  return {
+    code: 0,
+    unit: 0,
+    sourceItemCode: "",
+    sourceSlot: "",
+    parameterGroup: "",
+    parameterName: "",
+    parameterCandidates: [],
+    appliedParameters: [],
+  };
+}
+
+export const CharacterEffect: MessageFns<CharacterEffect> = {
+  encode(message: CharacterEffect, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.code !== 0) {
+      writer.uint32(8).uint32(message.code);
+    }
+    if (message.unit !== 0) {
+      writer.uint32(17).double(message.unit);
+    }
+    if (message.sourceItemCode !== "") {
+      writer.uint32(26).string(message.sourceItemCode);
+    }
+    if (message.sourceSlot !== "") {
+      writer.uint32(34).string(message.sourceSlot);
+    }
+    if (message.parameterGroup !== "") {
+      writer.uint32(42).string(message.parameterGroup);
+    }
+    if (message.parameterName !== "") {
+      writer.uint32(50).string(message.parameterName);
+    }
+    for (const v of message.parameterCandidates) {
+      writer.uint32(58).string(v!);
+    }
+    for (const v of message.appliedParameters) {
+      writer.uint32(66).string(v!);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): CharacterEffect {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const previousRecursionDepth = (reader as any).__tsProtoDecodeDepth ?? 0;
+    if (previousRecursionDepth >= 100) {
+      throw new globalThis.Error("protobuf decode recursion limit exceeded");
+    }
+    (reader as any).__tsProtoDecodeDepth = previousRecursionDepth + 1;
+    try {
+      const end = length === undefined ? reader.len : reader.pos + length;
+      const message = createBaseCharacterEffect();
+      while (reader.pos < end) {
+        const tag = reader.uint32();
+        switch (tag >>> 3) {
+          case 1: {
+            if (tag !== 8) {
+              break;
+            }
+
+            message.code = reader.uint32();
+            continue;
+          }
+          case 2: {
+            if (tag !== 17) {
+              break;
+            }
+
+            message.unit = reader.double();
+            continue;
+          }
+          case 3: {
+            if (tag !== 26) {
+              break;
+            }
+
+            message.sourceItemCode = reader.string();
+            continue;
+          }
+          case 4: {
+            if (tag !== 34) {
+              break;
+            }
+
+            message.sourceSlot = reader.string();
+            continue;
+          }
+          case 5: {
+            if (tag !== 42) {
+              break;
+            }
+
+            message.parameterGroup = reader.string();
+            continue;
+          }
+          case 6: {
+            if (tag !== 50) {
+              break;
+            }
+
+            message.parameterName = reader.string();
+            continue;
+          }
+          case 7: {
+            if (tag !== 58) {
+              break;
+            }
+
+            message.parameterCandidates.push(reader.string());
+            continue;
+          }
+          case 8: {
+            if (tag !== 66) {
+              break;
+            }
+
+            message.appliedParameters.push(reader.string());
+            continue;
+          }
+        }
+        if ((tag & 7) === 4 || tag === 0) {
+          break;
+        }
+        reader.skip(tag & 7);
+      }
+      return message;
+    } finally {
+      (reader as any).__tsProtoDecodeDepth = previousRecursionDepth;
+    }
+  },
+
+  fromJSON(object: any): CharacterEffect {
+    return {
+      code: isSet(object.code) ? globalThis.Number(object.code) : 0,
+      unit: isSet(object.unit) ? globalThis.Number(object.unit) : 0,
+      sourceItemCode: isSet(object.sourceItemCode)
+        ? globalThis.String(object.sourceItemCode)
+        : isSet(object.source_item_code)
+        ? globalThis.String(object.source_item_code)
+        : "",
+      sourceSlot: isSet(object.sourceSlot)
+        ? globalThis.String(object.sourceSlot)
+        : isSet(object.source_slot)
+        ? globalThis.String(object.source_slot)
+        : "",
+      parameterGroup: isSet(object.parameterGroup)
+        ? globalThis.String(object.parameterGroup)
+        : isSet(object.parameter_group)
+        ? globalThis.String(object.parameter_group)
+        : "",
+      parameterName: isSet(object.parameterName)
+        ? globalThis.String(object.parameterName)
+        : isSet(object.parameter_name)
+        ? globalThis.String(object.parameter_name)
+        : "",
+      parameterCandidates: globalThis.Array.isArray(object?.parameterCandidates)
+        ? object.parameterCandidates.map((e: any) => globalThis.String(e))
+        : globalThis.Array.isArray(object?.parameter_candidates)
+        ? object.parameter_candidates.map((e: any) => globalThis.String(e))
+        : [],
+      appliedParameters: globalThis.Array.isArray(object?.appliedParameters)
+        ? object.appliedParameters.map((e: any) => globalThis.String(e))
+        : globalThis.Array.isArray(object?.applied_parameters)
+        ? object.applied_parameters.map((e: any) => globalThis.String(e))
+        : [],
+    };
+  },
+
+  toJSON(message: CharacterEffect): unknown {
+    const obj: any = {};
+    if (message.code !== 0) {
+      obj.code = Math.round(message.code);
+    }
+    if (message.unit !== 0) {
+      obj.unit = message.unit;
+    }
+    if (message.sourceItemCode !== "") {
+      obj.sourceItemCode = message.sourceItemCode;
+    }
+    if (message.sourceSlot !== "") {
+      obj.sourceSlot = message.sourceSlot;
+    }
+    if (message.parameterGroup !== "") {
+      obj.parameterGroup = message.parameterGroup;
+    }
+    if (message.parameterName !== "") {
+      obj.parameterName = message.parameterName;
+    }
+    if (message.parameterCandidates?.length) {
+      obj.parameterCandidates = message.parameterCandidates;
+    }
+    if (message.appliedParameters?.length) {
+      obj.appliedParameters = message.appliedParameters;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<CharacterEffect>, I>>(base?: I): CharacterEffect {
+    return CharacterEffect.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<CharacterEffect>, I>>(object: I): CharacterEffect {
+    const message = createBaseCharacterEffect();
+    message.code = object.code ?? 0;
+    message.unit = object.unit ?? 0;
+    message.sourceItemCode = object.sourceItemCode ?? "";
+    message.sourceSlot = object.sourceSlot ?? "";
+    message.parameterGroup = object.parameterGroup ?? "";
+    message.parameterName = object.parameterName ?? "";
+    message.parameterCandidates = object.parameterCandidates?.map((e) => e) || [];
+    message.appliedParameters = object.appliedParameters?.map((e) => e) || [];
+    return message;
+  },
+};
+
+function createBaseCharacterStatus(): CharacterStatus {
+  return {
+    maxHp: 0,
+    maxFp: 0,
+    maxSp: 0,
+    attackMin: 0,
+    attackMax: 0,
+    defense: 0,
+    maxDefense: 0,
+    shieldBlock: 0,
+    attackRange: 0,
+    attackSpeed: 0,
+    moveSpeed: 0,
+    fireTol: 0,
+    waterTol: 0,
+    soilTol: 0,
+    windTol: 0,
+    effects: [],
+  };
+}
+
+export const CharacterStatus: MessageFns<CharacterStatus> = {
+  encode(message: CharacterStatus, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.maxHp !== 0) {
+      writer.uint32(8).int64(message.maxHp);
+    }
+    if (message.maxFp !== 0) {
+      writer.uint32(16).int64(message.maxFp);
+    }
+    if (message.maxSp !== 0) {
+      writer.uint32(24).int64(message.maxSp);
+    }
+    if (message.attackMin !== 0) {
+      writer.uint32(33).double(message.attackMin);
+    }
+    if (message.attackMax !== 0) {
+      writer.uint32(41).double(message.attackMax);
+    }
+    if (message.defense !== 0) {
+      writer.uint32(49).double(message.defense);
+    }
+    if (message.maxDefense !== 0) {
+      writer.uint32(57).double(message.maxDefense);
+    }
+    if (message.shieldBlock !== 0) {
+      writer.uint32(64).int64(message.shieldBlock);
+    }
+    if (message.attackRange !== 0) {
+      writer.uint32(73).double(message.attackRange);
+    }
+    if (message.attackSpeed !== 0) {
+      writer.uint32(81).double(message.attackSpeed);
+    }
+    if (message.moveSpeed !== 0) {
+      writer.uint32(89).double(message.moveSpeed);
+    }
+    if (message.fireTol !== 0) {
+      writer.uint32(97).double(message.fireTol);
+    }
+    if (message.waterTol !== 0) {
+      writer.uint32(105).double(message.waterTol);
+    }
+    if (message.soilTol !== 0) {
+      writer.uint32(113).double(message.soilTol);
+    }
+    if (message.windTol !== 0) {
+      writer.uint32(121).double(message.windTol);
+    }
+    for (const v of message.effects) {
+      CharacterEffect.encode(v!, writer.uint32(130).fork()).join();
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): CharacterStatus {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const previousRecursionDepth = (reader as any).__tsProtoDecodeDepth ?? 0;
+    if (previousRecursionDepth >= 100) {
+      throw new globalThis.Error("protobuf decode recursion limit exceeded");
+    }
+    (reader as any).__tsProtoDecodeDepth = previousRecursionDepth + 1;
+    try {
+      const end = length === undefined ? reader.len : reader.pos + length;
+      const message = createBaseCharacterStatus();
+      while (reader.pos < end) {
+        const tag = reader.uint32();
+        switch (tag >>> 3) {
+          case 1: {
+            if (tag !== 8) {
+              break;
+            }
+
+            message.maxHp = longToNumber(reader.int64());
+            continue;
+          }
+          case 2: {
+            if (tag !== 16) {
+              break;
+            }
+
+            message.maxFp = longToNumber(reader.int64());
+            continue;
+          }
+          case 3: {
+            if (tag !== 24) {
+              break;
+            }
+
+            message.maxSp = longToNumber(reader.int64());
+            continue;
+          }
+          case 4: {
+            if (tag !== 33) {
+              break;
+            }
+
+            message.attackMin = reader.double();
+            continue;
+          }
+          case 5: {
+            if (tag !== 41) {
+              break;
+            }
+
+            message.attackMax = reader.double();
+            continue;
+          }
+          case 6: {
+            if (tag !== 49) {
+              break;
+            }
+
+            message.defense = reader.double();
+            continue;
+          }
+          case 7: {
+            if (tag !== 57) {
+              break;
+            }
+
+            message.maxDefense = reader.double();
+            continue;
+          }
+          case 8: {
+            if (tag !== 64) {
+              break;
+            }
+
+            message.shieldBlock = longToNumber(reader.int64());
+            continue;
+          }
+          case 9: {
+            if (tag !== 73) {
+              break;
+            }
+
+            message.attackRange = reader.double();
+            continue;
+          }
+          case 10: {
+            if (tag !== 81) {
+              break;
+            }
+
+            message.attackSpeed = reader.double();
+            continue;
+          }
+          case 11: {
+            if (tag !== 89) {
+              break;
+            }
+
+            message.moveSpeed = reader.double();
+            continue;
+          }
+          case 12: {
+            if (tag !== 97) {
+              break;
+            }
+
+            message.fireTol = reader.double();
+            continue;
+          }
+          case 13: {
+            if (tag !== 105) {
+              break;
+            }
+
+            message.waterTol = reader.double();
+            continue;
+          }
+          case 14: {
+            if (tag !== 113) {
+              break;
+            }
+
+            message.soilTol = reader.double();
+            continue;
+          }
+          case 15: {
+            if (tag !== 121) {
+              break;
+            }
+
+            message.windTol = reader.double();
+            continue;
+          }
+          case 16: {
+            if (tag !== 130) {
+              break;
+            }
+
+            message.effects.push(CharacterEffect.decode(reader, reader.uint32()));
+            continue;
+          }
+        }
+        if ((tag & 7) === 4 || tag === 0) {
+          break;
+        }
+        reader.skip(tag & 7);
+      }
+      return message;
+    } finally {
+      (reader as any).__tsProtoDecodeDepth = previousRecursionDepth;
+    }
+  },
+
+  fromJSON(object: any): CharacterStatus {
+    return {
+      maxHp: isSet(object.maxHp)
+        ? globalThis.Number(object.maxHp)
+        : isSet(object.max_hp)
+        ? globalThis.Number(object.max_hp)
+        : 0,
+      maxFp: isSet(object.maxFp)
+        ? globalThis.Number(object.maxFp)
+        : isSet(object.max_fp)
+        ? globalThis.Number(object.max_fp)
+        : 0,
+      maxSp: isSet(object.maxSp)
+        ? globalThis.Number(object.maxSp)
+        : isSet(object.max_sp)
+        ? globalThis.Number(object.max_sp)
+        : 0,
+      attackMin: isSet(object.attackMin)
+        ? globalThis.Number(object.attackMin)
+        : isSet(object.attack_min)
+        ? globalThis.Number(object.attack_min)
+        : 0,
+      attackMax: isSet(object.attackMax)
+        ? globalThis.Number(object.attackMax)
+        : isSet(object.attack_max)
+        ? globalThis.Number(object.attack_max)
+        : 0,
+      defense: isSet(object.defense) ? globalThis.Number(object.defense) : 0,
+      maxDefense: isSet(object.maxDefense)
+        ? globalThis.Number(object.maxDefense)
+        : isSet(object.max_defense)
+        ? globalThis.Number(object.max_defense)
+        : 0,
+      shieldBlock: isSet(object.shieldBlock)
+        ? globalThis.Number(object.shieldBlock)
+        : isSet(object.shield_block)
+        ? globalThis.Number(object.shield_block)
+        : 0,
+      attackRange: isSet(object.attackRange)
+        ? globalThis.Number(object.attackRange)
+        : isSet(object.attack_range)
+        ? globalThis.Number(object.attack_range)
+        : 0,
+      attackSpeed: isSet(object.attackSpeed)
+        ? globalThis.Number(object.attackSpeed)
+        : isSet(object.attack_speed)
+        ? globalThis.Number(object.attack_speed)
+        : 0,
+      moveSpeed: isSet(object.moveSpeed)
+        ? globalThis.Number(object.moveSpeed)
+        : isSet(object.move_speed)
+        ? globalThis.Number(object.move_speed)
+        : 0,
+      fireTol: isSet(object.fireTol)
+        ? globalThis.Number(object.fireTol)
+        : isSet(object.fire_tol)
+        ? globalThis.Number(object.fire_tol)
+        : 0,
+      waterTol: isSet(object.waterTol)
+        ? globalThis.Number(object.waterTol)
+        : isSet(object.water_tol)
+        ? globalThis.Number(object.water_tol)
+        : 0,
+      soilTol: isSet(object.soilTol)
+        ? globalThis.Number(object.soilTol)
+        : isSet(object.soil_tol)
+        ? globalThis.Number(object.soil_tol)
+        : 0,
+      windTol: isSet(object.windTol)
+        ? globalThis.Number(object.windTol)
+        : isSet(object.wind_tol)
+        ? globalThis.Number(object.wind_tol)
+        : 0,
+      effects: globalThis.Array.isArray(object?.effects)
+        ? object.effects.map((e: any) => CharacterEffect.fromJSON(e))
+        : [],
+    };
+  },
+
+  toJSON(message: CharacterStatus): unknown {
+    const obj: any = {};
+    if (message.maxHp !== 0) {
+      obj.maxHp = Math.round(message.maxHp);
+    }
+    if (message.maxFp !== 0) {
+      obj.maxFp = Math.round(message.maxFp);
+    }
+    if (message.maxSp !== 0) {
+      obj.maxSp = Math.round(message.maxSp);
+    }
+    if (message.attackMin !== 0) {
+      obj.attackMin = message.attackMin;
+    }
+    if (message.attackMax !== 0) {
+      obj.attackMax = message.attackMax;
+    }
+    if (message.defense !== 0) {
+      obj.defense = message.defense;
+    }
+    if (message.maxDefense !== 0) {
+      obj.maxDefense = message.maxDefense;
+    }
+    if (message.shieldBlock !== 0) {
+      obj.shieldBlock = Math.round(message.shieldBlock);
+    }
+    if (message.attackRange !== 0) {
+      obj.attackRange = message.attackRange;
+    }
+    if (message.attackSpeed !== 0) {
+      obj.attackSpeed = message.attackSpeed;
+    }
+    if (message.moveSpeed !== 0) {
+      obj.moveSpeed = message.moveSpeed;
+    }
+    if (message.fireTol !== 0) {
+      obj.fireTol = message.fireTol;
+    }
+    if (message.waterTol !== 0) {
+      obj.waterTol = message.waterTol;
+    }
+    if (message.soilTol !== 0) {
+      obj.soilTol = message.soilTol;
+    }
+    if (message.windTol !== 0) {
+      obj.windTol = message.windTol;
+    }
+    if (message.effects?.length) {
+      obj.effects = message.effects.map((e) => CharacterEffect.toJSON(e));
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<CharacterStatus>, I>>(base?: I): CharacterStatus {
+    return CharacterStatus.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<CharacterStatus>, I>>(object: I): CharacterStatus {
+    const message = createBaseCharacterStatus();
+    message.maxHp = object.maxHp ?? 0;
+    message.maxFp = object.maxFp ?? 0;
+    message.maxSp = object.maxSp ?? 0;
+    message.attackMin = object.attackMin ?? 0;
+    message.attackMax = object.attackMax ?? 0;
+    message.defense = object.defense ?? 0;
+    message.maxDefense = object.maxDefense ?? 0;
+    message.shieldBlock = object.shieldBlock ?? 0;
+    message.attackRange = object.attackRange ?? 0;
+    message.attackSpeed = object.attackSpeed ?? 0;
+    message.moveSpeed = object.moveSpeed ?? 0;
+    message.fireTol = object.fireTol ?? 0;
+    message.waterTol = object.waterTol ?? 0;
+    message.soilTol = object.soilTol ?? 0;
+    message.windTol = object.windTol ?? 0;
+    message.effects = object.effects?.map((e) => CharacterEffect.fromPartial(e)) || [];
+    return message;
+  },
+};
+
+function createBaseInventorySnapshot(): InventorySnapshot {
+  return { requestId: 0, slots: [] };
+}
+
+export const InventorySnapshot: MessageFns<InventorySnapshot> = {
+  encode(message: InventorySnapshot, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.requestId !== 0) {
+      writer.uint32(8).uint32(message.requestId);
+    }
+    for (const v of message.slots) {
+      InventorySlot.encode(v!, writer.uint32(18).fork()).join();
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): InventorySnapshot {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const previousRecursionDepth = (reader as any).__tsProtoDecodeDepth ?? 0;
+    if (previousRecursionDepth >= 100) {
+      throw new globalThis.Error("protobuf decode recursion limit exceeded");
+    }
+    (reader as any).__tsProtoDecodeDepth = previousRecursionDepth + 1;
+    try {
+      const end = length === undefined ? reader.len : reader.pos + length;
+      const message = createBaseInventorySnapshot();
+      while (reader.pos < end) {
+        const tag = reader.uint32();
+        switch (tag >>> 3) {
+          case 1: {
+            if (tag !== 8) {
+              break;
+            }
+
+            message.requestId = reader.uint32();
+            continue;
+          }
+          case 2: {
+            if (tag !== 18) {
+              break;
+            }
+
+            message.slots.push(InventorySlot.decode(reader, reader.uint32()));
+            continue;
+          }
+        }
+        if ((tag & 7) === 4 || tag === 0) {
+          break;
+        }
+        reader.skip(tag & 7);
+      }
+      return message;
+    } finally {
+      (reader as any).__tsProtoDecodeDepth = previousRecursionDepth;
+    }
+  },
+
+  fromJSON(object: any): InventorySnapshot {
+    return {
+      requestId: isSet(object.requestId)
+        ? globalThis.Number(object.requestId)
+        : isSet(object.request_id)
+        ? globalThis.Number(object.request_id)
+        : 0,
+      slots: globalThis.Array.isArray(object?.slots) ? object.slots.map((e: any) => InventorySlot.fromJSON(e)) : [],
+    };
+  },
+
+  toJSON(message: InventorySnapshot): unknown {
+    const obj: any = {};
+    if (message.requestId !== 0) {
+      obj.requestId = Math.round(message.requestId);
+    }
+    if (message.slots?.length) {
+      obj.slots = message.slots.map((e) => InventorySlot.toJSON(e));
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<InventorySnapshot>, I>>(base?: I): InventorySnapshot {
+    return InventorySnapshot.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<InventorySnapshot>, I>>(object: I): InventorySnapshot {
+    const message = createBaseInventorySnapshot();
+    message.requestId = object.requestId ?? 0;
+    message.slots = object.slots?.map((e) => InventorySlot.fromPartial(e)) || [];
+    return message;
+  },
+};
+
+function createBaseInventoryActionResult(): InventoryActionResult {
+  return {
+    requestId: 0,
+    slots: [],
+    action: 0,
+    itemCode: "",
+    quantity: 0,
+    currencyDelta: 0,
+    equipment: undefined,
+    status: undefined,
+  };
+}
+
+export const InventoryActionResult: MessageFns<InventoryActionResult> = {
+  encode(message: InventoryActionResult, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.requestId !== 0) {
+      writer.uint32(8).uint32(message.requestId);
+    }
+    for (const v of message.slots) {
+      InventorySlot.encode(v!, writer.uint32(18).fork()).join();
+    }
+    if (message.action !== 0) {
+      writer.uint32(24).int32(message.action);
+    }
+    if (message.itemCode !== "") {
+      writer.uint32(34).string(message.itemCode);
+    }
+    if (message.quantity !== 0) {
+      writer.uint32(40).uint32(message.quantity);
+    }
+    if (message.currencyDelta !== 0) {
+      writer.uint32(48).int64(message.currencyDelta);
+    }
+    if (message.equipment !== undefined) {
+      EquipmentSlots.encode(message.equipment, writer.uint32(58).fork()).join();
+    }
+    if (message.status !== undefined) {
+      CharacterStatus.encode(message.status, writer.uint32(66).fork()).join();
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): InventoryActionResult {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const previousRecursionDepth = (reader as any).__tsProtoDecodeDepth ?? 0;
+    if (previousRecursionDepth >= 100) {
+      throw new globalThis.Error("protobuf decode recursion limit exceeded");
+    }
+    (reader as any).__tsProtoDecodeDepth = previousRecursionDepth + 1;
+    try {
+      const end = length === undefined ? reader.len : reader.pos + length;
+      const message = createBaseInventoryActionResult();
+      while (reader.pos < end) {
+        const tag = reader.uint32();
+        switch (tag >>> 3) {
+          case 1: {
+            if (tag !== 8) {
+              break;
+            }
+
+            message.requestId = reader.uint32();
+            continue;
+          }
+          case 2: {
+            if (tag !== 18) {
+              break;
+            }
+
+            message.slots.push(InventorySlot.decode(reader, reader.uint32()));
+            continue;
+          }
+          case 3: {
+            if (tag !== 24) {
+              break;
+            }
+
+            message.action = reader.int32() as any;
+            continue;
+          }
+          case 4: {
+            if (tag !== 34) {
+              break;
+            }
+
+            message.itemCode = reader.string();
+            continue;
+          }
+          case 5: {
+            if (tag !== 40) {
+              break;
+            }
+
+            message.quantity = reader.uint32();
+            continue;
+          }
+          case 6: {
+            if (tag !== 48) {
+              break;
+            }
+
+            message.currencyDelta = longToNumber(reader.int64());
+            continue;
+          }
+          case 7: {
+            if (tag !== 58) {
+              break;
+            }
+
+            message.equipment = EquipmentSlots.decode(reader, reader.uint32());
+            continue;
+          }
+          case 8: {
+            if (tag !== 66) {
+              break;
+            }
+
+            message.status = CharacterStatus.decode(reader, reader.uint32());
+            continue;
+          }
+        }
+        if ((tag & 7) === 4 || tag === 0) {
+          break;
+        }
+        reader.skip(tag & 7);
+      }
+      return message;
+    } finally {
+      (reader as any).__tsProtoDecodeDepth = previousRecursionDepth;
+    }
+  },
+
+  fromJSON(object: any): InventoryActionResult {
+    return {
+      requestId: isSet(object.requestId)
+        ? globalThis.Number(object.requestId)
+        : isSet(object.request_id)
+        ? globalThis.Number(object.request_id)
+        : 0,
+      slots: globalThis.Array.isArray(object?.slots) ? object.slots.map((e: any) => InventorySlot.fromJSON(e)) : [],
+      action: isSet(object.action) ? inventoryActionTypeFromJSON(object.action) : 0,
+      itemCode: isSet(object.itemCode)
+        ? globalThis.String(object.itemCode)
+        : isSet(object.item_code)
+        ? globalThis.String(object.item_code)
+        : "",
+      quantity: isSet(object.quantity) ? globalThis.Number(object.quantity) : 0,
+      currencyDelta: isSet(object.currencyDelta)
+        ? globalThis.Number(object.currencyDelta)
+        : isSet(object.currency_delta)
+        ? globalThis.Number(object.currency_delta)
+        : 0,
+      equipment: isSet(object.equipment) ? EquipmentSlots.fromJSON(object.equipment) : undefined,
+      status: isSet(object.status) ? CharacterStatus.fromJSON(object.status) : undefined,
+    };
+  },
+
+  toJSON(message: InventoryActionResult): unknown {
+    const obj: any = {};
+    if (message.requestId !== 0) {
+      obj.requestId = Math.round(message.requestId);
+    }
+    if (message.slots?.length) {
+      obj.slots = message.slots.map((e) => InventorySlot.toJSON(e));
+    }
+    if (message.action !== 0) {
+      obj.action = inventoryActionTypeToJSON(message.action);
+    }
+    if (message.itemCode !== "") {
+      obj.itemCode = message.itemCode;
+    }
+    if (message.quantity !== 0) {
+      obj.quantity = Math.round(message.quantity);
+    }
+    if (message.currencyDelta !== 0) {
+      obj.currencyDelta = Math.round(message.currencyDelta);
+    }
+    if (message.equipment !== undefined) {
+      obj.equipment = EquipmentSlots.toJSON(message.equipment);
+    }
+    if (message.status !== undefined) {
+      obj.status = CharacterStatus.toJSON(message.status);
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<InventoryActionResult>, I>>(base?: I): InventoryActionResult {
+    return InventoryActionResult.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<InventoryActionResult>, I>>(object: I): InventoryActionResult {
+    const message = createBaseInventoryActionResult();
+    message.requestId = object.requestId ?? 0;
+    message.slots = object.slots?.map((e) => InventorySlot.fromPartial(e)) || [];
+    message.action = object.action ?? 0;
+    message.itemCode = object.itemCode ?? "";
+    message.quantity = object.quantity ?? 0;
+    message.currencyDelta = object.currencyDelta ?? 0;
+    message.equipment = (object.equipment !== undefined && object.equipment !== null)
+      ? EquipmentSlots.fromPartial(object.equipment)
+      : undefined;
+    message.status = (object.status !== undefined && object.status !== null)
+      ? CharacterStatus.fromPartial(object.status)
+      : undefined;
+    return message;
+  },
+};
+
+function createBaseInventoryError(): InventoryError {
+  return { requestId: 0, message: "", code: 0 };
+}
+
+export const InventoryError: MessageFns<InventoryError> = {
+  encode(message: InventoryError, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.requestId !== 0) {
+      writer.uint32(8).uint32(message.requestId);
+    }
+    if (message.message !== "") {
+      writer.uint32(18).string(message.message);
+    }
+    if (message.code !== 0) {
+      writer.uint32(24).uint32(message.code);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): InventoryError {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const previousRecursionDepth = (reader as any).__tsProtoDecodeDepth ?? 0;
+    if (previousRecursionDepth >= 100) {
+      throw new globalThis.Error("protobuf decode recursion limit exceeded");
+    }
+    (reader as any).__tsProtoDecodeDepth = previousRecursionDepth + 1;
+    try {
+      const end = length === undefined ? reader.len : reader.pos + length;
+      const message = createBaseInventoryError();
+      while (reader.pos < end) {
+        const tag = reader.uint32();
+        switch (tag >>> 3) {
+          case 1: {
+            if (tag !== 8) {
+              break;
+            }
+
+            message.requestId = reader.uint32();
+            continue;
+          }
+          case 2: {
+            if (tag !== 18) {
+              break;
+            }
+
+            message.message = reader.string();
+            continue;
+          }
+          case 3: {
+            if (tag !== 24) {
+              break;
+            }
+
+            message.code = reader.uint32();
+            continue;
+          }
+        }
+        if ((tag & 7) === 4 || tag === 0) {
+          break;
+        }
+        reader.skip(tag & 7);
+      }
+      return message;
+    } finally {
+      (reader as any).__tsProtoDecodeDepth = previousRecursionDepth;
+    }
+  },
+
+  fromJSON(object: any): InventoryError {
+    return {
+      requestId: isSet(object.requestId)
+        ? globalThis.Number(object.requestId)
+        : isSet(object.request_id)
+        ? globalThis.Number(object.request_id)
+        : 0,
+      message: isSet(object.message) ? globalThis.String(object.message) : "",
+      code: isSet(object.code) ? globalThis.Number(object.code) : 0,
+    };
+  },
+
+  toJSON(message: InventoryError): unknown {
+    const obj: any = {};
+    if (message.requestId !== 0) {
+      obj.requestId = Math.round(message.requestId);
+    }
+    if (message.message !== "") {
+      obj.message = message.message;
+    }
+    if (message.code !== 0) {
+      obj.code = Math.round(message.code);
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<InventoryError>, I>>(base?: I): InventoryError {
+    return InventoryError.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<InventoryError>, I>>(object: I): InventoryError {
+    const message = createBaseInventoryError();
+    message.requestId = object.requestId ?? 0;
+    message.message = object.message ?? "";
+    message.code = object.code ?? 0;
+    return message;
+  },
+};
+
+function createBaseInventoryResponse(): InventoryResponse {
+  return { result: undefined };
+}
+
+export const InventoryResponse: MessageFns<InventoryResponse> = {
+  encode(message: InventoryResponse, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    switch (message.result?.$case) {
+      case "snapshot":
+        InventorySnapshot.encode(message.result.snapshot, writer.uint32(10).fork()).join();
+        break;
+      case "error":
+        InventoryError.encode(message.result.error, writer.uint32(18).fork()).join();
+        break;
+      case "actionResult":
+        InventoryActionResult.encode(message.result.actionResult, writer.uint32(26).fork()).join();
+        break;
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): InventoryResponse {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const previousRecursionDepth = (reader as any).__tsProtoDecodeDepth ?? 0;
+    if (previousRecursionDepth >= 100) {
+      throw new globalThis.Error("protobuf decode recursion limit exceeded");
+    }
+    (reader as any).__tsProtoDecodeDepth = previousRecursionDepth + 1;
+    try {
+      const end = length === undefined ? reader.len : reader.pos + length;
+      const message = createBaseInventoryResponse();
+      while (reader.pos < end) {
+        const tag = reader.uint32();
+        switch (tag >>> 3) {
+          case 1: {
+            if (tag !== 10) {
+              break;
+            }
+
+            message.result = { $case: "snapshot", snapshot: InventorySnapshot.decode(reader, reader.uint32()) };
+            continue;
+          }
+          case 2: {
+            if (tag !== 18) {
+              break;
+            }
+
+            message.result = { $case: "error", error: InventoryError.decode(reader, reader.uint32()) };
+            continue;
+          }
+          case 3: {
+            if (tag !== 26) {
+              break;
+            }
+
+            message.result = {
+              $case: "actionResult",
+              actionResult: InventoryActionResult.decode(reader, reader.uint32()),
+            };
+            continue;
+          }
+        }
+        if ((tag & 7) === 4 || tag === 0) {
+          break;
+        }
+        reader.skip(tag & 7);
+      }
+      return message;
+    } finally {
+      (reader as any).__tsProtoDecodeDepth = previousRecursionDepth;
+    }
+  },
+
+  fromJSON(object: any): InventoryResponse {
+    return {
+      result: isSet(object.snapshot)
+        ? { $case: "snapshot", snapshot: InventorySnapshot.fromJSON(object.snapshot) }
+        : isSet(object.error)
+        ? { $case: "error", error: InventoryError.fromJSON(object.error) }
+        : isSet(object.actionResult)
+        ? { $case: "actionResult", actionResult: InventoryActionResult.fromJSON(object.actionResult) }
+        : isSet(object.action_result)
+        ? { $case: "actionResult", actionResult: InventoryActionResult.fromJSON(object.action_result) }
+        : undefined,
+    };
+  },
+
+  toJSON(message: InventoryResponse): unknown {
+    const obj: any = {};
+    if (message.result?.$case === "snapshot") {
+      obj.snapshot = InventorySnapshot.toJSON(message.result.snapshot);
+    } else if (message.result?.$case === "error") {
+      obj.error = InventoryError.toJSON(message.result.error);
+    } else if (message.result?.$case === "actionResult") {
+      obj.actionResult = InventoryActionResult.toJSON(message.result.actionResult);
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<InventoryResponse>, I>>(base?: I): InventoryResponse {
+    return InventoryResponse.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<InventoryResponse>, I>>(object: I): InventoryResponse {
+    const message = createBaseInventoryResponse();
+    switch (object.result?.$case) {
+      case "snapshot": {
+        if (object.result?.snapshot !== undefined && object.result?.snapshot !== null) {
+          message.result = { $case: "snapshot", snapshot: InventorySnapshot.fromPartial(object.result.snapshot) };
+        }
+        break;
+      }
+      case "error": {
+        if (object.result?.error !== undefined && object.result?.error !== null) {
+          message.result = { $case: "error", error: InventoryError.fromPartial(object.result.error) };
+        }
+        break;
+      }
+      case "actionResult": {
+        if (object.result?.actionResult !== undefined && object.result?.actionResult !== null) {
+          message.result = {
+            $case: "actionResult",
+            actionResult: InventoryActionResult.fromPartial(object.result.actionResult),
+          };
+        }
+        break;
+      }
+    }
+    return message;
+  },
+};
+
 function createBaseServerPacket(): ServerPacket {
   return { payload: undefined };
 }
@@ -1843,6 +5737,9 @@ export const ServerPacket: MessageFns<ServerPacket> = {
         break;
       case "welcome":
         WelcomeEvent.encode(message.payload.welcome, writer.uint32(58).fork()).join();
+        break;
+      case "inventory":
+        InventoryResponse.encode(message.payload.inventory, writer.uint32(66).fork()).join();
         break;
     }
     return writer;
@@ -1917,6 +5814,14 @@ export const ServerPacket: MessageFns<ServerPacket> = {
             message.payload = { $case: "welcome", welcome: WelcomeEvent.decode(reader, reader.uint32()) };
             continue;
           }
+          case 8: {
+            if (tag !== 66) {
+              break;
+            }
+
+            message.payload = { $case: "inventory", inventory: InventoryResponse.decode(reader, reader.uint32()) };
+            continue;
+          }
         }
         if ((tag & 7) === 4 || tag === 0) {
           break;
@@ -1951,6 +5856,8 @@ export const ServerPacket: MessageFns<ServerPacket> = {
         ? { $case: "pong", pong: PongEvent.fromJSON(object.pong) }
         : isSet(object.welcome)
         ? { $case: "welcome", welcome: WelcomeEvent.fromJSON(object.welcome) }
+        : isSet(object.inventory)
+        ? { $case: "inventory", inventory: InventoryResponse.fromJSON(object.inventory) }
         : undefined,
     };
   },
@@ -1971,6 +5878,8 @@ export const ServerPacket: MessageFns<ServerPacket> = {
       obj.pong = PongEvent.toJSON(message.payload.pong);
     } else if (message.payload?.$case === "welcome") {
       obj.welcome = WelcomeEvent.toJSON(message.payload.welcome);
+    } else if (message.payload?.$case === "inventory") {
+      obj.inventory = InventoryResponse.toJSON(message.payload.inventory);
     }
     return obj;
   },
@@ -2029,6 +5938,12 @@ export const ServerPacket: MessageFns<ServerPacket> = {
         }
         break;
       }
+      case "inventory": {
+        if (object.payload?.inventory !== undefined && object.payload?.inventory !== null) {
+          message.payload = { $case: "inventory", inventory: InventoryResponse.fromPartial(object.payload.inventory) };
+        }
+        break;
+      }
     }
     return message;
   },
@@ -2046,6 +5961,17 @@ export type DeepPartial<T> = T extends Builtin ? T
 type KeysOfUnion<T> = T extends T ? keyof T : never;
 export type Exact<P, I extends P> = P extends Builtin ? P
   : P & { [K in keyof P]: Exact<P[K], I[K]> } & { [K in Exclude<keyof I, KeysOfUnion<P>>]: never };
+
+function longToNumber(int64: { toString(): string }): number {
+  const num = globalThis.Number(int64.toString());
+  if (num > globalThis.Number.MAX_SAFE_INTEGER) {
+    throw new globalThis.Error("Value is larger than Number.MAX_SAFE_INTEGER");
+  }
+  if (num < globalThis.Number.MIN_SAFE_INTEGER) {
+    throw new globalThis.Error("Value is smaller than Number.MIN_SAFE_INTEGER");
+  }
+  return num;
+}
 
 function isSet(value: any): boolean {
   return value !== null && value !== undefined;

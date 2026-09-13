@@ -3,10 +3,12 @@ import type { AnimationAction, AnimationClip, Bone, Camera, Frustum, Group, Scen
 import { ANI_FPS } from '../rf/animation';
 import {
   CLOAK_CDN_BASE,
+  CLOAK_GLB_CDN_BASE,
   LOCOMOTION_DIRECTIONS,
   RaceGender,
   buildMeshPartObjects,
   characterCdnBase,
+  characterGlbCdnBase,
   getWeaponClip,
   loadCloakAnimationRig,
   loadWeaponMeshObjects,
@@ -894,8 +896,15 @@ export class CharacterController {
    */
   private async applyCloakAnimation(stem: string, character: RfCharacter, sourceObjects: Object3D[]): Promise<void> {
     const boneSet = new Set<Object3D>(character.builtSkeleton.bones);
+    // \s+ alone only matches a raw-.msh-sourced object's real space
+    // ("BONE Cloak") - a glb-sourced one (see parseRfGlb/fetchBodyMeshEntry)
+    // has THREE.GLTFLoader's own PropertyBinding.sanitizeNodeName already
+    // applied to every node name (spaces -> underscores, unconditionally,
+    // needed for animation track name compatibility), so it's "BONE_Cloak"
+    // instead - [\s_]+ matches both without weakening the match (still
+    // anchored, still exact aside from that one substitution).
     const target =
-      sourceObjects.find((o) => /^BONE\s+CLOAK$/i.test(o.name)) ?? sourceObjects.find((o) => o.parent && boneSet.has(o.parent));
+      sourceObjects.find((o) => /^BONE[\s_]+CLOAK$/i.test(o.name)) ?? sourceObjects.find((o) => o.parent && boneSet.has(o.parent));
     if (!target) return; // no sub-object is directly parented to a real skeleton bone - nothing to animate from
 
     const rig = await loadCloakAnimationRig(stem, target);
@@ -1408,7 +1417,7 @@ export class CharacterController {
     // Default appearance and real armor items are both in the same per-race
     // CDN folder now (see characterCdnBase's doc comment in character.ts) -
     // no separate "which archive holds this stem" step needed any more.
-    const newObjects = await buildMeshPartObjects(stem, characterCdnBase(raceGender), character.builtSkeleton);
+    const newObjects = await buildMeshPartObjects(stem, characterCdnBase(raceGender), character.builtSkeleton, characterGlbCdnBase(raceGender));
     if (this.character !== character) return 'no-character'; // superseded mid-await
     if (newObjects.length === 0) return 'unavailable';
 
@@ -1628,7 +1637,7 @@ export class CharacterController {
     if (this.character !== character) return 'no-character'; // superseded mid-await
     if (!stem) return 'unavailable';
 
-    const newObjects = await buildMeshPartObjects(stem, CLOAK_CDN_BASE, character.builtSkeleton);
+    const newObjects = await buildMeshPartObjects(stem, CLOAK_CDN_BASE, character.builtSkeleton, CLOAK_GLB_CDN_BASE);
     if (this.character !== character) return 'no-character'; // superseded mid-await
     if (newObjects.length === 0) return 'unavailable';
 
@@ -1700,7 +1709,7 @@ export class CharacterController {
       const stem = `${character.group.name}_DEFAULT_${MODEL_TYPE_TO_PART_TOKEN[ModelType.Helmet]}_${String(desiredVariant).padStart(3, '0')}`;
       // Base appearance and real armor items are both in the same per-race
       // CDN folder - see characterCdnBase's doc comment in character.ts.
-      this.helmetBaseObjects = await buildMeshPartObjects(stem, characterCdnBase(raceGender), character.builtSkeleton);
+      this.helmetBaseObjects = await buildMeshPartObjects(stem, characterCdnBase(raceGender), character.builtSkeleton, characterGlbCdnBase(raceGender));
       if (this.character !== character) return 'no-character'; // superseded mid-await
 
       for (const obj of this.helmetBaseObjects) {
@@ -1727,7 +1736,7 @@ export class CharacterController {
     if (this.character !== character) return 'no-character'; // superseded mid-await
     if (!resolvedStem) return 'unavailable';
 
-    const newObjects = await buildMeshPartObjects(resolvedStem, characterCdnBase(raceGender), character.builtSkeleton);
+    const newObjects = await buildMeshPartObjects(resolvedStem, characterCdnBase(raceGender), character.builtSkeleton, characterGlbCdnBase(raceGender));
     if (this.character !== character) return 'no-character'; // superseded mid-await
     if (newObjects.length === 0) return 'unavailable';
 

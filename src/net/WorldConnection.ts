@@ -1,4 +1,5 @@
 import { ClientPacket, ServerPacket } from './generated/protocol';
+import type { InventoryRequest } from './generated/protocol';
 
 export type ConnectionStatus = 'connecting' | 'open' | 'closed';
 
@@ -26,6 +27,7 @@ export class WorldConnection {
 
   private ws: WebSocket | null = null;
   private nextSequence = 1;
+  private nextInventoryRequestId = 1;
   private pingIntervalId: number | undefined;
 
   connect(url: string): void {
@@ -77,6 +79,35 @@ export class WorldConnection {
 
   sendWhisper(targetPlayerId: number, message: string): void {
     this.send({ payload: { $case: 'whisper', whisper: { targetPlayerId, message } } });
+  }
+
+  /**
+   * `quantity = 0` means the full stack in the slot (see docs/inventory-
+   * action.md's sell_item rules) - `sellSlotItem`/`dropSlotItem`/`useSlotItem`
+   * all default to it for the same reason.
+   */
+  sellSlotItem(slotIndex: number, quantity = 0): void {
+    this.sendInventory({ $case: 'sellItem', sellItem: { slotIndex, quantity } });
+  }
+
+  /** `quantity = 0` means the full stack in the slot. */
+  dropSlotItem(slotIndex: number, quantity = 0): void {
+    this.sendInventory({ $case: 'dropItem', dropItem: { slotIndex, quantity } });
+  }
+
+  /**
+   * `quantity = 0` means use/equip quantity 1 (see docs/inventory-action.md's
+   * use_item rules) - for an equipment item_code, the server equips it
+   * instead of consuming it.
+   */
+  useSlotItem(slotIndex: number, quantity = 0): void {
+    this.sendInventory({ $case: 'useItem', useItem: { slotIndex, quantity } });
+  }
+
+  private sendInventory(action: NonNullable<InventoryRequest['action']>): void {
+    this.send({
+      payload: { $case: 'inventory', inventory: { requestId: this.nextInventoryRequestId++, action } },
+    });
   }
 
   close(): void {
