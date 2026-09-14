@@ -1,8 +1,8 @@
-import { Frustum, Matrix4, Raycaster, Sphere, Vector3 } from 'three';
+import { Frustum, Matrix4, Sphere, Vector3 } from 'three';
 import type { PerspectiveCamera, Scene } from 'three';
 import type { WebGPURenderer } from 'three/webgpu';
 import { CameraController } from '../controllers/CameraController';
-import { CharacterController, WALK_SPEED_RADIUS_PER_SEC } from '../controllers/CharacterController';
+import { CharacterController } from '../controllers/CharacterController';
 import type { ParticleCullingContext } from '../controllers/CharacterController';
 import { applyCharacterAppearance, applyEquipmentDiff, visibleEquipmentToEquipped } from '../controllers/characterAppearance';
 import { LocomotionDebugGizmo } from '../controllers/LocomotionDebugGizmo';
@@ -29,15 +29,13 @@ import type { LocomotionDirection, RaceGender } from '../rf/character';
 import type { EquippedItems } from '../rf/characterProfile';
 import { initSocketGlowBatching } from '../rf/glowEffect';
 import { preloadItemIconSheets } from '../rf/itemIcon';
-import { loadMap } from '../rf/map';
+import { GroundHeightProvider } from '../rf/groundHeight';
+import { loadMap, nativeToScene } from '../rf/map';
 import type { LoadedMap } from '../rf/map';
 import { advanceParticleBatchClocks, initParticleBatching, setParticleEffectCountForBudget } from '../rf/particleSystem';
 import type { AppScene } from './AppScene';
 
 const UP_AXIS = new Vector3(0, 1, 0);
-const DOWN_AXIS = new Vector3(0, -1, 0);
-/** Native RF units above the loaded map's own bounding box (see groundHeightAt) a ground-snap raycast starts from - large enough to clear any real terrain/building height in this map (see rf/map.ts's own measured Elan bounds), so the ray's origin is never accidentally already below the surface it's trying to find. */
-const GROUND_RAYCAST_MARGIN = 500;
 
 /** How often the FPS readout refreshes - see update()'s fpsFrameCount/fpsElapsed. Every frame would be an unreadably jittery number and a wasteful callback/re-render rate for a purely cosmetic HUD readout - same interval ViewerScene's own (much larger) stats panel already uses. */
 const FPS_UPDATE_INTERVAL_SEC = 0.5;
@@ -58,6 +56,11 @@ const FPS_UPDATE_INTERVAL_SEC = 0.5;
 const POSITION_RECONCILE_THRESHOLD = 40;
 /** Exponential smoothing rate (per second) correction pulls the rendered position back at once past the threshold above - same style as RemoteEntityController's own POSITION_SMOOTHING_RATE, chosen high enough that fighting a wall reads as a firm push-back rather than a slow drift. */
 const POSITION_RECONCILE_RATE = 10;
+/** Local ground height is sampled sparsely instead of raycast every frame; this keeps running smooth without the old CPU spike. */
+const LOCAL_GROUND_SAMPLE_INTERVAL = 0.08;
+const LOCAL_GROUND_SAMPLE_DISTANCE = 12;
+const LOCAL_GROUND_DESCEND_RATE = 24;
+const LOCAL_GROUND_UNDER_EPSILON = 2;
 
 export interface OnlineSceneCallbacks {
   onConnectionStatusChange?: (status: ConnectionStatus) => void;
@@ -165,25 +168,41 @@ export interface RadarFrame {
   facingRad: number;
   /**
    * Every other tracked entity's position relative to the local player, in
-   * raw server world-units (see RemoteEntityController.setScale's own doc
-   * comment on what those are) - deliberately NOT converted to scene units,
-   * since the radar has its own fixed world-unit range independent of the
-   * 3D scene's render scale. Empty until the first WorldSnapshot/EntityEnter
-   * that actually includes the local player's own entity has arrived (see
-   * hasServerSelfPosition) - there's nothing to be relative TO before then.
+   * raw server world-unit magnitudes (the radar has its own fixed world-unit
+   * range independent of the 3D scene) but with dz negated the same way
+   * nativeToScene (rf/map.ts) converts a position for the 3D scene - so a
+   * blip's direction agrees with `facingRad` above, which already uses that
+   * same render-space "North = -Z" convention (compassRotation.ts). Empty
+   * until the first WorldSnapshot/EntityEnter that actually includes the
+   * local player's own entity has arrived (see hasServerSelfPosition) -
+   * there's nothing to be relative TO before then.
    */
   blips: { dx: number; dz: number }[];
 }
 
-// Server world-units-to-scene-units scale, derived by matching the
-// backend's known movement constants (movement/system.go: WalkSpeed = 1
-// world-unit/tick; config.go: WORLD_TICK_HZ default 30, so 30 world-units/
-// sec) against the local character's own walk speed for the same real
-// speed - see RemoteEntityController.setScale's doc comment for the full
-// reasoning. Revisit both these constants if the backend's tuning changes.
+// Real server walk/run speeds in raw world-units/sec (movement/system.go:
+// WalkSpeed=1, RunSpeed=3 world-units/tick; config.go: WORLD_TICK_HZ default
+// 30) - used to give the local player's own CharacterController a walkSpeed
+// (setWalkSpeed) and run/walk ratio (setRunSpeedMultiplier) that advance
+// character.group.position at the server's own real rate, not
+// CharacterController's plain mesh-scale-derived pace (WALK_SPEED_RADIUS_PER_
+// SEC/RUN_SPEED_MULTIPLIER, both documented approximations - fine for every
+// other CharacterController, which has no server position to stay in sync
+// with, but not for this one: undershooting the server's real speed here
+// means reconciliation constantly has to yank the character forward to catch
+// up, which is exactly what running looked like before setRunSpeedMultiplier
+// existed). The scene no longer applies any other scale to server positions
+// (see nativeToScene's own doc comment): map geometry, .ebp collision walls,
+// and portal/monsterSpawn/soundEntity debug markers (see rf/map.ts) are all
+// placed in raw native RF units (just Z-flipped for the scene, same as
+// nativeToScene), so self and remote entity positions have to match that
+// magnitude too, or they render off from where the map/collision actually
+// are. Revisit all of this if the backend's tuning changes.
 const SERVER_WALK_UNITS_PER_TICK = 1;
+const SERVER_RUN_UNITS_PER_TICK = 3;
 const ASSUMED_SERVER_TICK_HZ = 30;
 const SERVER_WALK_UNITS_PER_SEC = SERVER_WALK_UNITS_PER_TICK * ASSUMED_SERVER_TICK_HZ;
+const SERVER_RUN_TO_WALK_RATIO = SERVER_RUN_UNITS_PER_TICK / SERVER_WALK_UNITS_PER_TICK;
 
 /**
  * Default game server WebSocket endpoint - derived from whatever
@@ -282,8 +301,6 @@ export class OnlineScene implements AppScene {
    */
   private readonly serverSelfPosition = new Vector3();
   private hasServerSelfPosition = false;
-  /** Scene-units-per-raw-server-world-unit - see mount()'s own derivation and RemoteEntityController.setScale's doc comment for the reasoning (same factor, just also kept here for applyServerTeleport's use, which fires long after mount()'s own local `scale` const has gone out of scope). Defaults to 1 (matching RemoteEntityController's own pre-setScale default) so a teleport packet that somehow arrives before mount() finishes doesn't multiply by an uninitialized value - not expected to matter in practice, just a safe fallback. */
-  private scale = 1;
   /** Assigns each incoming ChatLogEntry a locally-unique id - see its own doc comment. */
   private nextChatEntryId = 1;
   /**
@@ -316,6 +333,7 @@ export class OnlineScene implements AppScene {
   private nameTag: NameTag | null = null;
   /** The currently-loaded world geometry (see rf/map.ts) - null until mount()'s load resolves, or permanently if it failed (see mount()'s own comment on why a map load failure doesn't block entering the world). */
   private loadedMap: LoadedMap | null = null;
+  private groundProvider: GroundHeightProvider | null = null;
   /** TEMP debug gizmo (facing/moveDirection arrows + locomotion/clip label) - see LocomotionDebugGizmo's own doc comment. */
   private debugGizmo: LocomotionDebugGizmo | null = null;
   private readonly debugOrigin = new Vector3();
@@ -327,10 +345,12 @@ export class OnlineScene implements AppScene {
   /** Recomputed from the camera every frame - see update(). Same shape ViewerScene feeds its own particle-effect/socket-glow culling. */
   private readonly particleViewProjection = new Matrix4();
   private readonly particleCulling: ParticleCullingContext = { frustum: new Frustum(), cameraPosition: new Vector3() };
-  /** Reused across every groundHeightAt() call rather than allocated per spawn/teleport - see that method's own doc comment. */
-  private readonly groundRaycaster = new Raycaster();
   /** Scratch for reconcileWithServer's own scene-space copy of serverSelfPosition - reused every frame rather than allocated. */
   private readonly reconcileTarget = new Vector3();
+  private readonly groundProbePosition = new Vector3();
+  private readonly lastLocalGroundSamplePosition = new Vector3(Number.NaN, Number.NaN, Number.NaN);
+  private localGroundTargetY: number | null = null;
+  private localGroundSampleTimer = Number.POSITIVE_INFINITY;
 
   private readonly handleRunKeyDown = (event: KeyboardEvent) => this.handleRunKeyChange(event, true);
   private readonly handleRunKeyUp = (event: KeyboardEvent) => this.handleRunKeyChange(event, false);
@@ -403,7 +423,35 @@ export class OnlineScene implements AppScene {
   sendChatMessage(message: string): void {
     const trimmed = message.trim();
     if (!trimmed) return;
+    if (this.handleLocalChatCommand(trimmed)) return;
     this.connection.sendChatAll(trimmed);
+  }
+
+  private handleLocalChatCommand(message: string): boolean {
+    const args = message.split(/\s+/);
+    if (args[0]?.toLowerCase() !== '%col') return false;
+    if (args.length !== 2 || (args[1] !== '0' && args[1] !== '1')) {
+      this.addLocalSystemMessage('Usage: %col 1 to show map debug overlays, %col 0 to hide map debug overlays');
+      return true;
+    }
+    const visible = args[1] === '1';
+    this.setMapDebugOverlaysVisible(visible);
+    this.addLocalSystemMessage(`Map debug overlays ${visible ? 'shown' : 'hidden'}`);
+    return true;
+  }
+
+  private addLocalSystemMessage(message: string): void {
+    this.callbacks.onChatMessage?.({
+      id: this.nextChatEntryId++,
+      kind: 'system',
+      message,
+    });
+  }
+
+  private setMapDebugOverlaysVisible(visible: boolean): void {
+    if (!this.loadedMap) return;
+    this.loadedMap.debugOverlay.visible = visible;
+    this.loadedMap.collisionOverlay.visible = visible;
   }
 
   /** See InventoryWindow's own Sell button - `quantity = 0` (the default) sells the slot's full stack, per docs/inventory-action.md. */
@@ -494,10 +542,14 @@ export class OnlineScene implements AppScene {
       // at all (confirmed real, not hypothetical: a small character radius
       // makes `radius * 100` land well under the distance a real map needs).
       let mapFarPlaneDistance: number | null = null;
+      this.groundProvider = loadedMap?.groundObject3D ? new GroundHeightProvider(loadedMap.groundObject3D, loadedMap.bounds) : null;
+      this.remoteEntityController.setMapGeometry(loadedMap?.groundObject3D ?? null, loadedMap?.bounds ?? null);
       if (loadedMap) {
         this.loadedMap = loadedMap;
         this.sceneController.scene.add(loadedMap.object3D);
+        loadedMap.debugOverlay.visible = false;
         this.sceneController.scene.add(loadedMap.debugOverlay);
+        loadedMap.collisionOverlay.visible = false;
         this.sceneController.scene.add(loadedMap.collisionOverlay);
         if (loadedMap.bounds) {
           // The camera stays near the local player, currently always spawned
@@ -513,14 +565,18 @@ export class OnlineScene implements AppScene {
       }
       const bounds = await this.characterController.mount(character, this.raceGender);
       if (this.disposed) return;
-      // Computed here (needs only bounds.radius, already available) rather
-      // than after frameOnCharacter below like before - the spawn placement
-      // right after this needs it too, and bounds.radius itself is
-      // unaffected by that placement (translating a Box3 doesn't change its
-      // size) so there's no ordering hazard moving this earlier.
-      const localWalkUnitsPerSec = WALK_SPEED_RADIUS_PER_SEC * bounds.radius;
-      const scale = localWalkUnitsPerSec / SERVER_WALK_UNITS_PER_SEC;
-      this.scale = scale;
+      // Overrides mount()'s own mesh-scale-derived walkSpeed/run ratio so
+      // local prediction advances character.group.position at the real
+      // server rate - see SERVER_WALK_UNITS_PER_SEC's own doc comment and
+      // setWalkSpeed/setRunSpeedMultiplier's.
+      this.characterController.setWalkSpeed(SERVER_WALK_UNITS_PER_SEC);
+      this.characterController.setRunSpeedMultiplier(SERVER_RUN_TO_WALK_RATIO);
+      // Lets local prediction stop at a wall immediately instead of only
+      // after the server's own (much slower, threshold-gated) correction
+      // catches up - see CharacterController.setCollisionWalls's own doc
+      // comment. `[]` (not skipping this call) when the map/collision failed
+      // to load is deliberate - see that method's own doc comment.
+      this.characterController.setCollisionWalls(loadedMap?.collisionWalls ?? []);
       // Places the local player at their persisted last-in-world position
       // (CharacterProfile.lastLocation, raw server world-units - same
       // representation/scale WorldSnapshot's own entity positions use, see
@@ -535,18 +591,18 @@ export class OnlineScene implements AppScene {
       // available to place it correctly, and defaulting to (0,0,0) is a
       // safer failure than guessing.
       if (profile) {
-        const spawnOffset = new Vector3(profile.lastLocation.x, profile.lastLocation.y, profile.lastLocation.z).multiplyScalar(scale);
+        const spawnOffset = nativeToScene(profile.lastLocation);
         character.group.position.add(spawnOffset);
         // The server's own Y has no guarantee of sitting on this map's real
-        // surface (see groundHeightAt's own doc comment) - re-derive it from
-        // the map geometry that's already loaded, folding the correction
-        // into spawnOffset itself so the bounds.translate below stays
-        // consistent with where the character actually ends up.
-        const groundY = this.groundHeightAt(character.group.position.x, character.group.position.z, loadedMap);
-        if (groundY !== null) {
-          spawnOffset.y += groundY - character.group.position.y;
-          character.group.position.y = groundY;
+        // surface (see GroundHeightProvider's own doc comment) - re-derive it
+        // from the map geometry that's already loaded, folding the
+        // correction into spawnOffset itself so the bounds.translate below
+        // stays consistent with where the character actually ends up.
+        const beforeGroundY = character.group.position.y;
+        if (this.snapAbsolutePositionToGround(character.group.position, 'spawn')) {
+          this.setLocalGroundTarget(character.group.position);
         }
+        spawnOffset.y += character.group.position.y - beforeGroundY;
         // bounds (computed by mount() while the group was still at the
         // origin) must move with it, or frameGround/frameOnCharacter below
         // would frame a point in empty space instead of the character's
@@ -592,7 +648,6 @@ export class OnlineScene implements AppScene {
       // is a no-op if frameOnCharacter's own radius-derived far already
       // covers the map, and the actual fix when it doesn't.
       if (mapFarPlaneDistance !== null) this.cameraController.setFarPlane(mapFarPlaneDistance);
-      this.remoteEntityController.setScale(scale);
       this.callbacks.onStatusChange?.('ready');
     } catch (err) {
       if (this.disposed) return;
@@ -721,7 +776,11 @@ export class OnlineScene implements AppScene {
       const locomotionDirection = this.classifyAgainstFacing(); // world-space vs facing - drives clip choice only, see its own doc comment
       const faceDirection = inputLocomotionDirection ? this.facing : this.moveDirection;
       this.characterController.setMoveDirection(this.moveDirection, faceDirection, locomotionDirection);
-      this.reportMovementIfChanged(...quantizeToCompass(this.moveDirection.x, this.moveDirection.z));
+      // moveDirection is render-space (camera-relative); the server's
+      // dir_z increments a native Z (see rfworld's movement/system.go) - see
+      // nativeToScene's own doc comment on why that's the negation of this
+      // scene's Z, the same as every other native<->scene conversion here.
+      this.reportMovementIfChanged(...quantizeToCompass(this.moveDirection.x, -this.moveDirection.z));
     } else {
       this.characterController.setMoveDirection(null);
       this.reportMovementIfChanged(0, 0);
@@ -729,6 +788,7 @@ export class OnlineScene implements AppScene {
 
     this.characterController.update(delta);
     this.reconcileWithServer(delta);
+    this.updateLocalGroundHeight(delta);
 
     const character = this.characterController.getCharacter();
     this.cameraController.update(delta, {
@@ -778,7 +838,7 @@ export class OnlineScene implements AppScene {
       const blips = this.hasServerSelfPosition
         ? this.remoteEntityController.getEntityPositions().map((position) => ({
             dx: position.x - this.serverSelfPosition.x,
-            dz: position.z - this.serverSelfPosition.z,
+            dz: -(position.z - this.serverSelfPosition.z),
           }))
         : [];
       this.callbacks.onRadarFrame({ facingRad: Math.atan2(this.facing.x, -this.facing.z), blips });
@@ -833,6 +893,7 @@ export class OnlineScene implements AppScene {
       this.sceneController.scene.remove(this.loadedMap.debugOverlay);
       this.sceneController.scene.remove(this.loadedMap.collisionOverlay);
       this.loadedMap = null;
+      this.groundProvider = null;
     }
     this.sceneController.dispose();
   }
@@ -853,16 +914,11 @@ export class OnlineScene implements AppScene {
           // authoritative over the REST profile fetch mount() seeds
           // localEquipped/equipmentDisplay from.
           this.applyLocalVisibleEquipment(selfSnapshot.visibleEquipment);
-          // A WorldSnapshot naming the local player is either the very first
-          // one at connect (character isn't mounted yet - applyServerTeleport
-          // just no-ops, mount()'s own lastLocation-based placement handles
-          // that case instead) or a later resync/teleport confirmation, which
-          // this DOES need to snap to - see gm_commands.go's `%goto`
-          // (World.TeleportPlayer sends both a WorldSnapshotEvent AND the
-          // WorldDelta handled below for the same teleport, so this is a
-          // deliberate belt-and-suspenders duplicate of that handling, not
-          // new behavior for ordinary play).
-          this.applyServerTeleport(selfSnapshot);
+          // Do not reposition the mounted local character from ordinary
+          // snapshots: `%botadd` sends a fresh WorldSnapshot for visibility,
+          // and treating that as a teleport can pull the renderer back to
+          // the backend's non-native terrain Y. Real teleports are handled
+          // by the self exit+enter WorldDelta branch below.
         }
         this.remoteEntityController.applySnapshot(payload.worldSnapshot.entities, this.myPlayerId);
         break;
@@ -980,14 +1036,14 @@ export class OnlineScene implements AppScene {
   /**
    * Pulls the locally-predicted position back toward the server's own
    * authoritative one once they've drifted past POSITION_RECONCILE_THRESHOLD
-   * - see that constant's own doc comment for why this exists (local
-   * movement has no wall awareness at all; the server does, and rejects
-   * movement through one). Deliberately horizontal-only (X/Z): `y` is
-   * independently re-derived from this client's own loaded map geometry
-   * after any correction (see groundHeightAt's own doc comment on why the
-   * server's Y for a player isn't trustworthy for real terrain height in
-   * the first place - reconciling it here would just reintroduce that same
-   * problem).
+   * - see that constant's own doc comment for why this exists. Local
+   * movement now checks the same collision walls the server does (see
+   * CharacterController.setCollisionWalls), so this should rarely have
+   * disagrees (packet loss, a dropped input, the map/collision failing to
+   * load client-side while the server's own copy is fine). Vertical render
+   * placement deliberately stays client-side until the backend has native
+   * map height, because the current server Y can be below the visible
+   * terrain.
    *
    * Runs every frame regardless of whether the player is currently
    * providing move input - a correction started while holding a key into a
@@ -1000,7 +1056,8 @@ export class OnlineScene implements AppScene {
     const character = this.characterController.getCharacter();
     if (!character) return;
 
-    this.reconcileTarget.copy(this.serverSelfPosition).multiplyScalar(this.scale);
+    this.reconcileTarget.copy(nativeToScene(this.serverSelfPosition));
+
     const dx = character.group.position.x - this.reconcileTarget.x;
     const dz = character.group.position.z - this.reconcileTarget.z;
     if (Math.hypot(dx, dz) <= POSITION_RECONCILE_THRESHOLD) return;
@@ -1008,37 +1065,55 @@ export class OnlineScene implements AppScene {
     const t = 1 - Math.exp(-POSITION_RECONCILE_RATE * delta);
     character.group.position.x -= dx * t;
     character.group.position.z -= dz * t;
-    const groundY = this.groundHeightAt(character.group.position.x, character.group.position.z, this.loadedMap);
-    if (groundY !== null) character.group.position.y = groundY;
+  }
+
+  private updateLocalGroundHeight(delta: number): void {
+    const character = this.characterController.getCharacter();
+    if (!character || !this.groundProvider) return;
+
+    const position = character.group.position;
+    this.localGroundSampleTimer += delta;
+    const sampledBefore = Number.isFinite(this.lastLocalGroundSamplePosition.x);
+    const movedSinceSample = sampledBefore
+      ? Math.hypot(position.x - this.lastLocalGroundSamplePosition.x, position.z - this.lastLocalGroundSamplePosition.z)
+      : Number.POSITIVE_INFINITY;
+    if (
+      this.localGroundTargetY === null ||
+      this.localGroundSampleTimer >= LOCAL_GROUND_SAMPLE_INTERVAL ||
+      movedSinceSample >= LOCAL_GROUND_SAMPLE_DISTANCE
+    ) {
+      this.groundProbePosition.copy(position);
+      if (this.snapAbsolutePositionToGround(this.groundProbePosition, 'movement')) {
+        this.localGroundTargetY = this.groundProbePosition.y;
+        this.lastLocalGroundSamplePosition.copy(position);
+        this.localGroundSampleTimer = 0;
+      }
+    }
+
+    if (this.localGroundTargetY === null) return;
+    if (position.y < this.localGroundTargetY - LOCAL_GROUND_UNDER_EPSILON) {
+      position.y = this.localGroundTargetY;
+      return;
+    }
+    position.y += (this.localGroundTargetY - position.y) * (1 - Math.exp(-LOCAL_GROUND_DESCEND_RATE * delta));
+  }
+
+  private setLocalGroundTarget(position: Vector3): void {
+    this.localGroundTargetY = position.y;
+    this.lastLocalGroundSamplePosition.copy(position);
+    this.localGroundSampleTimer = 0;
   }
 
   /**
-   * Raycasts straight down through the loaded map's real geometry to find
-   * the actual ground/roof surface at (x, z), or null if there's no loaded
-   * map (never loaded, or the fetch failed - see rf/map.ts) or the ray hit
-   * nothing at all (x/z falls over a genuine hole in the map, or outside its
-   * geometry entirely).
-   *
-   * Exists because the server's own X/Y/Z for a player (both
-   * CharacterProfile.lastLocation and a GM `%goto`'s target) has no
-   * guarantee of actually landing exactly on this map's real terrain height
-   * - the backend's movement/persistence system doesn't consult the native
-   * map's own collision data when picking/storing a Y (see docs/map.md's
-   * own "Client Responsibilities" - deciding spawn coordinates is
-   * explicitly not settled server-side yet either), so a stored/typed Y can
-   * be below the real surface at that X/Z, which rendered as the character
-   * spawning embedded in solid ground. Trusting the server for X/Z (where
-   * "which cell of the map" actually matters for gameplay) but re-deriving
-   * Y from this client's own already-loaded geometry (where only "resting
-   * on the visible surface" matters) sidesteps needing the backend to know
-   * anything about native map heights at all.
+   * One-shot absolute placement correction for spawn/teleport. It first
+   * tries the near-foot snap used for multi-floor safety, then falls back to
+   * a high downward ray when the provided server/GM Y starts below the
+   * visible surface, as with `%goto -5234 440 -3603`.
    */
-  private groundHeightAt(x: number, z: number, loadedMap: LoadedMap | null): number | null {
-    if (!loadedMap?.bounds) return null;
-    this.groundRaycaster.set(new Vector3(x, loadedMap.bounds.max.y + GROUND_RAYCAST_MARGIN, z), DOWN_AXIS);
-    const hits = this.groundRaycaster.intersectObject(loadedMap.object3D, true);
-    return hits.length > 0 ? hits[0].point.y : null;
+  private snapAbsolutePositionToGround(position: Vector3, mode: 'movement' | 'spawn' | 'teleport'): boolean {
+    return this.groundProvider?.applyToPosition(position, { mode, referenceY: position.y }) ?? false;
   }
+
 
   /**
    * Snaps the local player's own rendered position (and the camera rig
@@ -1048,10 +1123,10 @@ export class OnlineScene implements AppScene {
    * a hard teleport, e.g. a GM's `%goto`, can produce). Never called for
    * ordinary movement (per-tick EntityUpdate for the self entity only ever
    * touches serverSelfPosition bookkeeping - see applyServerSelfDelta).
-   * `entity.x/y/z` are raw server world-units, same representation/scale as
-   * every other entity position - converted via `this.scale`, the exact
-   * factor RemoteEntityController.setScale uses for everyone else (see
-   * mount()'s own derivation).
+   * `entity.x/y/z` are a raw native RF world position, same representation
+   * every other entity position uses - converted to scene space via
+   * nativeToScene (rf/map.ts), the same conversion RemoteEntityController
+   * uses for everyone else.
    */
   private applyServerTeleport(entity: EntitySnapshot): void {
     const character = this.characterController.getCharacter();
@@ -1059,16 +1134,16 @@ export class OnlineScene implements AppScene {
       console.debug('[teleport] ignored - character not mounted yet', entity);
       return; // teleport packet arrived before mount() finished - nothing to move yet
     }
-    const newPosition = new Vector3(entity.x, entity.y, entity.z).multiplyScalar(this.scale);
-    // See groundHeightAt's own doc comment - the server's Y for a `%goto`
-    // target has no guarantee of sitting on this map's actual surface.
-    const groundY = this.groundHeightAt(newPosition.x, newPosition.z, this.loadedMap);
-    if (groundY !== null) newPosition.y = groundY;
+    const newPosition = nativeToScene(entity);
+    // See GroundHeightProvider's own doc comment - the server's Y for a
+    // `%goto` target has no guarantee of sitting on this map's actual
+    // surface.
+    if (this.snapAbsolutePositionToGround(newPosition, 'teleport')) {
+      this.setLocalGroundTarget(newPosition);
+    }
     const cameraOffset = newPosition.clone().sub(character.group.position);
     console.debug('[teleport] applying', {
       raw: { x: entity.x, y: entity.y, z: entity.z },
-      scale: this.scale,
-      groundSnapped: groundY !== null,
       from: character.group.position.toArray(),
       to: newPosition.toArray(),
     });

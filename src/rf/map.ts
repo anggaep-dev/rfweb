@@ -1,4 +1,5 @@
-import { Box3, BufferAttribute, BufferGeometry, Color, DoubleSide, Group, Mesh, MeshBasicMaterial, MeshStandardMaterial, SphereGeometry } from 'three';
+import { Box3, BufferAttribute, BufferGeometry, Color, DoubleSide, Group, Mesh, MeshBasicMaterial, MeshStandardMaterial, SphereGeometry, Vector3 } from 'three';
+import { acceleratedRaycast, computeBoundsTree, disposeBoundsTree } from 'three-mesh-bvh';
 import type { Texture } from 'three';
 import { materialAlphaOptions } from './character';
 import { fetchChefAssetCaseInsensitive } from './glowEffect';
@@ -9,7 +10,7 @@ import { parseR3M } from './r3m';
 import { parseR3T } from './r3t';
 import { decodeRftTexture } from './texture';
 import { getMapDetails } from '../net/MapClient';
-import type { MapMonsterSpawn, MapPortal, MapSoundEntity, MapVec3 } from '../net/MapClient';
+import type { MapMonsterSpawn, MapPortal, MapSoundEntity } from '../net/MapClient';
 
 /**
  * Loads a map's world geometry (`.bsp` + its sibling `.r3m`/`.r3t`, all
@@ -40,10 +41,21 @@ const SOUND_ENTITY_MARKER_COLOR = 0x9c62ea;
 /** Translucent red - the common game-dev convention for "this is a blocking volume," distinct from both the real map's own materials and the portal/spawn/sound markers above. */
 const COLLISION_WALL_COLOR = 0xff3355;
 const COLLISION_WALL_OPACITY = 0.35;
+let meshBVHInstalled = false;
+
+function ensureMeshBVHInstalled(): void {
+  if (meshBVHInstalled) return;
+  BufferGeometry.prototype.computeBoundsTree = computeBoundsTree;
+  BufferGeometry.prototype.disposeBoundsTree = disposeBoundsTree;
+  Mesh.prototype.raycast = acceleratedRaycast;
+  meshBVHInstalled = true;
+}
 
 export interface LoadedMap {
   name: string;
   object3D: Group;
+  /** Non-rendered merged map triangles with a BVH, used only for fast character ground-height queries. */
+  groundObject3D: Mesh | null;
   /** World-space (native RF units, unconverted scale - see bsp.ts's own doc comment) bounds of the loaded geometry, or null if the map had no renderable faces at all. */
   bounds: Box3 | null;
   /** From GET /map's own `warnings` (dev diagnostics) - see docs/map.md. Empty if the backend fetch failed (see DEFAULT_MAP_NAME's own doc comment) rather than the map genuinely having none. */
@@ -55,10 +67,27 @@ export interface LoadedMap {
   debugOverlay: Group;
   /** The map's own `.ebp` collision walls (see ebp.ts) rendered as translucent red quads - the same native data the backend's own movement collision (rfworld's internal/worldmap/collision.go) enforces, made visible for debugging "why did/didn't I stop here". A sibling to `object3D`/`debugOverlay`, not a child of either. Always present (possibly empty) even if the `.ebp` fetch/parse failed - see loadMapUncached's own handling. */
   collisionOverlay: Group;
+  /** Same collision walls as collisionOverlay, as plain data rather than a rendered Group - for CharacterController's own client-side wall check (rf/collision.ts's blocksMovement, a port of the backend's BlocksMovement) so local prediction stops at a wall immediately instead of only after the server's own correction catches up. Always present (possibly empty) even if the `.ebp` fetch/parse failed. */
+  collisionWalls: CollisionWall[];
 }
 
-function vec3ToTuple(v: MapVec3): [number, number, number] {
-  return [v.x, v.y, v.z];
+/**
+ * Converts a native RF world position (portals/monsterSpawns/soundEntities'
+ * own `position` field - same representation player X/Y/Z and every other
+ * server-authoritative position use, per docs/map.md's coordinate rules) into
+ * this client's three.js scene space. Same Z negation as convertVec3Unity
+ * (r3e.ts) applies to actual mesh vertex data (bsp.ts/ebp.ts) - confirmed
+ * empirically, not assumed: raycasting real spawn/monsterSpawn positions
+ * straight down through the real parsed Elan.bsp finds the matching floor at
+ * each position's Z negated, not as originally reported (dp_elan_start's own
+ * y=438: the mirrored X/-Z lands within 5 units of a real floor; the
+ * unmirrored X/Z misses by 330+). Self-inverse (a negation), so the same
+ * function also converts scene space back to native (e.g. a locally-
+ * predicted movement direction before it's sent to the server) - see
+ * OnlineScene/RemoteEntityController's own call sites.
+ */
+export function nativeToScene(v: { x: number; y: number; z: number }): Vector3 {
+  return new Vector3(v.x, v.y, -v.z);
 }
 
 /** One reusable geometry/material per marker category - three.js instances, not per-marker allocations, matching every other shared-resource convention in this project (e.g. character.ts's pooled meshes/textures). Wireframe + no depth test-independent MeshBasicMaterial (not MeshStandardMaterial, which the real map geometry uses) so a marker reads clearly as a debug overlay, not part of the actual world. */
@@ -87,7 +116,7 @@ function buildDebugOverlay(portals: MapPortal[], monsterSpawns: MapMonsterSpawn[
     if (!portal.position) continue;
     const marker = new Mesh(markerGeometry, portalMaterial);
     marker.name = `Portal_${portal.name}`;
-    marker.position.set(...vec3ToTuple(portal.position));
+    marker.position.copy(nativeToScene(portal.position));
     overlay.add(marker);
   }
 
@@ -96,7 +125,7 @@ function buildDebugOverlay(portals: MapPortal[], monsterSpawns: MapMonsterSpawn[
     if (!spawn.position) continue;
     const marker = new Mesh(markerGeometry, monsterSpawnMaterial);
     marker.name = `MonsterSpawn_${spawn.name}`;
-    marker.position.set(...vec3ToTuple(spawn.position));
+    marker.position.copy(nativeToScene(spawn.position));
     overlay.add(marker);
   }
 
@@ -104,7 +133,7 @@ function buildDebugOverlay(portals: MapPortal[], monsterSpawns: MapMonsterSpawn[
   for (const [index, sound] of soundEntities.entries()) {
     const marker = new Mesh(markerGeometry, soundEntityMaterial);
     marker.name = `SoundEntity_${index}`;
-    marker.position.set(...vec3ToTuple(sound.position));
+    marker.position.copy(nativeToScene(sound.position));
     overlay.add(marker);
   }
 
@@ -262,9 +291,15 @@ async function loadMapUncached(mapName?: string): Promise<LoadedMap> {
   object3D.name = `Map_${resolvedName}`;
   const bounds = new Box3();
   let hasGeometry = false;
+  let groundVertexCount = 0;
+  for (const group of bspMesh.groups) groundVertexCount += group.vertices.length;
+  const groundVertices = new Float32Array(groundVertexCount);
+  let groundVertexOffset = 0;
 
   for (const group of bspMesh.groups) {
     if (group.vertices.length === 0) continue;
+    groundVertices.set(group.vertices, groundVertexOffset);
+    groundVertexOffset += group.vertices.length;
 
     const geometry = new BufferGeometry();
     geometry.setAttribute('position', new BufferAttribute(group.vertices, 3));
@@ -295,10 +330,22 @@ async function loadMapUncached(mapName?: string): Promise<LoadedMap> {
     mesh.name = material?.name ?? `material_${group.materialId}`;
     object3D.add(mesh);
   }
+  let groundObject3D: Mesh | null = null;
+  if (hasGeometry) {
+    ensureMeshBVHInstalled();
+    const groundGeometry = new BufferGeometry();
+    groundGeometry.setAttribute('position', new BufferAttribute(groundVertices, 3));
+    groundGeometry.computeVertexNormals();
+    groundGeometry.computeBoundingBox();
+    groundGeometry.computeBoundsTree();
+    groundObject3D = new Mesh(groundGeometry, new MeshBasicMaterial({ side: DoubleSide }));
+    groundObject3D.name = `MapGround_${resolvedName}`;
+  }
 
   return {
     name: resolvedName,
     object3D,
+    groundObject3D,
     bounds: hasGeometry ? bounds : null,
     warnings,
     portals,
@@ -306,5 +353,6 @@ async function loadMapUncached(mapName?: string): Promise<LoadedMap> {
     soundEntities,
     debugOverlay: buildDebugOverlay(portals, monsterSpawns, soundEntities),
     collisionOverlay: buildCollisionOverlay(collisionWalls),
+    collisionWalls,
   };
 }

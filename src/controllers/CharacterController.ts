@@ -15,6 +15,8 @@ import {
   weaponClipKey,
 } from '../rf/character';
 import type { CloakAnimationRig, LocomotionDirection, RfCharacter } from '../rf/character';
+import { blocksMovement } from '../rf/collision';
+import type { CollisionWall } from '../rf/ebp';
 import { applyGradeLiveValues, buildGradeOverlay, clamp01, disposeGradeOverlay } from '../rf/gradeEffect';
 import type { GradeLiveValues, GradeOverlay } from '../rf/gradeEffect';
 import type { MaterialLayer } from '../rf/materialScript';
@@ -64,7 +66,7 @@ const ARRIVE_FRACTION_OF_RADIUS = 0.04;
  * debugSocketParticleScale for cases this reasoning doesn't cover.
  */
 const DEBUG_SOCKET_PARTICLE_SCALE = 1;
-/** Exported for OnlineScene - it derives a server-units-to-scene-units scale by matching the server's own walk speed constant against this one. */
+/** Mesh-scale-derived walkSpeed tuning for every CharacterController except OnlineScene's local player (which overrides it via setWalkSpeed - see that method's own doc comment). */
 export const WALK_SPEED_RADIUS_PER_SEC = 0.9;
 /** How much faster running is than walking - the actual client's ratio isn't in this data set, so this is a reasonable-looking approximation. */
 const RUN_SPEED_MULTIPLIER = 1.8;
@@ -397,8 +399,12 @@ export class CharacterController {
   /** Which real backward/strafe clip to play instead of plain walk/run while moveDirection is active - see LocomotionDirection and resolveClipName. Null means "mostly forward" (plain walk/run, face the way you're moving - unchanged default behavior). */
   private moveLocomotionDirection: LocomotionDirection | null = null;
   private walkSpeed = 1;
+  /** How much faster running is than walking - see RUN_SPEED_MULTIPLIER's own doc comment for the plain mesh-scale-derived default every CharacterController starts with, and setRunSpeedMultiplier for OnlineScene's local-player override. */
+  private runSpeedMultiplier = RUN_SPEED_MULTIPLIER;
   /** Server-computed movement-speed multiplier (protocol.proto's CharacterStatus.moveSpeed - RF's own equipped-item speed bonuses/penalties, e.g. certain cloaks/boots) - see setServerMoveSpeedMultiplier. Defaults to 1 (no-op): only OnlineScene's local player ever has a real one to set; every other CharacterController (bots, other players, character-select previews) has no server-authoritative speed to reflect and should render at its own plain mesh-scale-derived pace. */
   private serverMoveSpeedMultiplier = 1;
+  /** The loaded map's `.ebp` collision walls (see setCollisionWalls) - empty for every CharacterController except OnlineScene's local player, matching serverMoveSpeedMultiplier's own doc comment on why (bots/other players/previews have no map to stay in sync with). Checked by update() before committing a WASD step so local prediction stops at a wall immediately instead of only after the server's own (much slower, threshold-gated) correction catches up - see rf/collision.ts's own doc comment. */
+  private collisionWalls: CollisionWall[] = [];
   private arriveThreshold = 0.05;
   /** Walk vs run - see MoveMode. Only affects click-to-move (moveTo()); a manual setClip('run') from a debug button is unaffected. */
   private moveMode: MoveMode = 'walk';
@@ -1874,12 +1880,83 @@ export class CharacterController {
     this.serverMoveSpeedMultiplier = multiplier > 0 ? multiplier : 1;
   }
 
+  /**
+   * Overrides the mount()-derived, mesh-scale-based walkSpeed with an exact
+   * server-units-per-second value. OnlineScene is the only caller: its local
+   * player's `character.group.position` is compared directly against
+   * server-authoritative positions (reconcileWithServer) that live in raw,
+   * unscaled server world-units (see RemoteEntityController's own doc
+   * comment on why the scene no longer applies a mesh-radius-derived scale
+   * to those) - local prediction has to advance the same position at the
+   * real server rate, or every step drifts and gets fought by reconciliation
+   * instead of just being a close, cheap prediction of it. Every other
+   * CharacterController (bots, other players, character-select previews)
+   * has no such position to stay in sync with and keeps its plain
+   * mesh-scale-derived pace.
+   */
+  setWalkSpeed(unitsPerSecond: number): void {
+    this.walkSpeed = unitsPerSecond;
+  }
+
+  /**
+   * Overrides RUN_SPEED_MULTIPLIER (a documented approximation - the real
+   * client's walk/run ratio isn't in this data set) with the server's own
+   * exact one (rfworld's movement/system.go: RunSpeed=3 / WalkSpeed=1) for
+   * OnlineScene's local player. Without this, walking matches the server
+   * exactly (setWalkSpeed) but running - at the wrong, merely-approximate
+   * ratio - steadily falls behind the server's real (faster) position, so
+   * reconciliation has to keep yanking the character forward to catch up:
+   * exactly the stutter/"blinking" running looked like before this existed.
+   */
+  setRunSpeedMultiplier(multiplier: number): void {
+    this.runSpeedMultiplier = multiplier > 0 ? multiplier : RUN_SPEED_MULTIPLIER;
+  }
+
+  /** Gives this controller the loaded map's `.ebp` collision walls to check WASD steps against - see the `collisionWalls` field's own doc comment. Pass `[]` (never omit the call) if the map/collision failed to load, so a stale wall set from a previous map isn't left blocking movement on this one. */
+  setCollisionWalls(walls: CollisionWall[]): void {
+    this.collisionWalls = walls;
+  }
+
+  /**
+   * Applies one frame's WASD step (stepX, stepZ - world units, Y untouched;
+   * see OnlineScene's own ground-follow for why height is a separate
+   * concern), checking it against `collisionWalls` first (see rf/collision.ts
+   * blocksMovement - the same test rfworld's own server-side movement uses).
+   * The full diagonal step wins if it's clear; otherwise each axis is tried
+   * alone so brushing a wall at an angle slides along it instead of stopping
+   * dead the instant either component would cross it. No walls loaded (every
+   * CharacterController but OnlineScene's local player) is the fast, no-op-
+   * check path.
+   */
+  private applyCollisionAwareStep(position: Vector3, stepX: number, stepZ: number): void {
+    if (this.collisionWalls.length === 0) {
+      position.x += stepX;
+      position.z += stepZ;
+      return;
+    }
+    const { x, y, z } = position;
+    const fullX = x + stepX;
+    const fullZ = z + stepZ;
+    if (!blocksMovement(this.collisionWalls, x, z, fullX, fullZ, y)) {
+      position.x = fullX;
+      position.z = fullZ;
+      return;
+    }
+    if (stepX !== 0 && !blocksMovement(this.collisionWalls, x, z, fullX, z, y)) {
+      position.x = fullX;
+      return;
+    }
+    if (stepZ !== 0 && !blocksMovement(this.collisionWalls, x, z, x, fullZ, y)) {
+      position.z = fullZ;
+    }
+  }
+
   /** Base movement speed - flying (see isFlying) has its own fixed speed that ignores the walk/run toggle entirely, not a multiplier layered on top of whichever one is selected; otherwise the current moveMode's speed, including the booster multiplier while running with a Booster cloak equipped (see isBoosterEquipped). serverMoveSpeedMultiplier applies uniformly underneath all of that (see its own doc comment) - the equipped-item speed bonus scales walking, running, and flying alike, same as it scales the server's own WalkSpeed/RunSpeed constants regardless of which one is active. Callers scale by input intensity themselves where relevant (moveDirection's analog magnitude; click-to-move is always full speed). */
   private getCurrentSpeed(): number {
     const base = this.walkSpeed * this.serverMoveSpeedMultiplier;
     if (this.isFlying) return base * FLY_SPEED_MULTIPLIER;
     if (this.moveMode !== 'run') return base;
-    const runSpeed = base * RUN_SPEED_MULTIPLIER;
+    const runSpeed = base * this.runSpeedMultiplier;
     return this.isBoosterEquipped ? runSpeed * BOOSTER_SPEED_MULTIPLIER : runSpeed;
   }
 
@@ -1917,7 +1994,7 @@ export class CharacterController {
       const dirNorm = direction.clone().divideScalar(magnitude);
       const intensity = Math.min(magnitude, 1);
       const speed = this.getCurrentSpeed() * intensity;
-      character.group.position.addScaledVector(dirNorm, speed * delta);
+      this.applyCollisionAwareStep(character.group.position, dirNorm.x * speed * delta, dirNorm.z * speed * delta);
 
       const faceSource = this.faceDirection ?? direction;
       const faceNorm = faceSource === direction ? dirNorm : faceSource.clone().normalize();

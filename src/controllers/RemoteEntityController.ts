@@ -1,11 +1,13 @@
 import { Vector3 } from 'three';
-import type { Camera, Scene } from 'three';
+import type { Box3, Camera, Object3D, Scene } from 'three';
 import { getCharacterAppearance } from '../net/CharacterClient';
 import { rotationToYaw } from '../net/compassRotation';
 import type { EntitySnapshot, EntityUpdate, VisibleEquipment } from '../net/generated/protocol';
 import { RaceGender, classifyMovementAgainstFacing, loadCharacter } from '../rf/character';
 import type { LocomotionDirection } from '../rf/character';
 import type { CharacterAppearance, EquippedItems } from '../rf/characterProfile';
+import { GroundHeightProvider } from '../rf/groundHeight';
+import { nativeToScene } from '../rf/map';
 import { CharacterController } from './CharacterController';
 import type { ParticleCullingContext } from './CharacterController';
 import { applyCharacterAppearance, applyEquipmentDiff, visibleEquipmentToEquipped } from './characterAppearance';
@@ -28,10 +30,14 @@ const LOCAL_FORWARD = new Vector3(0, 0, -1);
  */
 const POSITION_SMOOTHING_RATE = 12;
 const ROTATION_SMOOTHING_RATE = 14;
+const REMOTE_GROUND_SAMPLE_INTERVAL = 0.2;
+const REMOTE_GROUND_SAMPLE_DISTANCE = 40;
+const REMOTE_GROUND_QUERY_BUDGET_PER_FRAME = 32;
+const REMOTE_GROUND_DESCEND_RATE = 18;
+const REMOTE_GROUND_UNDER_EPSILON = 2;
 /** entity.PlayerState on the backend (internal/entity/player.go), broadcast verbatim as EntitySnapshot/EntityUpdate's `state` field - see isMoving/isRunning below. */
 const ENTITY_STATE_IDLE = 0;
 const ENTITY_STATE_RUNNING = 2;
-
 interface RemoteEntity {
   controller: CharacterController;
   position: Vector3;
@@ -92,6 +98,9 @@ interface RemoteEntity {
   latestVisibleEquipment: VisibleEquipment | undefined;
   /** TEMP debug gizmo (facing/moveDirection arrows + locomotion/clip label) - see LocomotionDebugGizmo's own doc comment. Set once mount() resolves (needs CharacterBounds.radius), same lifecycle as nameTag. */
   debugGizmo: LocomotionDebugGizmo | null;
+  groundTargetY: number | null;
+  groundSampleTimer: number;
+  lastGroundSamplePosition: Vector3;
   /** Set once this entity is removed - guards the async character-load/appearance-apply chain (see spawn()) against resurrecting a character (or a nametag) for an entity that's already gone by the time either finishes. */
   removed: boolean;
 }
@@ -127,31 +136,19 @@ export class RemoteEntityController {
   private readonly entities = new Map<number, RemoteEntity>();
   /** Keyed by characterId, not entityId - a player who leaves and re-enters view (or a fresh entity_id reused by the server) shouldn't re-fetch a character whose appearance is already known. Never evicted for the lifetime of this controller (one WS session); appearance essentially never changes mid-session anyway. */
   private readonly appearanceCache = new Map<string, Promise<CharacterAppearance | null>>();
-  /** Scene units per raw server world unit - see setScale(). Positions are stored raw (unscaled) below and only converted at render time, so changing this retroactively re-places every tracked entity correctly instead of needing them rebuilt. */
-  private scale = 1;
   /** Scratch vectors reused across every entity in a single tick() pass - fully consumed synchronously within one iteration, never held across frames. */
   private readonly scratchRight = new Vector3();
   private readonly renderedFacingScratch = new Vector3();
+  private readonly groundProbePosition = new Vector3();
+  private groundProvider: GroundHeightProvider | null = null;
 
   constructor(scene: Scene, sessionToken: string) {
     this.scene = scene;
     this.sessionToken = sessionToken;
   }
 
-  /**
-   * The server's X/Y/Z/dx/dy/dz are its own simulation's raw integer units
-   * (see spatial/grid.go's CellSize comment on the backend) with no
-   * inherent relationship to this client's scene units - applying them 1:1
-   * made remote players move ~30x too fast and land off the visual grid.
-   * Callers derive this by matching the server's known walk-speed constant
-   * (movement/system.go: WalkSpeed=1 world-unit/tick @ WorldTickHz=30, i.e.
-   * 30 world-units/sec) against the local character's own walk speed
-   * (CharacterController.WALK_SPEED_RADIUS_PER_SEC * radius, in scene
-   * units/sec) for the same real-world speed. Revisit both sides' constants
-   * if the backend changes its tick rate or WalkSpeed.
-   */
-  setScale(scale: number): void {
-    this.scale = scale;
+  setMapGeometry(object3D: Object3D | null, bounds: Box3 | null = null): void {
+    this.groundProvider = object3D ? new GroundHeightProvider(object3D, bounds) : null;
   }
 
   /** Full authoritative roster (WorldSnapshot) - entities not present here are removed, new ones created, all positions/rotations snapped instantly (not interpolated) since this represents a hard resync rather than a routine tick update. */
@@ -184,7 +181,10 @@ export class RemoteEntityController {
     remote.isRunning = entityUpdate.state === ENTITY_STATE_RUNNING;
     if (entityUpdate.dx !== 0 || entityUpdate.dz !== 0) {
       const len = Math.hypot(entityUpdate.dx, entityUpdate.dz);
-      remote.moveDirection.set(entityUpdate.dx / len, 0, entityUpdate.dz / len);
+      // moveDirection is a render-space facing hint (see its own doc
+      // comment) built from a native dx/dz delta - see nativeToScene's own
+      // doc comment on why Z flips going from one space to the other.
+      remote.moveDirection.set(entityUpdate.dx / len, 0, -entityUpdate.dz / len);
     }
   }
 
@@ -218,7 +218,7 @@ export class RemoteEntityController {
     void applyEquipmentDiff(remote.controller, previous, next, () => remote.removed);
   }
 
-  /** Current tracked positions (raw, unscaled server world-units - see setScale) of every entity here, for OnlineScene's radar relative-position math (see RadarFrame). Order is not meaningful or stable. */
+  /** Current tracked positions (raw native RF world-units, not converted via nativeToScene - see that function's own doc comment) of every entity here, for OnlineScene's radar relative-position math (see RadarFrame) - the radar computes its own relative offsets from these before converting, see its own call site. Order is not meaningful or stable. */
   getEntityPositions(): { x: number; z: number }[] {
     const positions: { x: number; z: number }[] = [];
     for (const remote of this.entities.values()) positions.push({ x: remote.position.x, z: remote.position.z });
@@ -248,6 +248,7 @@ export class RemoteEntityController {
   tick(delta: number, camera: Camera, particleCulling: ParticleCullingContext): void {
     const posT = 1 - Math.exp(-POSITION_SMOOTHING_RATE * delta);
     const rotT = 1 - Math.exp(-ROTATION_SMOOTHING_RATE * delta);
+    let groundQueriesRemaining = REMOTE_GROUND_QUERY_BUDGET_PER_FRAME;
     for (const remote of this.entities.values()) {
       remote.position.lerp(remote.targetPosition, posT);
       remote.yaw += shortestAngleDelta(remote.yaw, remote.targetYaw) * rotT;
@@ -291,7 +292,12 @@ export class RemoteEntityController {
 
       remote.controller.setWorldYaw(remote.yaw);
       const character = remote.controller.getCharacter();
-      if (character) character.group.position.copy(remote.position).multiplyScalar(this.scale);
+      if (character) {
+        const previousRenderY = Number.isFinite(character.group.position.y) ? character.group.position.y : nativeToScene(remote.position).y;
+        character.group.position.copy(nativeToScene(remote.position));
+        character.group.position.y = previousRenderY;
+        groundQueriesRemaining = this.applyRemoteGroundHeight(remote, character.group.position, previousRenderY, delta, groundQueriesRemaining);
+      }
       remote.nameTag?.update(remote.controller.getHeadBone());
       // The gizmo draws what the mesh ACTUALLY shows, not the classification
       // target above - derived from the same smoothed `yaw` setWorldYaw just
@@ -333,7 +339,13 @@ export class RemoteEntityController {
     // entity; this only ever refines position/rotation/state.
     remote.controller.setWorldYaw(remote.yaw);
     const character = remote.controller.getCharacter();
-    if (character) character.group.position.copy(remote.position).multiplyScalar(this.scale);
+    if (character) {
+      const previousRenderY = Number.isFinite(character.group.position.y) ? character.group.position.y : entitySnapshot.y;
+      const hadGround = remote.groundTargetY !== null;
+      character.group.position.copy(nativeToScene(remote.position));
+      if (hadGround) character.group.position.y = previousRenderY;
+      this.snapRemoteToGround(remote, character.group.position, hadGround ? previousRenderY : character.group.position.y, hadGround ? 'movement' : 'spawn');
+    }
 
     // Always recorded (see latestVisibleEquipment's own doc comment) so
     // spawn() has the freshest known value once it's ready to use it; only
@@ -343,6 +355,40 @@ export class RemoteEntityController {
     // while unobserved, since appearance_updates never reached us for it.
     remote.latestVisibleEquipment = entitySnapshot.visibleEquipment;
     if (remote.appearanceReady) this.applyVisibleEquipment(remote, entitySnapshot.visibleEquipment);
+  }
+
+  private applyRemoteGroundHeight(remote: RemoteEntity, position: Vector3, referenceY: number, delta: number, groundQueriesRemaining: number): number {
+    remote.groundSampleTimer += delta;
+    const sampledBefore = Number.isFinite(remote.lastGroundSamplePosition.x);
+    const movedSinceSample = sampledBefore
+      ? Math.hypot(position.x - remote.lastGroundSamplePosition.x, position.z - remote.lastGroundSamplePosition.z)
+      : Number.POSITIVE_INFINITY;
+    const needsSample =
+      remote.groundTargetY === null ||
+      (remote.isMoving && (remote.groundSampleTimer >= REMOTE_GROUND_SAMPLE_INTERVAL || movedSinceSample >= REMOTE_GROUND_SAMPLE_DISTANCE));
+    if (needsSample && groundQueriesRemaining > 0) {
+      this.groundProbePosition.copy(position);
+      groundQueriesRemaining--;
+      this.snapRemoteToGround(remote, this.groundProbePosition, referenceY, remote.groundTargetY === null ? 'spawn' : 'movement');
+    }
+
+    if (remote.groundTargetY === null) return groundQueriesRemaining;
+    if (position.y < remote.groundTargetY - REMOTE_GROUND_UNDER_EPSILON) {
+      position.y = remote.groundTargetY;
+      return groundQueriesRemaining;
+    }
+    position.y += (remote.groundTargetY - position.y) * (1 - Math.exp(-REMOTE_GROUND_DESCEND_RATE * delta));
+    return groundQueriesRemaining;
+  }
+
+  private snapRemoteToGround(remote: RemoteEntity, position: Vector3, referenceY: number, mode: 'movement' | 'spawn' | 'teleport'): boolean {
+    const hit = this.groundProvider?.getGroundAt(position.x, position.z, { mode, referenceY });
+    if (!hit) return false;
+    position.y = hit.y;
+    remote.groundTargetY = position.y;
+    remote.lastGroundSamplePosition.copy(position);
+    remote.groundSampleTimer = 0;
+    return true;
   }
 
   private getOrCreate(entitySnapshot: EntitySnapshot): RemoteEntity {
@@ -370,6 +416,9 @@ export class RemoteEntityController {
         appearanceReady: false,
         latestVisibleEquipment: entitySnapshot.visibleEquipment,
         debugGizmo: null,
+        groundTargetY: null,
+        groundSampleTimer: Number.POSITIVE_INFINITY,
+        lastGroundSamplePosition: new Vector3(Number.NaN, Number.NaN, Number.NaN),
         removed: false,
       };
       this.entities.set(entitySnapshot.entityId, remote);
@@ -389,6 +438,11 @@ export class RemoteEntityController {
       if (remote.removed) return;
       const bounds = await remote.controller.mount(character, race);
       if (remote.removed) return;
+      const mountedCharacter = remote.controller.getCharacter();
+      if (mountedCharacter) {
+        mountedCharacter.group.position.copy(nativeToScene(remote.position));
+        this.snapRemoteToGround(remote, mountedCharacter.group.position, mountedCharacter.group.position.y, 'spawn');
+      }
       remote.debugGizmo = new LocomotionDebugGizmo(this.scene, bounds.radius);
 
       const appearance = await this.loadAppearance(characterId);
