@@ -1,9 +1,11 @@
 import { useEffect, useState } from 'react';
 import { Button, Dialog } from '../ui';
+import { preloadCharacterEquip } from '../../controllers/characterAppearance';
 import { RACE_LABELS, RaceGender } from '../../rf/character';
 import type { CharacterSummary } from '../../rf/characterProfile';
 import { MAX_CHARACTERS_PER_ACCOUNT } from '../../rf/characterProfile';
-import { deleteCharacter, listCharacters } from '../../net/CharacterClient';
+import { loadMap } from '../../rf/map';
+import { deleteCharacter, getCharacterProfile, listCharacters } from '../../net/CharacterClient';
 import { CharacterSelectScene } from '../../scenes/CharacterSelectScene';
 import type { SceneManager } from '../../scenes/SceneManager';
 import './CharacterSelectScreen.css';
@@ -56,6 +58,27 @@ export default function CharacterSelectScreen({
       cancelled = true;
     };
   }, [sessionToken, reloadNonce]);
+
+  // Background warm-up for whichever character the player ends up picking -
+  // see docs/map.md's "current supported flow" (GET /map, step 5) and
+  // preloadCharacterEquip's own doc comment. Fire-and-forget: every promise
+  // here already logs and swallows its own errors (loadMap/
+  // preloadCharacterEquip), and there's nothing for this effect's own
+  // cleanup to cancel - a stale predownload just warms a cache that's
+  // harmless (if occasionally wasted) to have warmed early, same as this
+  // effect firing again after a character list reload. Not gated on
+  // `selectedId` - the whole point is to have already paid this cost by the
+  // time the player clicks Select, for any of their characters, not just
+  // whichever one happens to be selected first.
+  useEffect(() => {
+    if (!characters) return;
+    void loadMap();
+    for (const character of characters) {
+      void getCharacterProfile(sessionToken, character.id)
+        .then((profile) => preloadCharacterEquip(character.race, profile))
+        .catch((err: unknown) => console.error(`Failed to prefetch profile for predownload (character ${character.id}):`, err));
+    }
+  }, [sessionToken, characters]);
 
   useEffect(() => {
     if (!characters) return;

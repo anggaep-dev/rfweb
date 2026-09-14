@@ -500,7 +500,7 @@ function getCorrectedRigidBindInverse(built: BuiltSkeleton, rigidReference: Buil
  * was missing before: every material always fell through, even for a
  * texture that genuinely needed one of the other two modes.
  */
-function materialAlphaOptions(texture: Texture | null): { transparent: boolean; alphaTest: number } {
+export function materialAlphaOptions(texture: Texture | null): { transparent: boolean; alphaTest: number } {
   const alphaInfo = (texture?.userData as { rfAlpha?: TextureAlphaInfo } | undefined)?.rfAlpha;
   if (alphaInfo?.alphaMode === 'blend') return { transparent: true, alphaTest: 0 };
   if (alphaInfo?.alphaMode === 'mask') return { transparent: false, alphaTest: alphaInfo.alphaTest ?? 0.5 };

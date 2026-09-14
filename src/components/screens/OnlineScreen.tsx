@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import ChatBox from '../hud/ChatBox';
+import FpsCounter from '../hud/FpsCounter';
 import FullscreenButton from '../hud/FullscreenButton';
 import HudIconRow from '../hud/HudIconRow';
 import InventoryWindow from '../inventory/InventoryWindow';
@@ -37,6 +38,7 @@ export default function OnlineScreen({ sceneManager, initialRaceGender, sessionT
   const [errorMessage, setErrorMessage] = useState('');
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('connecting');
   const [pingMs, setPingMs] = useState<number | null>(null);
+  const [fps, setFps] = useState<number | null>(null);
   const [inventoryOpen, setInventoryOpen] = useState(false);
   const [chatEntries, setChatEntries] = useState<ChatLogEntry[]>([]);
   const [inventory, setInventory] = useState<InventoryState>(EMPTY_INVENTORY);
@@ -58,6 +60,7 @@ export default function OnlineScreen({ sceneManager, initialRaceGender, sessionT
         setErrorMessage(message ?? '');
       },
       onPingChange: setPingMs,
+      onFpsChange: setFps,
       onRadarFrame: (frame) => miniMapRef.current?.update(frame.facingRad, frame.blips),
       onChatMessage: (entry) => setChatEntries((prev) => [...prev, entry].slice(-MAX_CHAT_ENTRIES)),
       onInventoryChange: setInventory,
@@ -116,6 +119,7 @@ export default function OnlineScreen({ sceneManager, initialRaceGender, sessionT
       {status === 'ready' && <MiniMap ref={miniMapRef} />}
       {status === 'ready' && <ChatBox entries={chatEntries} onSend={handleSendChat} />}
       {status === 'ready' && <PingIndicator pingMs={pingMs} />}
+      {status === 'ready' && <FpsCounter fps={fps} />}
       {status === 'ready' && <FullscreenButton />}
       {status === 'ready' && <HudIconRow onOpenInventory={handleToggleInventory} />}
       {status === 'ready' && <VitalsBar />}

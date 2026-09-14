@@ -1,4 +1,7 @@
+import { Scene } from 'three';
 import { CharacterController } from './CharacterController';
+import { loadCharacter } from '../rf/character';
+import type { RaceGender } from '../rf/character';
 import { BASE_MODEL_TYPES } from '../rf/characterProfile';
 import type { BaseAppearance, EquippedItems } from '../rf/characterProfile';
 import { ALL_EQUIP_SLOTS, loadSlotItems, ModelType } from '../rf/items';
@@ -55,6 +58,45 @@ export async function applyCharacterAppearance(
       console.error(`Failed to equip item "${itemId}" for slot ${modelType}:`, err);
     }
     if (isCancelled()) return;
+  }
+}
+
+/**
+ * Warms every cache applyCharacterAppearance's underlying loaders populate
+ * (mesh/texture fetch+parse+decode for each equipped item and base-appearance
+ * variant - see character.ts's various pooled *Cache maps and items.ts's
+ * loadSlotItems) for a character's real saved appearance, without ever
+ * touching a visible scene.
+ *
+ * CharacterSelectScene's own on-stage preview deliberately shows base
+ * appearance only, matching the real client (see CharacterSummary's own doc
+ * comment) - it's not this function's job to change that. Instead this
+ * mounts a throwaway CharacterController against a Scene that's never
+ * rendered (never even added to SceneManager - just a plain `new Scene()`
+ * this function creates and discards), applies the real fetched appearance
+ * to force every underlying fetch/parse/decode to actually happen, then
+ * disposes it - only the shared, module-level caches survive
+ * (CharacterController.dispose's disposeObject3D already skips disposing
+ * pooled/shared resources, e.g. weapon/cloak textures, so this doesn't undo
+ * its own warm-up). By the time the player actually clicks "Select" and
+ * OnlineScene mounts the same character for real, applyCharacterAppearance
+ * there just replays cache hits instead of fresh network+parse+decode work.
+ *
+ * Best-effort: errors are logged and swallowed rather than thrown, since
+ * this is a pure background warm-up, not a requirement for anything to work
+ * (a cold cache just means OnlineScene's own later equip pays the normal,
+ * previously-only cost).
+ */
+export async function preloadCharacterEquip(race: RaceGender, appearance: AppearanceLike): Promise<void> {
+  const controller = new CharacterController(new Scene());
+  try {
+    const character = await loadCharacter(race);
+    await controller.mount(character, race);
+    await applyCharacterAppearance(controller, appearance, () => false);
+  } catch (err) {
+    console.error('Failed to preload character equip assets:', err);
+  } finally {
+    controller.dispose();
   }
 }
 

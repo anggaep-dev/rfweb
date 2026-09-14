@@ -69,10 +69,27 @@ export interface CharacterSummary {
   baseAppearance: BaseAppearance;
 }
 
-/** Full per-character data, fetched once entering the world (not needed by the select screen) - adds the two fields that make CharacterSummary deliberately lighter. */
+/**
+ * The server's derived combat/movement stats after equipped-item effects
+ * (rfworld's persistence.CharacterStatus / protocol.proto's CharacterStatus)
+ * - only `moveSpeed` is modeled since it's the only one this project
+ * consumes today (OnlineScene's local-player movement speed - see
+ * CharacterController.setServerMoveSpeedMultiplier); the real wire payload
+ * carries several more (maxHP, attackMin/Max, defense, ...) that simply pass
+ * through unread. A multiplier applied on top of the server's own baseline
+ * walk/run speed (movement/system.go's WalkSpeed/RunSpeed constants) - 1
+ * means no bonus/penalty, not "no movement".
+ */
+export interface CharacterStatus {
+  moveSpeed: number;
+}
+
+/** Full per-character data, fetched once entering the world (not needed by the select screen) - adds the fields that make CharacterSummary deliberately lighter. */
 export interface CharacterProfile extends CharacterSummary {
   equipped: EquippedItems;
   inventory: InventorySlot[];
+  /** Optional because older/never-fully-loaded character documents may predate this field - see DefaultCharacterStatus's own moveSpeed:1 baseline on the backend for what "never equipped anything with a speed effect" actually looks like on the wire (present, just at the neutral value), vs this being absent entirely. */
+  status?: CharacterStatus;
 }
 
 /**

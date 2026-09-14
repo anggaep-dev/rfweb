@@ -397,6 +397,8 @@ export class CharacterController {
   /** Which real backward/strafe clip to play instead of plain walk/run while moveDirection is active - see LocomotionDirection and resolveClipName. Null means "mostly forward" (plain walk/run, face the way you're moving - unchanged default behavior). */
   private moveLocomotionDirection: LocomotionDirection | null = null;
   private walkSpeed = 1;
+  /** Server-computed movement-speed multiplier (protocol.proto's CharacterStatus.moveSpeed - RF's own equipped-item speed bonuses/penalties, e.g. certain cloaks/boots) - see setServerMoveSpeedMultiplier. Defaults to 1 (no-op): only OnlineScene's local player ever has a real one to set; every other CharacterController (bots, other players, character-select previews) has no server-authoritative speed to reflect and should render at its own plain mesh-scale-derived pace. */
+  private serverMoveSpeedMultiplier = 1;
   private arriveThreshold = 0.05;
   /** Walk vs run - see MoveMode. Only affects click-to-move (moveTo()); a manual setClip('run') from a debug button is unaffected. */
   private moveMode: MoveMode = 'walk';
@@ -1834,6 +1836,7 @@ export class CharacterController {
     this.moveMode = 'walk';
     this.isBoosterEquipped = false;
     this.isFlying = false;
+    this.serverMoveSpeedMultiplier = 1;
     this.debugWeaponUpgradeLevel = 0;
     this.lastQuatByBone.clear();
     this.callbacks.onClipChange?.('stand');
@@ -1852,11 +1855,31 @@ export class CharacterController {
     return { box, center, radius };
   }
 
-  /** Base movement speed - flying (see isFlying) has its own fixed speed that ignores the walk/run toggle entirely, not a multiplier layered on top of whichever one is selected; otherwise the current moveMode's speed, including the booster multiplier while running with a Booster cloak equipped (see isBoosterEquipped). Callers scale by input intensity themselves where relevant (moveDirection's analog magnitude; click-to-move is always full speed). */
+  /**
+   * Server-computed movement-speed multiplier from equipped items
+   * (CharacterStatus.moveSpeed - see rfworld's inventory/service.go
+   * recalculateStatus, which sums each equipped item's own MoveSpeed
+   * effect) - applied on top of this character's own mesh-scale-derived
+   * walkSpeed by getCurrentSpeed(), the same way the backend's own
+   * movement/system.go applies it on top of its WalkSpeed/RunSpeed
+   * constants (`applyMoveSpeed`). OnlineScene is the only caller: once at
+   * mount (from the REST CharacterProfile.status fetch) and again on every
+   * live equip/unequip (InventoryActionResult.status, populated whenever a
+   * use_item actually changed a fixed equipment slot) - see its own
+   * handleInventoryResponse. A non-positive value is treated as "unknown/
+   * not provided" and falls back to 1 (no-op) rather than zeroing out
+   * movement entirely.
+   */
+  setServerMoveSpeedMultiplier(multiplier: number): void {
+    this.serverMoveSpeedMultiplier = multiplier > 0 ? multiplier : 1;
+  }
+
+  /** Base movement speed - flying (see isFlying) has its own fixed speed that ignores the walk/run toggle entirely, not a multiplier layered on top of whichever one is selected; otherwise the current moveMode's speed, including the booster multiplier while running with a Booster cloak equipped (see isBoosterEquipped). serverMoveSpeedMultiplier applies uniformly underneath all of that (see its own doc comment) - the equipped-item speed bonus scales walking, running, and flying alike, same as it scales the server's own WalkSpeed/RunSpeed constants regardless of which one is active. Callers scale by input intensity themselves where relevant (moveDirection's analog magnitude; click-to-move is always full speed). */
   private getCurrentSpeed(): number {
-    if (this.isFlying) return this.walkSpeed * FLY_SPEED_MULTIPLIER;
-    if (this.moveMode !== 'run') return this.walkSpeed;
-    const runSpeed = this.walkSpeed * RUN_SPEED_MULTIPLIER;
+    const base = this.walkSpeed * this.serverMoveSpeedMultiplier;
+    if (this.isFlying) return base * FLY_SPEED_MULTIPLIER;
+    if (this.moveMode !== 'run') return base;
+    const runSpeed = base * RUN_SPEED_MULTIPLIER;
     return this.isBoosterEquipped ? runSpeed * BOOSTER_SPEED_MULTIPLIER : runSpeed;
   }
 

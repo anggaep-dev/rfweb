@@ -154,6 +154,39 @@ export class CameraController {
   }
 
   /**
+   * Widens the camera's far clipping plane beyond its 1000-unit default -
+   * needed once a real map is loaded (OnlineScene), since native RF world
+   * geometry spans native RF units in the thousands (see docs/map.md's own
+   * example coordinates), far past what a character-only scene ever needed
+   * to render. Only ever grows the far plane (never shrinks it back below
+   * the 1000 default), since nothing in this project unloads a map without
+   * also tearing down the whole scene/camera.
+   */
+  setFarPlane(distance: number): void {
+    if (distance <= this.camera.far) return;
+    this.camera.far = distance;
+    this.camera.updateProjectionMatrix();
+  }
+
+  /**
+   * Instantly carries both the orbit target and the camera itself by
+   * `offset` - for a hard teleport (OnlineScene's own GM `%goto` handling),
+   * where the character's position just jumped by a large, discontinuous
+   * distance. Without this, update()'s own per-frame follow (which
+   * deliberately LERPs toward the character at FOLLOW_SMOOTHING_RATE, so
+   * ordinary walking feels smooth) would instead spend the next ~1s visibly
+   * sweeping/flying the camera across the whole gap - the same "camera
+   * position += target's own per-frame delta" trick that keeps zoom
+   * distance fixed during normal follow, just applied in one instant step
+   * instead of smoothed over many frames.
+   */
+  teleport(offset: Vector3): void {
+    this.controls.target.add(offset);
+    this.camera.position.add(offset);
+    this.controls.update();
+  }
+
+  /**
    * Frames the camera around a freshly mounted character's bounding box -
    * its actual units/scale aren't known ahead of time, so this can't be
    * baked in. Also resizes near/far planes and the debug gizmo's.

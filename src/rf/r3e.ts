@@ -49,7 +49,7 @@ const VERTEX_FORMAT_SHORT = 0x4000;
  * them, since mixing the two would make it unclear which one a given call
  * site means.
  */
-function convertVec3Unity(x: number, y: number, z: number, out = new Vector3()): Vector3 {
+export function convertVec3Unity(x: number, y: number, z: number, out = new Vector3()): Vector3 {
   return out.set(x, y, -z);
 }
 
@@ -62,8 +62,8 @@ export function convertQuatUnity(x: number, y: number, z: number, w: number, out
   return out.set(-x, -y, z, w);
 }
 
-/** Raw quaternion (XYZW), no coordinate conversion - same reasoning as BinaryReader.vec3Raw, just not on that shared class since every other format using it is 3ds-Max-space (see BinaryReader.quat) and this one isn't. */
-function readQuatRaw(r: BinaryReader, out = new Quaternion()): Quaternion {
+/** Raw quaternion (XYZW), no coordinate conversion - same reasoning as BinaryReader.vec3Raw, just not on that shared class since every other format using it is 3ds-Max-space (see BinaryReader.quat) and this one isn't. Exported for bsp.ts's own Object chunk, which shares this exact 88-byte AnimatedObject record layout (see R3EAnimatedObject's own doc comment). */
+export function readQuatRaw(r: BinaryReader, out = new Quaternion()): Quaternion {
   const x = r.f32();
   const y = r.f32();
   const z = r.f32();
