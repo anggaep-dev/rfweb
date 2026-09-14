@@ -3,10 +3,9 @@ import './MiniMap.css';
 
 /** How far (raw server world-units - see RemoteEntityController.setScale's own doc comment on what those are) the radar's edge represents - tuned by eye, not derived from any known real-world map distance. */
 const RADAR_RANGE_WORLD_UNITS = 300;
-/** Slightly less than minimap-face's own half-diameter (68px) so a blip at max range doesn't visually clip the ring border. */
-const USABLE_RADIUS_PX = 60;
 /** Fixed DOM pool size, reused/hidden rather than created per entity - the handful of nearby players this will ever realistically need to show doesn't justify dynamic mount/unmount churn on every radar frame. */
 const MAX_BLIPS = 12;
+const USABLE_RADIUS_FRACTION = 0.44;
 
 export interface RadarBlip {
   /** World-unit offset from the local player - see OnlineScene's RadarFrame. */
@@ -27,6 +26,7 @@ export interface MiniMapHandle {
  * positions on a blank grid, not an actual world map.
  */
 const MiniMap = forwardRef<MiniMapHandle>(function MiniMap(_props, ref) {
+  const faceRef = useRef<HTMLDivElement>(null);
   const playerMarkerRef = useRef<HTMLDivElement>(null);
   const blipRefs = useRef<(HTMLDivElement | null)[]>([]);
 
@@ -37,7 +37,9 @@ const MiniMap = forwardRef<MiniMapHandle>(function MiniMap(_props, ref) {
         const marker = playerMarkerRef.current;
         if (marker) marker.style.transform = `rotate(${(facingRad * 180) / Math.PI}deg)`;
 
-        const pxPerUnit = USABLE_RADIUS_PX / RADAR_RANGE_WORLD_UNITS;
+        const face = faceRef.current;
+        const usableRadiusPx = face ? Math.min(face.clientWidth, face.clientHeight) * USABLE_RADIUS_FRACTION : 60;
+        const pxPerUnit = usableRadiusPx / RADAR_RANGE_WORLD_UNITS;
         for (let i = 0; i < MAX_BLIPS; i++) {
           const el = blipRefs.current[i];
           if (!el) continue;
@@ -57,7 +59,7 @@ const MiniMap = forwardRef<MiniMapHandle>(function MiniMap(_props, ref) {
   return (
     <div className="minimap">
       <div className="minimap-compass">N</div>
-      <div className="minimap-face">
+      <div className="minimap-face" ref={faceRef}>
         <div className="minimap-sweep" />
         <div className="minimap-grid" />
         {Array.from({ length: MAX_BLIPS }, (_, i) => (

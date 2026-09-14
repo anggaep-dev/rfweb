@@ -1,14 +1,21 @@
 .ping-indicator {
-  /* Stacked below MiniMap (top-left, 8.5rem tall + space-4 top offset) so the two don't overlap. */
   position: absolute;
-  top: 10rem;
-  left: var(--space-4);
+  top: max(5.8rem, calc(env(safe-area-inset-top) + 5.8rem));
+  left: max(var(--space-4), env(safe-area-inset-left));
   padding: var(--space-1) var(--space-2);
   border-radius: 2px;
   background: rgba(16, 19, 27, 0.7);
   border: 1px solid var(--border-subtle);
   font: 700 0.75rem var(--font-mono);
   pointer-events: none;
+}
+
+@media (max-width: 720px), (pointer: coarse) {
+  .ping-indicator {
+    top: max(4.9rem, calc(env(safe-area-inset-top) + 4.9rem));
+    left: max(var(--space-3), env(safe-area-inset-left));
+    font-size: 0.65rem;
+  }
 }
 
 .ping-indicator-good {

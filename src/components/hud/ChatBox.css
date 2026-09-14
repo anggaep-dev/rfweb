@@ -1,14 +1,8 @@
 .chat-box {
-  /* Left edge, under MiniMap/PingIndicator/FullscreenButton's stack (which
-     ends around 15rem from the top - see FullscreenButton.css), stopping
-     short of MobileControls' joystick (bottom-left, ~8rem tall including its
-     own offset). top/bottom use min(rem, vh%) rather than fixed rem values
-     so a short mobile-landscape viewport shrinks the reserved space instead
-     of the box going negative-height. */
   position: absolute;
-  top: min(15rem, 34vh);
+  top: min(12.5rem, 32vh);
   bottom: min(9rem, 20vh);
-  left: var(--space-4);
+  left: max(var(--space-4), env(safe-area-inset-left));
   width: 13rem;
   max-width: min(13rem, 62vw);
   display: flex;
@@ -27,6 +21,16 @@
   overflow: hidden;
 }
 
+@media (max-width: 720px), (pointer: coarse) {
+  .chat-box {
+    top: min(9.75rem, 32vh);
+    bottom: max(10.75rem, calc(env(safe-area-inset-bottom) + 10.75rem));
+    left: max(var(--space-3), env(safe-area-inset-left));
+    width: min(16rem, calc(100vw - 2 * var(--space-3)));
+    max-width: calc(100vw - 2 * var(--space-3));
+  }
+}
+
 .chat-box-log {
   flex: 1 1 auto;
   min-height: 0;
@@ -35,6 +39,20 @@
   display: flex;
   flex-direction: column;
   gap: 2px;
+}
+
+.chat-box-collapse {
+  position: absolute;
+  top: var(--space-1);
+  right: var(--space-1);
+  z-index: 1;
+  width: 1.45rem;
+  height: 1.45rem;
+  border-radius: 2px;
+  border: 1px solid var(--border-chrome);
+  background: rgba(16, 19, 27, 0.8);
+  color: var(--text-secondary);
+  pointer-events: auto;
 }
 
 .chat-box-empty {
@@ -126,4 +144,62 @@
 .chat-box-send:disabled {
   opacity: 0.4;
   cursor: default;
+}
+
+.chat-peek {
+  position: absolute;
+  left: max(var(--space-3), env(safe-area-inset-left));
+  bottom: max(10.25rem, calc(env(safe-area-inset-bottom) + 10.25rem));
+  width: min(15rem, 62vw);
+  min-height: 3.4rem;
+  display: grid;
+  grid-template-columns: 2.3rem minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  border-radius: 2px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  background: rgba(10, 14, 21, 0.22);
+  color: var(--text-secondary);
+  pointer-events: auto;
+  text-align: left;
+}
+
+.chat-peek-icon {
+  width: 2.1rem;
+  height: 2.1rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 2px;
+  border: 1px solid var(--border-chrome);
+  background: rgba(16, 19, 27, 0.72);
+  color: var(--energy-cyan);
+}
+
+.chat-peek-lines {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.chat-peek-line,
+.chat-peek-empty {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font: 500 0.62rem var(--font-display);
+  line-height: 1.25;
+  text-shadow: 0 1px 2px var(--border-bevel-dark), 0 0 6px rgba(0, 0, 0, 0.7);
+}
+
+.chat-peek-line-system,
+.chat-peek-empty {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.chat-peek-line-whisper {
+  color: var(--aether-violet);
 }

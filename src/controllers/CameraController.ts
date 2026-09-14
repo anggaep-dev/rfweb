@@ -151,6 +151,7 @@ export class CameraController {
   setAspect(aspect: number): void {
     this.camera.aspect = aspect;
     this.camera.updateProjectionMatrix();
+    if (this.mode === 'third') this.controls.update();
   }
 
   /**

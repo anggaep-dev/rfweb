@@ -121,7 +121,7 @@ export default function OnlineScreen({ sceneManager, initialRaceGender, sessionT
       {status === 'ready' && <PingIndicator pingMs={pingMs} />}
       {status === 'ready' && <FpsCounter fps={fps} />}
       {status === 'ready' && <FullscreenButton />}
-      {status === 'ready' && <HudIconRow onOpenInventory={handleToggleInventory} />}
+      {status === 'ready' && <HudIconRow onOpenInventory={handleToggleInventory} onOpenSettings={onExit} settingsLabel={onExit ? 'Exit' : 'Settings'} />}
       {status === 'ready' && <VitalsBar />}
       {status === 'ready' && <MobileControls onMove={handleMoveInput} />}
       {status === 'ready' && inventoryOpen && (
@@ -145,11 +145,6 @@ export default function OnlineScreen({ sceneManager, initialRaceGender, sessionT
         <div className="online-screen-overlay">
           {connectionStatus === 'connecting' ? 'Connecting to server…' : 'Disconnected from server.'}
         </div>
-      )}
-      {onExit && (
-        <button className="online-screen-exit" onClick={onExit}>
-          Exit
-        </button>
       )}
     </div>
   );

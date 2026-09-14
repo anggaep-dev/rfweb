@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 import type { ChatLogEntry } from '../../scenes/OnlineScene';
+import { useIsMobile } from '../../hooks/useIsMobile';
 import './ChatBox.css';
 
 export interface ChatBoxProps {
@@ -22,6 +23,8 @@ const MAX_MESSAGE_LENGTH = 200;
  * render (visually distinguished, see .chat-box-entry-whisper).
  */
 export default function ChatBox({ entries, onSend }: ChatBoxProps) {
+  const isMobile = useIsMobile();
+  const [expanded, setExpanded] = useState(false);
   const [draft, setDraft] = useState('');
   const logRef = useRef<HTMLDivElement>(null);
 
@@ -40,8 +43,37 @@ export default function ChatBox({ entries, onSend }: ChatBoxProps) {
     setDraft('');
   };
 
+  if (isMobile && !expanded) {
+    const previewEntries = entries.slice(-3);
+    return (
+      <button type="button" className="chat-peek" onClick={() => setExpanded(true)} aria-label="Open chat">
+        <span className="chat-peek-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M21 12a8 8 0 0 1-8 8H6l-3 3v-7a8 8 0 1 1 18-4Z" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        </span>
+        <span className="chat-peek-lines">
+          {previewEntries.length === 0 ? (
+            <span className="chat-peek-empty">No messages yet.</span>
+          ) : (
+            previewEntries.map((entry) => (
+              <span key={entry.id} className={`chat-peek-line chat-peek-line-${entry.kind}`}>
+                {entry.kind === 'system' ? entry.message : `${entry.kind === 'whisper' ? '[W] ' : ''}${entry.playerName}: ${entry.message}`}
+              </span>
+            ))
+          )}
+        </span>
+      </button>
+    );
+  }
+
   return (
-    <div className="chat-box">
+    <div className={`chat-box ${isMobile ? 'chat-box-mobile-expanded' : ''}`}>
+      {isMobile && (
+        <button type="button" className="chat-box-collapse" onClick={() => setExpanded(false)} aria-label="Collapse chat">
+          ×
+        </button>
+      )}
       <div className="chat-box-log" ref={logRef}>
         {entries.length === 0 && <div className="chat-box-empty">No messages yet.</div>}
         {entries.map((entry) => (

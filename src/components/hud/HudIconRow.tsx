@@ -8,6 +8,7 @@ export interface HudIconRowProps {
   onOpenCharacter?: () => void;
   onOpenInventory?: () => void;
   onOpenSettings?: () => void;
+  settingsLabel?: string;
 }
 
 /**
@@ -24,7 +25,7 @@ const SHORTCUTS: { code: string; label: string; handlerKey: keyof HudIconRowProp
 ];
 
 /** Vertical menu bar, right edge of the screen (Character/Inventory/Settings) - visual chrome only until the screens behind these exist. Desktop (non-touch) also gets a C/I/L keyboard shortcut per button, with a matching hint badge - mobile has no physical keyboard, so neither the hint nor the listener add anything there. */
-export default function HudIconRow({ onOpenCharacter, onOpenInventory, onOpenSettings }: HudIconRowProps) {
+export default function HudIconRow({ onOpenCharacter, onOpenInventory, onOpenSettings, settingsLabel = 'Settings' }: HudIconRowProps) {
   const isMobile = useIsMobile();
 
   useEffect(() => {
@@ -55,7 +56,7 @@ export default function HudIconRow({ onOpenCharacter, onOpenInventory, onOpenSet
         </svg>
         {!isMobile && <span className="hud-icon-btn-shortcut">I</span>}
       </button>
-      <button type="button" className="hud-icon-btn" onClick={onOpenSettings} aria-label="Settings (L)">
+      <button type="button" className="hud-icon-btn" onClick={onOpenSettings} aria-label={`${settingsLabel} (L)`}>
         <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2">
           <circle cx="12" cy="12" r="3" />
           <path

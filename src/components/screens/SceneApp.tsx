@@ -30,6 +30,19 @@ const isUiTestRoute = window.location.pathname.replace(/\/+$/, '') === '/uitest'
 /** /debug skips login/character-select entirely - DebugPanel's own race switcher (top-left, once "%debug 1" is run) covers picking a character. */
 const DEBUG_DEFAULT_RACE = RaceGender.Bell_Male;
 
+function syncVisualViewportVars(): void {
+  const viewport = window.visualViewport;
+  const width = Math.max(1, viewport?.width ?? window.innerWidth);
+  const height = Math.max(1, viewport?.height ?? window.innerHeight);
+  const left = viewport?.offsetLeft ?? 0;
+  const top = viewport?.offsetTop ?? 0;
+  const rootStyle = document.documentElement.style;
+  rootStyle.setProperty('--app-viewport-left', `${left}px`);
+  rootStyle.setProperty('--app-viewport-top', `${top}px`);
+  rootStyle.setProperty('--app-viewport-width', `${width}px`);
+  rootStyle.setProperty('--app-viewport-height', `${height}px`);
+}
+
 /**
  * Owns the single shared SceneManager (renderer/canvas/render loop) and the
  * top-level login -> character-select -> viewer screen flow. Each screen
@@ -60,6 +73,9 @@ export default function SceneApp() {
     if (!container) return;
 
     let disposed = false;
+    let resizeFrame = 0;
+    let settleFrame = 0;
+    let settleTimeout = 0;
     // Written once SceneManager.create() resolves below - handleResize and
     // this effect's own cleanup both need to reach it, but can't just
     // close over a `const` the way the old synchronous `new SceneManager()`
@@ -67,6 +83,20 @@ export default function SceneApp() {
     // negotiate a device/adapter before it can render - see its own doc
     // comment).
     let manager: SceneManager | null = null;
+    const applyViewportResize = () => {
+      syncVisualViewportVars();
+      manager?.resize();
+    };
+    const requestViewportResize = () => {
+      cancelAnimationFrame(resizeFrame);
+      resizeFrame = requestAnimationFrame(() => {
+        applyViewportResize();
+        cancelAnimationFrame(settleFrame);
+        settleFrame = requestAnimationFrame(applyViewportResize);
+      });
+    };
+
+    syncVisualViewportVars();
     void SceneManager.create(container).then((created) => {
       if (disposed) {
         // This effect's cleanup already ran by the time creation resolved
@@ -78,6 +108,7 @@ export default function SceneApp() {
       }
       manager = created;
       setSceneManagerState(created);
+      requestViewportResize();
     });
 
     // Blocks entry past the login screen only until every race's skeleton
@@ -106,12 +137,28 @@ export default function SceneApp() {
         setPreloadError(err instanceof Error ? err.message : String(err));
       });
 
-    const handleResize = () => manager?.resize();
-    window.addEventListener('resize', handleResize);
+    const resizeObserver = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(requestViewportResize);
+    resizeObserver?.observe(container);
+    const handleOrientationChange = () => {
+      requestViewportResize();
+      window.clearTimeout(settleTimeout);
+      settleTimeout = window.setTimeout(requestViewportResize, 250);
+    };
+    window.addEventListener('resize', requestViewportResize);
+    window.addEventListener('orientationchange', handleOrientationChange);
+    window.visualViewport?.addEventListener('resize', requestViewportResize);
+    window.visualViewport?.addEventListener('scroll', requestViewportResize);
 
     return () => {
       disposed = true;
-      window.removeEventListener('resize', handleResize);
+      cancelAnimationFrame(resizeFrame);
+      cancelAnimationFrame(settleFrame);
+      window.clearTimeout(settleTimeout);
+      resizeObserver?.disconnect();
+      window.removeEventListener('resize', requestViewportResize);
+      window.removeEventListener('orientationchange', handleOrientationChange);
+      window.visualViewport?.removeEventListener('resize', requestViewportResize);
+      window.visualViewport?.removeEventListener('scroll', requestViewportResize);
       manager?.dispose();
       setSceneManagerState(null);
     };

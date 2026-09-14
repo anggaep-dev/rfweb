@@ -65,7 +65,8 @@ export class SceneManager {
     // stays visually seamless.
     this.renderer = new WebGPURenderer({ antialias: true, alpha: false });
     this.renderer.setClearColor(CANVAS_CLEAR_COLOR, 1);
-    this.renderer.setSize(container.clientWidth, container.clientHeight);
+    const { width, height } = this.measureContainer();
+    this.renderer.setSize(width, height);
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     container.appendChild(this.renderer.domElement);
 
@@ -111,13 +112,24 @@ export class SceneManager {
     }
     this.current?.dispose();
     this.current = next;
-    next.resize(this.container.clientWidth / this.container.clientHeight);
+    const { width, height } = this.measureContainer();
+    next.resize(width / height);
   }
 
-  /** Call on window resize - resizes the shared canvas and forwards the new aspect to whichever scene is active. */
+  private measureContainer(): { width: number; height: number } {
+    const rect = this.container.getBoundingClientRect();
+    return {
+      width: Math.max(1, Math.round(rect.width || this.container.clientWidth || window.innerWidth)),
+      height: Math.max(1, Math.round(rect.height || this.container.clientHeight || window.innerHeight)),
+    };
+  }
+
+  /** Call when the visual viewport/container changes - resizes the shared canvas and forwards the new aspect to whichever scene is active. */
   resize(): void {
-    this.renderer.setSize(this.container.clientWidth, this.container.clientHeight);
-    this.current?.resize(this.container.clientWidth / this.container.clientHeight);
+    const { width, height } = this.measureContainer();
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    this.renderer.setSize(width, height);
+    this.current?.resize(width / height);
   }
 
   private readonly loop = (): void => {

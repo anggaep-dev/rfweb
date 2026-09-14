@@ -1,19 +1,39 @@
 .vitals-bar {
   position: absolute;
-  bottom: var(--space-6);
-  left: 50%;
-  transform: translateX(-50%);
+  top: max(var(--space-4), env(safe-area-inset-top));
+  left: max(var(--space-4), env(safe-area-inset-left));
   display: flex;
   align-items: stretch;
   gap: var(--space-2);
   width: 14rem;
-  max-width: calc(100vw - 15rem);
+  max-width: min(14rem, calc(100vw - 13rem));
   padding: var(--space-2);
   background: var(--elevation-panel-bg);
   border: var(--elevation-panel-border);
   border-radius: 2px;
   box-shadow: var(--elevation-panel-shadow);
   pointer-events: none;
+}
+
+@media (max-width: 720px), (pointer: coarse) {
+  .vitals-bar {
+    top: max(var(--space-3), env(safe-area-inset-top));
+    left: max(var(--space-3), env(safe-area-inset-left));
+    width: min(11.5rem, 56vw);
+    padding: var(--space-1);
+  }
+
+  .vitals-level {
+    width: 1.9rem;
+  }
+
+  .vitals-level-tag {
+    font-size: 0.45rem;
+  }
+
+  .vitals-level-number {
+    font-size: 0.8rem;
+  }
 }
 
 /* Same recessed-slot treatment as InventoryWindow's equipment sockets

@@ -1,9 +1,9 @@
 .minimap {
   position: absolute;
-  top: var(--space-4);
-  left: var(--space-4);
-  width: 8.5rem;
-  height: 8.5rem;
+  top: max(var(--space-4), env(safe-area-inset-top));
+  right: max(var(--space-4), env(safe-area-inset-right));
+  width: clamp(6.25rem, 18vw, 8.5rem);
+  height: clamp(6.25rem, 18vw, 8.5rem);
   pointer-events: none;
 }
 
@@ -69,6 +69,19 @@
   border-radius: 50%;
   background: var(--energy-cyan);
   box-shadow: 0 0 4px rgba(34, 211, 238, 0.8);
+}
+
+@media (max-width: 720px), (pointer: coarse) {
+  .minimap {
+    width: clamp(5.5rem, 24vw, 7rem);
+    height: clamp(5.5rem, 24vw, 7rem);
+    top: max(var(--space-3), env(safe-area-inset-top));
+    right: max(var(--space-3), env(safe-area-inset-right));
+  }
+
+  .minimap-compass {
+    font-size: 0.52rem;
+  }
 }
 
 .minimap-player {

@@ -1,14 +1,21 @@
 .fps-counter {
-  /* Stacked directly below PingIndicator (top: 10rem), itself stacked below MiniMap - see PingIndicator.css's own offset comment. */
   position: absolute;
-  top: 11.75rem;
-  left: var(--space-4);
+  top: max(7.55rem, calc(env(safe-area-inset-top) + 7.55rem));
+  left: max(var(--space-4), env(safe-area-inset-left));
   padding: var(--space-1) var(--space-2);
   border-radius: 2px;
   background: rgba(16, 19, 27, 0.7);
   border: 1px solid var(--border-subtle);
   font: 700 0.75rem var(--font-mono);
   pointer-events: none;
+}
+
+@media (max-width: 720px), (pointer: coarse) {
+  .fps-counter {
+    top: max(6.45rem, calc(env(safe-area-inset-top) + 6.45rem));
+    left: max(var(--space-3), env(safe-area-inset-left));
+    font-size: 0.65rem;
+  }
 }
 
 .fps-counter-good {

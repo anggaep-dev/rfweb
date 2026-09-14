@@ -7,13 +7,11 @@
 
 .mobile-controls-joystick-base {
   position: absolute;
-  left: var(--space-6);
-  bottom: var(--space-6);
-  width: 6.5rem;
-  height: 6.5rem;
+  left: max(var(--space-6), calc(env(safe-area-inset-left) + var(--space-4)));
+  bottom: max(var(--space-6), calc(env(safe-area-inset-bottom) + var(--space-4)));
+  width: 9rem;
+  height: 9rem;
   border-radius: 50%;
-  background: rgba(16, 19, 27, 0.5);
-  border: 1px solid var(--border-subtle);
   pointer-events: auto;
   /* touch-action alone isn't enough on iOS - a held finger can still trigger
      the text-selection callout/magnifier, which steals the touch mid-drag
@@ -22,6 +20,16 @@
   -webkit-touch-callout: none;
   -webkit-user-select: none;
   user-select: none;
+}
+
+.mobile-controls-joystick-base::before {
+  content: '';
+  position: absolute;
+  inset: 1.25rem;
+  border-radius: 50%;
+  background: rgba(16, 19, 27, 0.5);
+  border: 1px solid var(--border-subtle);
+  pointer-events: none;
 }
 
 .mobile-controls-joystick-stick {
@@ -37,16 +45,29 @@
   opacity: 0.85;
   border: 1px solid rgba(255, 255, 255, 0.2);
   box-shadow: 0 0 8px rgba(34, 211, 238, 0.4);
+  pointer-events: none;
 }
 
 .mobile-controls-actions {
   position: absolute;
-  right: var(--space-6);
-  bottom: var(--space-6);
+  right: max(var(--space-6), calc(env(safe-area-inset-right) + var(--space-4)));
+  bottom: max(var(--space-6), calc(env(safe-area-inset-bottom) + var(--space-4)));
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
   pointer-events: auto;
+}
+
+@media (max-width: 720px), (pointer: coarse) {
+  .mobile-controls-joystick-base {
+    left: max(var(--space-4), calc(env(safe-area-inset-left) + var(--space-4)));
+    bottom: max(var(--space-4), calc(env(safe-area-inset-bottom) + var(--space-4)));
+  }
+
+  .mobile-controls-actions {
+    right: max(var(--space-4), calc(env(safe-area-inset-right) + var(--space-4)));
+    bottom: max(var(--space-4), calc(env(safe-area-inset-bottom) + var(--space-4)));
+  }
 }
 
 .mobile-controls-btn {

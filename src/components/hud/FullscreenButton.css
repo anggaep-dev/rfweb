@@ -1,14 +1,18 @@
 .fullscreen-button-wrap {
-  /* top-left, stacked just below PingIndicator, which is itself below
-     MiniMap - top-right is taken by OnlineScreen's Exit button, and
-     HudIconRow now lives as a vertical bar on the right edge. */
   position: absolute;
-  top: 12.6rem;
-  left: var(--space-4);
+  top: max(9.35rem, calc(env(safe-area-inset-top) + 9.35rem));
+  left: max(var(--space-4), env(safe-area-inset-left));
   display: flex;
   flex-direction: column;
   align-items: flex-start;
   gap: var(--space-1);
+}
+
+@media (max-width: 720px), (pointer: coarse) {
+  .fullscreen-button-wrap {
+    top: max(8rem, calc(env(safe-area-inset-top) + 8rem));
+    left: max(var(--space-3), env(safe-area-inset-left));
+  }
 }
 
 .fullscreen-button {
