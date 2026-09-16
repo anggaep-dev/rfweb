@@ -6,11 +6,11 @@ import { CharacterController } from '../controllers/CharacterController';
 import type { ParticleCullingContext } from '../controllers/CharacterController';
 import { applyCharacterAppearance, applyEquipmentDiff, visibleEquipmentToEquipped } from '../controllers/characterAppearance';
 import { LocomotionDebugGizmo } from '../controllers/LocomotionDebugGizmo';
-import { NameTag } from '../controllers/NameTag';
+import { NameTag, nameTagYOffsetFromBounds } from '../controllers/NameTag';
 import { RemoteEntityController } from '../controllers/RemoteEntityController';
 import { SceneController } from '../controllers/SceneController';
 import { getCharacterProfile } from '../net/CharacterClient';
-import { facingToRotation, quantizeDirectionVector, quantizeToCompass } from '../net/compassRotation';
+import { facingToRotation, quantizeToCompass } from '../net/compassRotation';
 import { getMapDetails } from '../net/MapClient';
 import type {
   EntitySnapshot,
@@ -24,8 +24,8 @@ import type {
 import { SERVER_PORT, isSecurePage, pageHostname } from '../net/serverHost';
 import type { ConnectionStatus } from '../net/WorldConnection';
 import { WorldConnection } from '../net/WorldConnection';
-import { classifyLocomotionDirectionStable, classifyMovementAgainstFacing, loadCharacter } from '../rf/character';
-import type { LocomotionDirection, RaceGender } from '../rf/character';
+import { classifyLocomotionDirection, loadCharacter } from '../rf/character';
+import type { RaceGender } from '../rf/character';
 import type { EquippedItems } from '../rf/characterProfile';
 import { initSocketGlowBatching } from '../rf/glowEffect';
 import { preloadItemIconSheets } from '../rf/itemIcon';
@@ -105,6 +105,23 @@ const VISIBLE_EQUIPMENT_KEYS: (keyof VisibleEquipment & EquipmentSlotKey)[] = [
   'shield',
   'cloak',
 ];
+
+const EQUIPMENT_USE_SLOT_INDEX_BY_KEY: Record<EquipmentSlotKey, number> = {
+  upper: 100,
+  lower: 101,
+  gauntlet: 102,
+  shoe: 103,
+  helmet: 104,
+  weapon: 105,
+  shield: 106,
+  cloak: 107,
+  ring1: 108,
+  ring2: 109,
+  amulet1: 110,
+  amulet2: 111,
+  bullet1: 112,
+  bullet2: 113,
+};
 
 /** Merges a VisibleEquipment (always available - EntitySnapshot on connect, EntityAppearanceUpdate on every later gear change) into an EquipmentDisplay, touching only the 8 slots it actually carries so accessory-slot state from a previous mergeEquipmentSlots call survives. */
 function mergeVisibleEquipment(equipment: EquipmentDisplay, visibleEquipment: VisibleEquipment | undefined): EquipmentDisplay {
@@ -267,22 +284,13 @@ export class OnlineScene implements AppScene {
   /** Raw (x=right, y=forward) intent, camera-relative - see setMoveInput(). Set from outside (OnlineScreen's useKeyboardMove), null while no movement key is held. */
   private moveInput: { x: number; y: number } | null = null;
   private readonly moveDirection = new Vector3();
-  private readonly moveRight = new Vector3();
   private readonly cameraForward = new Vector3();
   private readonly cameraRight = new Vector3();
-  // Which way the character is actually oriented, world-space - independent
-  // of moveDirection so backward/strafe input (see update()) doesn't spin
-  // the character to face it, only genuinely "forward" input does. Starts
-  // facing world -Z so a character that hasn't moved yet still has a sane
-  // default.
+  // Which way the character is actually oriented, world-space. Mirrors
+  // ViewerScene's local rule: forward-dominant input faces movement, while
+  // strafe/backward keeps facing the camera's horizontal forward vector.
+  // Starts facing world -Z so an idle character has a sane default.
   private readonly facing = new Vector3(0, 0, -1);
-  /** Threaded into classifyLocomotionDirectionStable so it can resist boundary flicker - see that function's own doc comment. */
-  private lastLocomotionDirection: LocomotionDirection | null = null;
-  /** Separate hysteresis state for classifying the raw LOCAL input (moveInput.x/y) instead of the world-space moveDirection-vs-facing relationship - see classifyAgainstFacing's doc comment on why facing must only ever reorient off of this, not the world-space classification. */
-  private lastInputLocomotionDirection: LocomotionDirection | null = null;
-  /** Scratch compass-snapped copies of facing/moveDirection, reused every classifyAgainstFacing() call - see its own doc comment for why classification runs on these instead of the raw continuous vectors. */
-  private readonly quantizedFacing = new Vector3();
-  private readonly quantizedMoveDirection = new Vector3();
   /** The last (dx, dz, running) actually sent to the server - compared against every frame in update() so a MovementInput only goes out when something reportable actually changed (a key press/release, a running toggle, or the camera rotating enough to cross into a different compass octant), not on every single frame. */
   private sentDir: [number, number] = [0, 0];
   private sentRunning = false;
@@ -469,6 +477,11 @@ export class OnlineScene implements AppScene {
     this.connection.useSlotItem(slotIndex, quantity);
   }
 
+  /** See InventoryWindow's paperdoll tooltip Unuse button - 100-113 are fixed equipment slots understood by the backend UseFromSlot path. */
+  unuseEquipmentItem(slotKey: EquipmentSlotKey): void {
+    this.connection.useSlotItem(EQUIPMENT_USE_SLOT_INDEX_BY_KEY[slotKey]);
+  }
+
   async mount(): Promise<void> {
     this.connection.onStatusChange = (status) => this.callbacks.onConnectionStatusChange?.(status);
     this.connection.onPacket = (payload) => this.handlePacket(payload);
@@ -639,7 +652,13 @@ export class OnlineScene implements AppScene {
       this.inventoryState = { ...this.inventoryState, gold: profile?.gold ?? 0, cp: profile?.cp ?? 0 };
       this.callbacks.onInventoryChange?.(this.inventoryState);
       // Skipped (not faked with a placeholder) if the profile fetch failed above - same cosmetic-only degradation as the appearance/equipment it came bundled with.
-      if (profile?.name) this.nameTag = new NameTag(this.sceneController.scene, profile.name, bounds.radius);
+      if (profile?.name) {
+        this.nameTag = new NameTag(this.sceneController.scene, profile.name, bounds.radius, nameTagYOffsetFromBounds(bounds, character.group.position.y), {
+          race: profile.race,
+          rank: profile.rank,
+          specialRank: profile.specialRank,
+        });
+      }
       this.debugGizmo = new LocomotionDebugGizmo(this.sceneController.scene, bounds.radius);
       this.sceneController.frameGround(bounds.box, bounds.radius);
       this.cameraController.frameOnCharacter(bounds);
@@ -669,94 +688,6 @@ export class OnlineScene implements AppScene {
     if (this.moveDirection.lengthSq() > 1e-8) this.moveDirection.normalize();
   }
 
-  /**
-   * Snaps the current continuous moveDirection into `quantizedMoveDirection`
-   * - shared by updateFacing() and classifyAgainstFacing(), which MUST both
-   * read the exact same quantized value computed in the same frame (see
-   * update()'s call order and updateFacing's own doc comment for why).
-   */
-  private quantizeMoveDirection(): void {
-    if (!quantizeDirectionVector(this.moveDirection, this.quantizedMoveDirection)) {
-      this.quantizedMoveDirection.copy(this.moveDirection);
-    }
-  }
-
-  /**
-   * Reorients `facing` to this frame's quantized moveDirection - but only
-   * when the RAW LOCAL input itself (this.moveInput, camera-independent:
-   * x=right/y=forward relative to wherever the camera happens to be
-   * pointing) is genuinely "forward," via its own separately-tracked
-   * classification. This must NOT be driven by classifyAgainstFacing's
-   * world-space result - that one reflects moveDirection's relationship to
-   * the *old* facing, which the camera can rotate independently of at any
-   * moment (right-drag orbiting doesn't touch facing at all - see
-   * CameraController's rightDragging), so it can read "forward" (null) at
-   * an arbitrary point mid-strafe/backward purely from camera motion, with
-   * no W ever pressed. Facing should only ever turn to face the way you're
-   * walking when you're actually holding the forward key/joystick tilt -
-   * exactly what this local-input classification (independent of camera
-   * orientation entirely) captures.
-   *
-   * Called BEFORE classifyAgainstFacing() every frame (see update()) -
-   * confirmed by direct testing that the reverse order has a real bug: a
-   * continuous input that's genuinely forward but near a 22.5° compass-
-   * quantization boundary (e.g. joystick tilted mostly-forward-slightly-
-   * left, not far enough to be a diagonal) can cross into a new octant on
-   * any given frame. If facing only got snapped to the new octant *after*
-   * classifyAgainstFacing() already ran against the *old* one, that one
-   * frame would compare a stale (pre-snap) facing against the already-
-   * moved moveDirection, misclassifying a perfectly steady forward tilt as
-   * a momentary 'lf'/'rt' strafe - and thanks to CharacterController's
-   * 0.25s crossfade, a single wrong frame like that starts a real blend
-   * toward the wrong clip that then immediately reverses, showing up as a
-   * visible stutter/pop, not just one dropped frame. Updating facing first
-   * means classifyAgainstFacing() always compares against the *current*
-   * frame's facing, so a genuinely-forward input can never misclassify
-   * here regardless of how many quantization boundaries it crosses.
-   */
-  private updateFacing(): LocomotionDirection | null {
-    const input = this.moveInput!;
-    const inputLocomotionDirection = classifyLocomotionDirectionStable(input.x, input.y, this.lastInputLocomotionDirection);
-    this.lastInputLocomotionDirection = inputLocomotionDirection;
-    if (!inputLocomotionDirection) this.facing.copy(this.quantizedMoveDirection);
-    return inputLocomotionDirection;
-  }
-
-  /**
-   * Classifies the current (already-quantized) moveDirection against the
-   * character's own current facing (not the camera's) so holding
-   * "backward" (or strafing) plays a real backward/strafe clip instead of
-   * spinning the character around to face wherever it's moving, and
-   * returns that classification for the caller to pick a clip with.
-   *
-   * Classifies against the compass-quantized (see quantizeDirectionVector)
-   * copy of facing, not its raw continuous value - a remote observer only
-   * ever learns this player's facing/movement as one of 8 compass
-   * directions (facingToRotation/quantizeToCompass, both used when actually
-   * reporting below), so classifying locally against full precision let
-   * `facing` silently drift off that grid over time until it no longer
-   * lined up with what any observer could ever reconstruct - correct here,
-   * but strafes misclassified as forward/backward walk on every other
-   * client. Keeping both sides of this comparison on the same 8-direction
-   * grid the wire actually carries guarantees the two classifications
-   * agree.
-   *
-   * Does NOT decide whether `facing` itself updates - see updateFacing(),
-   * which must run first every frame (see its own doc comment and
-   * update()'s call order).
-   */
-  private classifyAgainstFacing(): LocomotionDirection | null {
-    quantizeDirectionVector(this.facing, this.quantizedFacing); // facing is always already grid-aligned - see updateFacing()
-    this.lastLocomotionDirection = classifyMovementAgainstFacing(
-      this.quantizedMoveDirection,
-      this.quantizedFacing,
-      this.lastLocomotionDirection,
-      this.moveRight,
-      UP_AXIS,
-    );
-    return this.lastLocomotionDirection;
-  }
-
   /** Sends a MovementInput only when something reportable actually changed since the last one - see sentDir/sentRunning's doc comment. */
   private reportMovementIfChanged(dx: number, dz: number): void {
     if (this.sentDir[0] === dx && this.sentDir[1] === dz && this.sentRunning === this.isRunning) return;
@@ -769,12 +700,15 @@ export class OnlineScene implements AppScene {
     this.characterController.setMoveMode(this.isRunning ? 'run' : 'walk');
 
     if (this.moveInput) {
+      const input = this.moveInput;
       this.updateMoveDirectionFromCamera();
-      this.quantizeMoveDirection();
-      // updateFacing() MUST run before classifyAgainstFacing() - see updateFacing's own doc comment.
-      const inputLocomotionDirection = this.updateFacing(); // raw local input - the only thing allowed to reorient facing/pick faceDirection, see its own doc comment
-      const locomotionDirection = this.classifyAgainstFacing(); // world-space vs facing - drives clip choice only, see its own doc comment
-      const faceDirection = inputLocomotionDirection ? this.facing : this.moveDirection;
+      // Same local rule as ViewerScene: resolve movement from the current
+      // camera angle, then use raw local input only to choose animation/
+      // facing style. Compass quantization happens only when reporting to
+      // the server below, so it cannot feed back into local zigzag.
+      const locomotionDirection = classifyLocomotionDirection(input.x, input.y);
+      const faceDirection = locomotionDirection ? this.cameraForward : this.moveDirection;
+      this.facing.copy(faceDirection);
       this.characterController.setMoveDirection(this.moveDirection, faceDirection, locomotionDirection);
       // moveDirection is render-space (camera-relative); the server's
       // dir_z increments a native Z (see rfworld's movement/system.go) - see
@@ -797,12 +731,10 @@ export class OnlineScene implements AppScene {
       characterGroupQuaternion: character ? character.group.quaternion : null,
       characterPosition: character ? character.group.position : null,
       isMoving: this.characterController.isMoving(),
-      // updateFacing() above already turns the character to track the
-      // camera every frame while moving forward - see CameraUpdateContext's
-      // own doc comment for why letting the camera ALSO auto-follow the
-      // character here creates an unstable feedback loop specific to this
-      // camera-relative (no click-to-move) control scheme.
-      suppressBehindFollow: true,
+      // Keep camera auto-panning off for straight forward/back movement.
+      // Horizontal input is the only time the follow camera is allowed to
+      // re-center while moving.
+      suppressBehindFollow: Math.abs(this.moveInput?.x ?? 0) <= Math.abs(this.moveInput?.y ?? 0),
     });
 
     // Must run after cameraController.update() above (needs this frame's
@@ -819,7 +751,7 @@ export class OnlineScene implements AppScene {
     this.characterController.updateDebugSocketParticle(camera, delta, this.particleCulling);
 
     this.remoteEntityController.tick(delta, camera, this.particleCulling);
-    this.nameTag?.update(this.characterController.getHeadBone());
+    this.nameTag?.update(this.characterController.group);
 
     const hips = this.characterController.getHipsBone();
     if (hips) {
@@ -830,7 +762,7 @@ export class OnlineScene implements AppScene {
       this.debugOrigin,
       this.facing,
       this.moveInput ? this.moveDirection : null,
-      this.lastLocomotionDirection,
+      this.moveInput ? classifyLocomotionDirection(this.moveInput.x, this.moveInput.y) : null,
       this.characterController.getCurrentClipKey(),
     );
 

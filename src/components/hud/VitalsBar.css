@@ -2,129 +2,112 @@
   position: absolute;
   top: max(var(--space-4), env(safe-area-inset-top));
   left: max(var(--space-4), env(safe-area-inset-left));
-  display: flex;
-  align-items: stretch;
-  gap: var(--space-2);
-  width: 14rem;
-  max-width: min(14rem, calc(100vw - 13rem));
-  padding: var(--space-2);
-  background: var(--elevation-panel-bg);
-  border: var(--elevation-panel-border);
-  border-radius: 2px;
-  box-shadow: var(--elevation-panel-shadow);
+  width: clamp(12rem, 24vw, 14rem);
+  max-width: calc(100vw - 2 * var(--space-4));
+  aspect-ratio: 223 / 69;
   pointer-events: none;
+  filter: drop-shadow(0 4px 8px rgba(0, 0, 0, 0.8));
+}
+
+.vitals-frame {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  background: url('/game-gui/healthgui-frame.png') 0 0 / 100% 100% no-repeat;
+  image-rendering: crisp-edges;
+  image-rendering: pixelated;
+}
+
+.vitals-level {
+  position: absolute;
+  left: 14.3498%;
+  top: 23.1884%;
+  width: 14.3498%;
+  height: 44.9275%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #f6fbff;
+  font: 700 clamp(0.9rem, 1.7vw, 1.18rem) var(--font-mono);
+  line-height: 1;
+  text-align: center;
+  text-shadow:
+    0 1px 0 #04152c,
+    0 0 4px rgba(110, 210, 255, 0.95),
+    0 0 8px rgba(6, 27, 66, 0.95);
+}
+
+.vitals-row {
+  --vital-percent: 100%;
+
+  position: absolute;
+  left: 39.4619%;
+  width: 55.6054%;
+  height: 15.942%;
+}
+
+.vitals-gauge {
+  position: absolute;
+  inset: 0;
+  background-repeat: no-repeat;
+  background-size: 100% 100%;
+  clip-path: inset(0 calc(100% - var(--vital-percent)) 0 0);
+  transition: clip-path 0.2s ease-out;
+}
+
+.vitals-value {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff8d6;
+  font: 700 clamp(0.42rem, 0.8vw, 0.55rem) var(--font-mono);
+  line-height: 1;
+  text-align: center;
+  white-space: nowrap;
+  text-shadow:
+    0 1px 0 #000,
+    1px 0 0 #000,
+    0 -1px 0 #000,
+    -1px 0 0 #000;
+}
+
+.vitals-row-hp {
+  top: 24.6377%;
+}
+
+.vitals-row-fp {
+  top: 43.4783%;
+}
+
+.vitals-row-sp {
+  top: 65.2174%;
+}
+
+.vitals-gauge-hp {
+  background-image: url('/game-gui/healthbar-fill.png');
+}
+
+.vitals-gauge-fp {
+  background-image: url('/game-gui/fpbar-fill.png');
+}
+
+.vitals-gauge-sp {
+  background-image: url('/game-gui/spbar-fill.png');
 }
 
 @media (max-width: 720px), (pointer: coarse) {
   .vitals-bar {
     top: max(var(--space-3), env(safe-area-inset-top));
     left: max(var(--space-3), env(safe-area-inset-left));
-    width: min(11.5rem, 56vw);
-    padding: var(--space-1);
-  }
-
-  .vitals-level {
-    width: 1.9rem;
-  }
-
-  .vitals-level-tag {
-    font-size: 0.45rem;
-  }
-
-  .vitals-level-number {
-    font-size: 0.8rem;
+    width: clamp(9.5rem, 46vw, 11rem);
+    max-width: calc(100vw - 2 * var(--space-3));
   }
 }
 
-/* Same recessed-slot treatment as InventoryWindow's equipment sockets
-   (design.md §5.2), not a bespoke shape - a level readout is conceptually
-   just another tactical slot, plus a gold top edge to mark it as the
-   "primary stat" the way §5.4's CTA button uses the same accent for
-   emphasis. */
-.vitals-level {
-  flex: none;
-  width: 2.2rem;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 1px;
-  border-radius: 2px;
-  background: var(--elevation-slot-bg);
-  box-shadow: var(--elevation-slot-shadow);
-  border: var(--elevation-slot-border);
-  border-top: 2px solid var(--accent-primary);
-}
-
-/* Micro Label type scale (design.md §3) - same treatment as the "CP"/"GOLD" badges it calls out by name. */
-.vitals-level-tag {
-  color: var(--text-secondary);
-  font: 600 0.5rem var(--font-display);
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-}
-
-.vitals-level-number {
-  color: var(--text-gold);
-  font: 700 0.9rem var(--font-mono);
-  line-height: 1;
-}
-
-.vitals-bars {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  min-width: 0;
-}
-
-.vitals-track {
-  position: relative;
-  width: 100%;
-  border-radius: 2px;
-  background: var(--elevation-slot-bg);
-  box-shadow: var(--elevation-slot-shadow);
-  border: var(--elevation-slot-border);
-  overflow: hidden;
-}
-
-.vitals-track-hp {
-  height: 0.7rem;
-}
-
-.vitals-track-mp {
-  height: 0.4rem;
-}
-
-/* Flat token colors, not an invented gradient - the highlight is the same
-   bevel-light/bevel-dark inset pair tokens.css already defines for "1px
-   top/left inset inner light reflection" / "1px bottom/right recessed
-   shadow" (used on every other beveled surface in this system), not a
-   bespoke lighter shade made up for this one bar. */
-.vitals-fill {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  border-radius: inherit;
-  box-shadow: inset 0 1px 0 var(--border-bevel-light), inset 0 -1px 0 var(--border-bevel-dark);
-  transition: width 0.2s ease-out;
-}
-
-.vitals-fill-hp {
-  background: var(--vital-ruby);
-}
-
-.vitals-fill-mp {
-  background: var(--energy-cyan);
-}
-
-.vitals-label {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--text-primary);
-  font: 700 0.55rem var(--font-mono);
-  text-shadow: 0 1px 0 var(--border-bevel-dark);
+@media (max-width: 420px) {
+  .vitals-bar {
+    width: clamp(8.75rem, 43vw, 9.75rem);
+  }
 }

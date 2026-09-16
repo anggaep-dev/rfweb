@@ -13,7 +13,7 @@ import { useKeyboardMove } from '../../hooks/useKeyboardMove';
 import type { RaceGender } from '../../rf/character';
 import type { ConnectionStatus } from '../../net/WorldConnection';
 import { OnlineScene } from '../../scenes/OnlineScene';
-import type { ChatLogEntry, EquipmentDisplay, InventoryState } from '../../scenes/OnlineScene';
+import type { ChatLogEntry, EquipmentDisplay, EquipmentSlotKey, InventoryState } from '../../scenes/OnlineScene';
 import type { SceneManager } from '../../scenes/SceneManager';
 import './OnlineScreen.css';
 
@@ -113,6 +113,9 @@ export default function OnlineScreen({ sceneManager, initialRaceGender, sessionT
   const handleUseItem = useCallback((slotIndex: number) => {
     onlineSceneRef.current?.useInventoryItem(slotIndex);
   }, []);
+  const handleUnuseItem = useCallback((slotKey: EquipmentSlotKey) => {
+    onlineSceneRef.current?.unuseEquipmentItem(slotKey);
+  }, []);
 
   return (
     <div className="online-screen">
@@ -132,6 +135,7 @@ export default function OnlineScreen({ sceneManager, initialRaceGender, sessionT
           onSell={handleSellItem}
           onDrop={handleDropItem}
           onUse={handleUseItem}
+          onUnuse={handleUnuseItem}
         />
       )}
 

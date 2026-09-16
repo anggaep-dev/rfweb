@@ -20,6 +20,17 @@
   max-height: 92vh;
   overflow-y: auto;
   pointer-events: auto;
+  opacity: 0.9;
+}
+
+.inventory-window .card-header {
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+}
+
+.inventory-window-dragging .card-header {
+  cursor: grabbing;
 }
 
 .inventory-equip-card,
@@ -28,24 +39,30 @@
   flex-shrink: 0;
 }
 
-/* ── Equipment paperdoll ──
-   No grid/flow layout at all - every slot is position:absolute at an
-   exact left/top/width/height (all in rem, computed in InventoryWindow.tsx
-   from EQUIP_SLOT_SIZE/EQUIP_HERO_SIZE/EQUIP_GAP and set inline per slot,
-   see EQUIP_SLOTS's own doc comment there for the reasoning/layout this
-   reproduces). This container has no intrinsic size of its own (absolute
-   children don't contribute to it) - width/height are set inline from
-   EQUIP_GRID_SIZE, the exact footprint EQUIP_SLOTS' positions add up to. */
+/* ── Equipment paperdoll ── */
 .equip-grid {
-  position: relative;
+  --equip-slot-inset: 0.14rem;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  grid-template-rows: repeat(4, 1fr);
+  grid-template-areas:
+    "ammo head amulet"
+    "weapon upper shield"
+    "gauntlet lower cloak"
+    "ring_l shoes ring_r";
+  width: min(100%, 14.75rem);
+  aspect-ratio: 3 / 4;
+  margin-inline: auto;
   margin-bottom: var(--space-3);
 }
 
 .equip-slot {
-  position: absolute;
+  min-width: 0;
+  min-height: 0;
   display: flex;
   align-items: center;
   justify-content: center;
+  margin: var(--equip-slot-inset);
   border-radius: 2px;
   background: var(--elevation-slot-bg);
   box-shadow: var(--elevation-slot-shadow);
@@ -54,6 +71,106 @@
      silhouette color - not in tokens.css as a named variable, but it's the
      spec's prescribed value for this exact case, not an ad-hoc pick. */
   color: #475569;
+}
+
+.head {
+  grid-area: head;
+}
+
+.ammo {
+  grid-area: ammo;
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  grid-template-rows: repeat(2, 1fr);
+  grid-template-areas:
+    ". ammospecial"
+    "ammo1 ammo2";
+}
+
+.ammo1 {
+  grid-area: ammo1;
+}
+
+.ammo2 {
+  grid-area: ammo2;
+}
+
+.ammospecial {
+  grid-area: ammospecial;
+}
+
+.amulet {
+  grid-area: amulet;
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  grid-template-rows: repeat(2, 1fr);
+  grid-template-areas:
+    ". ."
+    "amulet1 amulet2";
+}
+
+.amulet1 {
+  grid-area: amulet1;
+}
+
+.amulet2 {
+  grid-area: amulet2;
+}
+
+.upper {
+  grid-area: upper;
+}
+
+.lower {
+  grid-area: lower;
+}
+
+.shoes {
+  grid-area: shoes;
+}
+
+.weapon {
+  grid-area: weapon;
+}
+
+.shield {
+  grid-area: shield;
+}
+
+.gauntlet {
+  grid-area: gauntlet;
+}
+
+.cloak {
+  grid-area: cloak;
+}
+
+.ring_l {
+  grid-area: ring_l;
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  grid-template-rows: repeat(2, 1fr);
+  grid-template-areas:
+    ". ring01"
+    ". .";
+}
+
+.ring01 {
+  grid-area: ring01;
+}
+
+.ring_r {
+  grid-area: ring_r;
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  grid-template-rows: repeat(2, 1fr);
+  grid-template-areas:
+    "ring02 ."
+    ". .";
+}
+
+.ring02 {
+  grid-area: ring02;
 }
 
 .equip-slot-round {
@@ -87,6 +204,14 @@
   height: 92%;
   object-fit: contain;
   image-rendering: pixelated;
+}
+
+.ammo .equip-slot-icon,
+.amulet .equip-slot-icon,
+.ring_l .equip-slot-icon,
+.ring_r .equip-slot-icon {
+  width: 68%;
+  height: 68%;
 }
 
 /* ── Currency row ── swatch at the left, CP/Gold stacked (not side by
@@ -312,4 +437,53 @@
 .inventory-mono {
   color: var(--text-primary);
   font: 700 0.75rem var(--font-mono);
+}
+
+@media (max-width: 520px) {
+  .inventory-window {
+    top: 48%;
+    width: min(15rem, calc(100vw - 1rem));
+    max-height: 88vh;
+    gap: var(--space-2);
+  }
+
+  .inventory-window .card-body {
+    padding: var(--space-3);
+  }
+
+  .equip-grid {
+    width: min(100%, 12rem);
+  }
+
+  .bag-grid {
+    gap: 3px;
+  }
+
+  .inventory-selected {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .inventory-selected-actions {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+  }
+
+  .inventory-selected-actions button {
+    padding-inline: var(--space-1);
+  }
+}
+
+@media (max-width: 360px) {
+  .inventory-window {
+    width: calc(100vw - 0.5rem);
+  }
+
+  .inventory-window .card-body {
+    padding: var(--space-2);
+  }
+
+  .equip-grid {
+    width: min(100%, 10.75rem);
+  }
 }

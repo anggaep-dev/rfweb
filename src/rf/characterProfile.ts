@@ -56,6 +56,10 @@ export interface CharacterSummary {
   name: string;
   race: RaceGender;
   level: number;
+  /** 1-8 = race rank icon; absent/0 = no rank badge. */
+  rank?: number;
+  /** Optional staff/VIP badge override, rendered instead of the race rank icon. */
+  specialRank?: 'owner' | 'vip' | 'dev' | 'mod' | 'gm';
   gold: number;
   /** RF's separate faction-war currency, distinct from gold. */
   cp: number;
@@ -105,6 +109,8 @@ export interface CharacterProfile extends CharacterSummary {
 export interface CharacterAppearance {
   name: string;
   race: RaceGender;
+  rank?: number;
+  specialRank?: 'owner' | 'vip' | 'dev' | 'mod' | 'gm';
   baseAppearance: BaseAppearance;
   equipped: EquippedItems;
 }

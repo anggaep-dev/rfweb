@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react';
-import type { MouseEvent as ReactMouseEvent, ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import type { MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, ReactNode } from 'react';
 import type { InventorySlot } from '../../net/generated/protocol';
 import type { EquipmentDisplay, EquipmentSlotKey, InventoryState } from '../../scenes/OnlineScene';
 import { findItemDefinitionByCode } from '../../rf/items';
@@ -27,6 +27,7 @@ interface HoverTarget {
   quantity?: number;
   isLocked?: boolean;
   isRental?: boolean;
+  equipmentSlotKey?: EquipmentSlotKey;
   anchorRect: DOMRect;
 }
 
@@ -42,6 +43,8 @@ export interface InventoryWindowProps {
   onDrop: (slotIndex: number) => void;
   /** slotIndex, always with quantity 0 (1, or equip) - see OnlineScene.useInventoryItem. */
   onUse: (slotIndex: number) => void;
+  /** EquipmentSlotKey, moved back into the first available bag stack/slot by the server. */
+  onUnuse: (slotKey: EquipmentSlotKey) => void;
 }
 
 type EquipIconType = 'helmet' | 'amulet' | 'weapon' | 'upper' | 'shield' | 'lower' | 'gauntlet' | 'shoe' | 'ring' | 'bullet' | 'cloak';
@@ -50,79 +53,46 @@ interface EquipSlotDef {
   key: EquipmentSlotKey;
   type: EquipIconType;
   label: string;
-  /** All in rem, absolutely positioned within .equip-grid (see EQUIP_SLOT_SIZE's own doc comment) - no grid/flow layout involved. */
-  left: number;
-  top: number;
-  width: number;
-  height: number;
-  /** Ring slots render as circles, not squares - see .equip-slot-round. */
+  className: string;
   round?: boolean;
 }
 
 /**
- * Fixed rem measurements every EQUIP_SLOTS position is computed from -
- * SLOT is the uniform HEIGHT every slot shares (Helmet included - it's
- * exactly as tall as Upper/Lower/Shoe, not a spanning "hero" slot), and
- * the uniform size for every ordinary slot's width too (Amulets, Weapon,
- * Shield, Upper, Cloak, Rings). HERO is only ever used as a WIDTH, for the
- * 3 wide centered slots (Helmet, Lower, Shoe) - they're twice a normal
- * slot's width plus the gap between them, but stay a single SLOT tall.
- */
-const EQUIP_SLOT_SIZE = 3.35;
-const EQUIP_GAP = 0.5;
-const EQUIP_HERO_SIZE = EQUIP_SLOT_SIZE * 2 + EQUIP_GAP;
-const EQUIP_COL2_LEFT = EQUIP_SLOT_SIZE + EQUIP_GAP;
-const EQUIP_COL3_LEFT = EQUIP_COL2_LEFT + EQUIP_HERO_SIZE + EQUIP_GAP;
-const EQUIP_ROW2_TOP = EQUIP_SLOT_SIZE + EQUIP_GAP;
-const EQUIP_ROW3_TOP = EQUIP_ROW2_TOP + EQUIP_SLOT_SIZE + EQUIP_GAP;
-const EQUIP_ROW4_TOP = EQUIP_ROW3_TOP + EQUIP_SLOT_SIZE + EQUIP_GAP;
-const EQUIP_ROW5_TOP = EQUIP_ROW4_TOP + EQUIP_SLOT_SIZE + EQUIP_GAP;
-/** EQUIP_SLOTS' own total footprint, in rem - the .equip-grid container is sized to exactly this (see its own render, not CSS) since its children are all position:absolute and contribute nothing to its natural size otherwise. */
-const EQUIP_GRID_SIZE = { width: EQUIP_COL3_LEFT + EQUIP_SLOT_SIZE, height: EQUIP_ROW5_TOP + EQUIP_SLOT_SIZE };
-
-/**
  * The real 14 fixed equipment slots (docs/inventory-action.md's own
  * EquipmentSlots/equipment table) - no "earring"/"off-hand-as-a-generic-
- * slot" here, since this game's EDF item model simply doesn't have those;
- * `shield` and the ring/amulet/bullet pairs are the only accessory-style
- * slots that actually exist. Position matches the real client's own equip
- * window layout: a wide centered Helmet up top flanked by the two
- * Amulets, Weapon/Shield below that, Upper/Cloak flanking a wide centered
- * Lower, then Rings flanking a wide centered Shoe - Helmet, Upper, Lower,
- * and Shoe are all exactly EQUIP_SLOT_SIZE tall (see its own doc comment).
- * Gauntlet and the two Bullet slots aren't part of that reference layout
- * at all (this app still needs to expose them somewhere), so they're a
- * plain extra row of 3 ordinary slots underneath instead, evenly spaced
- * across the same overall width.
+ * slot" here, since this game's EDF item model simply doesn't have those.
+ * The CSS grid areas mirror the paperdoll schema from the real-client
+ * reference: body armor down the center, weapon/gauntlet left, shield/cloak
+ * right, with nested accessory grids for ammo, amulets, and rings.
  */
 const EQUIP_SLOTS: EquipSlotDef[] = [
-  { key: 'amulet1', type: 'amulet', label: 'Amulet 1', left: 0, top: 0, width: EQUIP_SLOT_SIZE, height: EQUIP_SLOT_SIZE },
-  { key: 'helmet', type: 'helmet', label: 'Helmet', left: EQUIP_COL2_LEFT, top: 0, width: EQUIP_HERO_SIZE, height: EQUIP_SLOT_SIZE },
-  { key: 'amulet2', type: 'amulet', label: 'Amulet 2', left: EQUIP_COL3_LEFT, top: 0, width: EQUIP_SLOT_SIZE, height: EQUIP_SLOT_SIZE },
-  { key: 'weapon', type: 'weapon', label: 'Weapon', left: 0, top: EQUIP_ROW2_TOP, width: EQUIP_SLOT_SIZE, height: EQUIP_SLOT_SIZE },
-  { key: 'shield', type: 'shield', label: 'Shield', left: EQUIP_COL3_LEFT, top: EQUIP_ROW2_TOP, width: EQUIP_SLOT_SIZE, height: EQUIP_SLOT_SIZE },
-  { key: 'upper', type: 'upper', label: 'Upper', left: 0, top: EQUIP_ROW3_TOP, width: EQUIP_SLOT_SIZE, height: EQUIP_SLOT_SIZE },
-  { key: 'lower', type: 'lower', label: 'Lower', left: EQUIP_COL2_LEFT, top: EQUIP_ROW3_TOP, width: EQUIP_HERO_SIZE, height: EQUIP_SLOT_SIZE },
-  { key: 'cloak', type: 'cloak', label: 'Cloak', left: EQUIP_COL3_LEFT, top: EQUIP_ROW3_TOP, width: EQUIP_SLOT_SIZE, height: EQUIP_SLOT_SIZE },
-  { key: 'ring1', type: 'ring', label: 'Ring 1', left: 0, top: EQUIP_ROW4_TOP, width: EQUIP_SLOT_SIZE, height: EQUIP_SLOT_SIZE, round: true },
-  { key: 'shoe', type: 'shoe', label: 'Shoe', left: EQUIP_COL2_LEFT, top: EQUIP_ROW4_TOP, width: EQUIP_HERO_SIZE, height: EQUIP_SLOT_SIZE },
-  { key: 'ring2', type: 'ring', label: 'Ring 2', left: EQUIP_COL3_LEFT, top: EQUIP_ROW4_TOP, width: EQUIP_SLOT_SIZE, height: EQUIP_SLOT_SIZE, round: true },
-  { key: 'gauntlet', type: 'gauntlet', label: 'Gauntlet', left: 0, top: EQUIP_ROW5_TOP, width: EQUIP_SLOT_SIZE, height: EQUIP_SLOT_SIZE },
-  {
-    key: 'bullet1',
-    type: 'bullet',
-    label: 'Bullet 1',
-    left: EQUIP_COL2_LEFT + (EQUIP_HERO_SIZE - EQUIP_SLOT_SIZE) / 2,
-    top: EQUIP_ROW5_TOP,
-    width: EQUIP_SLOT_SIZE,
-    height: EQUIP_SLOT_SIZE,
-  },
-  { key: 'bullet2', type: 'bullet', label: 'Bullet 2', left: EQUIP_COL3_LEFT, top: EQUIP_ROW5_TOP, width: EQUIP_SLOT_SIZE, height: EQUIP_SLOT_SIZE },
+  { key: 'helmet', type: 'helmet', label: 'Helmet', className: 'head' },
+  { key: 'bullet1', type: 'bullet', label: 'Ammo 1', className: 'ammo1' },
+  { key: 'bullet2', type: 'bullet', label: 'Ammo 2', className: 'ammo2' },
+  { key: 'amulet1', type: 'amulet', label: 'Amulet 1', className: 'amulet1' },
+  { key: 'amulet2', type: 'amulet', label: 'Amulet 2', className: 'amulet2' },
+  { key: 'upper', type: 'upper', label: 'Upper', className: 'upper' },
+  { key: 'lower', type: 'lower', label: 'Lower', className: 'lower' },
+  { key: 'shoe', type: 'shoe', label: 'Shoe', className: 'shoes' },
+  { key: 'weapon', type: 'weapon', label: 'Weapon', className: 'weapon' },
+  { key: 'shield', type: 'shield', label: 'Shield', className: 'shield' },
+  { key: 'gauntlet', type: 'gauntlet', label: 'Gauntlet', className: 'gauntlet' },
+  { key: 'cloak', type: 'cloak', label: 'Cloak', className: 'cloak' },
+  { key: 'ring1', type: 'ring', label: 'Ring 1', className: 'ring01', round: true },
+  { key: 'ring2', type: 'ring', label: 'Ring 2', className: 'ring02', round: true },
 ];
 
 const BAG_COUNT = 5;
 /** 5 columns x 4 rows, 5 bags - exactly covers InventorySlot's 100 real slots (docs/inventory.md). */
 const BAG_SLOT_COUNT = 20;
+const HOVER_CLOSE_DELAY_MS = 120;
+
+interface DragState {
+  offsetX: number;
+  offsetY: number;
+  width: number;
+  height: number;
+}
 
 /** Fallback for a slot with no real icon (itemDisplay.iconUrl is null - unresolved item_code, or a slot with no icon sheet at all like shield/ring/amulet/bullet) - a generic geometric silhouette, matching design.md §5.2's "subtle wireframe silhouette" spec for an unknown/empty slot. */
 function SlotIcon({ type }: { type: EquipIconType }) {
@@ -212,10 +182,15 @@ function collectItemCodes(inventory: InventoryState, equipment: EquipmentDisplay
  * empty despite something being equipped there - see EquipmentDisplay's own
  * doc comment; every other slot here reflects the server's actual state.
  */
-export default function InventoryWindow({ onClose, inventory, equipment, onSell, onDrop, onUse }: InventoryWindowProps) {
+export default function InventoryWindow({ onClose, inventory, equipment, onSell, onDrop, onUse, onUnuse }: InventoryWindowProps) {
+  const windowRef = useRef<HTMLDivElement>(null);
+  const dragState = useRef<DragState | null>(null);
+  const hoverCloseTimer = useRef<number | null>(null);
   const [activeBag, setActiveBag] = useState(0);
   const [selectedSlot, setSelectedSlot] = useState<number | null>(null);
   const [hover, setHover] = useState<HoverTarget | null>(null);
+  const [windowPosition, setWindowPosition] = useState<{ x: number; y: number } | null>(null);
+  const [isDragging, setIsDragging] = useState(false);
   /**
    * Best-effort item_code -> {name, iconUrl} cache (see
    * items.ts's findItemDefinitionByCode's own doc comment on why a bag item
@@ -260,6 +235,63 @@ export default function InventoryWindow({ onClose, inventory, equipment, onSell,
   const selected = selectedSlot !== null ? inventory.slots[selectedSlot] : undefined;
   const displayFor = (itemCode: string): ItemDisplayInfo => itemDisplay[itemCode] ?? { name: itemCode, iconUrl: null };
 
+  const clearHoverCloseTimer = () => {
+    if (hoverCloseTimer.current === null) return;
+    window.clearTimeout(hoverCloseTimer.current);
+    hoverCloseTimer.current = null;
+  };
+
+  const clampWindowPosition = useCallback((x: number, y: number, drag: DragState): { x: number; y: number } => {
+    const margin = 8;
+    const maxX = Math.max(margin, window.innerWidth - drag.width - margin);
+    const maxY = Math.max(margin, window.innerHeight - drag.height - margin);
+    return {
+      x: Math.min(Math.max(x, margin), maxX),
+      y: Math.min(Math.max(y, margin), maxY),
+    };
+  }, []);
+
+  const handleWindowPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return;
+    const target = event.target as HTMLElement;
+    if (!target.closest('.card-header')) return;
+    if (target.closest('button, input, select, textarea, a, [role="button"]')) return;
+
+    const windowEl = windowRef.current;
+    if (!windowEl) return;
+    const rect = windowEl.getBoundingClientRect();
+    dragState.current = {
+      offsetX: event.clientX - rect.left,
+      offsetY: event.clientY - rect.top,
+      width: rect.width,
+      height: rect.height,
+    };
+    setWindowPosition({ x: rect.left, y: rect.top });
+    setIsDragging(true);
+    event.preventDefault();
+  };
+
+  useEffect(() => {
+    if (!isDragging) return;
+    const handlePointerMove = (event: PointerEvent) => {
+      const drag = dragState.current;
+      if (!drag) return;
+      setWindowPosition(clampWindowPosition(event.clientX - drag.offsetX, event.clientY - drag.offsetY, drag));
+    };
+    const handlePointerUp = () => {
+      dragState.current = null;
+      setIsDragging(false);
+    };
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', handlePointerUp);
+    window.addEventListener('pointercancel', handlePointerUp);
+    return () => {
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', handlePointerUp);
+      window.removeEventListener('pointercancel', handlePointerUp);
+    };
+  }, [clampWindowPosition, isDragging]);
+
   const handleSelectBag = (bag: number) => {
     setActiveBag(bag);
     setSelectedSlot(null);
@@ -270,6 +302,7 @@ export default function InventoryWindow({ onClose, inventory, equipment, onSell,
   };
 
   const handleBagSlotEnter = (event: ReactMouseEvent<HTMLButtonElement>, item: InventorySlot) => {
+    clearHoverCloseTimer();
     setHover({
       itemCode: item.itemCode,
       upgrade: item.upgrade,
@@ -280,11 +313,44 @@ export default function InventoryWindow({ onClose, inventory, equipment, onSell,
     });
   };
 
-  const handleEquipSlotEnter = (event: ReactMouseEvent<HTMLDivElement>, itemCode: string, upgrade: string) => {
-    setHover({ itemCode, upgrade, anchorRect: event.currentTarget.getBoundingClientRect() });
+  const handleEquipSlotEnter = (event: ReactMouseEvent<HTMLDivElement>, slotKey: EquipmentSlotKey, itemCode: string, upgrade: string) => {
+    clearHoverCloseTimer();
+    setHover({ itemCode, upgrade, equipmentSlotKey: slotKey, anchorRect: event.currentTarget.getBoundingClientRect() });
   };
 
-  const handleHoverLeave = () => setHover(null);
+  const handleHoverLeave = () => {
+    clearHoverCloseTimer();
+    hoverCloseTimer.current = window.setTimeout(() => setHover(null), HOVER_CLOSE_DELAY_MS);
+  };
+
+  const handleTooltipEnter = () => clearHoverCloseTimer();
+  const handleTooltipLeave = () => {
+    clearHoverCloseTimer();
+    setHover(null);
+  };
+
+  useEffect(
+    () => () => {
+      if (hoverCloseTimer.current !== null) window.clearTimeout(hoverCloseTimer.current);
+    },
+    [],
+  );
+
+  const renderEquipSlot = (slot: EquipSlotDef) => {
+    const visual = equipment[slot.key];
+    const display = visual ? displayFor(visual.itemCode) : undefined;
+    return (
+      <div
+        key={slot.key}
+        className={`equip-slot ${slot.className}${slot.round ? ' equip-slot-round' : ''}${visual ? ' equip-slot-filled' : ''}`}
+        aria-label={display ? `${slot.label}: ${display.name}` : slot.label}
+        onMouseEnter={visual ? (event) => handleEquipSlotEnter(event, slot.key, visual.itemCode, visual.upgrade) : undefined}
+        onMouseLeave={visual ? handleHoverLeave : undefined}
+      >
+        {display?.iconUrl ? <img className="equip-slot-icon-img" src={display.iconUrl} alt="" /> : <SlotIcon type={slot.type} />}
+      </div>
+    );
+  };
 
   /** Right-click use/equip - the fast path real RF's own inventory uses; the selected-item action row's Use button (see below) still works too. */
   const handleBagSlotContextMenu = (event: ReactMouseEvent<HTMLButtonElement>, item: InventorySlot) => {
@@ -293,26 +359,34 @@ export default function InventoryWindow({ onClose, inventory, equipment, onSell,
     onUse(item.slotIndex);
   };
 
+  const slotByKey = Object.fromEntries(EQUIP_SLOTS.map((slot) => [slot.key, slot])) as Record<EquipmentSlotKey, EquipSlotDef>;
+  const windowStyle = windowPosition ? { left: `${windowPosition.x}px`, top: `${windowPosition.y}px`, transform: 'none' } : undefined;
+
   return (
-    <div className="inventory-window">
+    <div ref={windowRef} className={`inventory-window${isDragging ? ' inventory-window-dragging' : ''}`} style={windowStyle} onPointerDown={handleWindowPointerDown}>
       <Card title="Inventory" onClose={onClose} className="inventory-equip-card">
-        <div className="equip-grid" style={{ width: `${EQUIP_GRID_SIZE.width}rem`, height: `${EQUIP_GRID_SIZE.height}rem` }}>
-          {EQUIP_SLOTS.map((slot) => {
-            const visual = equipment[slot.key];
-            const display = visual ? displayFor(visual.itemCode) : undefined;
-            return (
-              <div
-                key={slot.key}
-                className={`equip-slot${slot.round ? ' equip-slot-round' : ''}${visual ? ' equip-slot-filled' : ''}`}
-                style={{ left: `${slot.left}rem`, top: `${slot.top}rem`, width: `${slot.width}rem`, height: `${slot.height}rem` }}
-                aria-label={display ? `${slot.label}: ${display.name}` : slot.label}
-                onMouseEnter={visual ? (event) => handleEquipSlotEnter(event, visual.itemCode, visual.upgrade) : undefined}
-                onMouseLeave={visual ? handleHoverLeave : undefined}
-              >
-                {display?.iconUrl ? <img className="equip-slot-icon-img" src={display.iconUrl} alt="" /> : <SlotIcon type={slot.type} />}
-              </div>
-            );
-          })}
+        <div className="equip-grid">
+          {renderEquipSlot(slotByKey.helmet)}
+          <div className="ammo">
+            <div className="equip-slot ammospecial" aria-label="Special Ammo">
+              <SlotIcon type="bullet" />
+            </div>
+            {renderEquipSlot(slotByKey.bullet1)}
+            {renderEquipSlot(slotByKey.bullet2)}
+          </div>
+          <div className="amulet">
+            {renderEquipSlot(slotByKey.amulet1)}
+            {renderEquipSlot(slotByKey.amulet2)}
+          </div>
+          {renderEquipSlot(slotByKey.upper)}
+          {renderEquipSlot(slotByKey.lower)}
+          {renderEquipSlot(slotByKey.shoe)}
+          {renderEquipSlot(slotByKey.weapon)}
+          {renderEquipSlot(slotByKey.shield)}
+          {renderEquipSlot(slotByKey.gauntlet)}
+          {renderEquipSlot(slotByKey.cloak)}
+          <div className="ring_l">{renderEquipSlot(slotByKey.ring1)}</div>
+          <div className="ring_r">{renderEquipSlot(slotByKey.ring2)}</div>
         </div>
 
         <div className="inventory-currency-row">
@@ -410,7 +484,23 @@ export default function InventoryWindow({ onClose, inventory, equipment, onSell,
         </div>
       </Card>
 
-      {hover && <ItemTooltip data={buildTooltipData(hover, displayFor)} anchorRect={hover.anchorRect} />}
+      {hover && (
+        <ItemTooltip
+          data={buildTooltipData(hover, displayFor)}
+          anchorRect={hover.anchorRect}
+          onUnuse={
+            hover.equipmentSlotKey
+              ? () => {
+                  if (!hover.equipmentSlotKey) return;
+                  onUnuse(hover.equipmentSlotKey);
+                  setHover(null);
+                }
+              : undefined
+          }
+          onMouseEnter={handleTooltipEnter}
+          onMouseLeave={handleTooltipLeave}
+        />
+      )}
     </div>
   );
 }

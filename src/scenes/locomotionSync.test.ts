@@ -1,7 +1,7 @@
 import { Vector3 } from 'three';
 import { describe, expect, it } from 'vitest';
-import { facingToRotation, quantizeDirectionVector, quantizeToCompass, rotationToYaw } from '../net/compassRotation';
-import { classifyLocomotionDirectionStable, classifyMovementAgainstFacing } from '../rf/character';
+import { facingToRotation, quantizeToCompass, rotationToYaw } from '../net/compassRotation';
+import { classifyLocomotionDirection, classifyMovementAgainstFacing } from '../rf/character';
 import type { LocomotionDirection } from '../rf/character';
 
 const UP = new Vector3(0, 1, 0);
@@ -19,19 +19,8 @@ const LOCAL_FORWARD = new Vector3(0, 0, -1);
  * game clients.
  */
 
-interface SenderState {
-  facing: Vector3;
-  lastInputLocomotionDirection: LocomotionDirection | null;
-  lastLocomotionDirection: LocomotionDirection | null;
-}
-
-function freshSenderState(): SenderState {
-  return { facing: new Vector3(0, 0, -1), lastInputLocomotionDirection: null, lastLocomotionDirection: null };
-}
-
-/** Mirrors OnlineScene's per-frame sender pipeline: updateMoveDirectionFromCamera -> quantizeMoveDirection -> updateFacing -> classifyAgainstFacing -> the values reportMovementIfChanged would send. See those methods' own doc comments in OnlineScene.ts for the algorithm this reproduces. */
+/** Mirrors OnlineScene's per-frame sender pipeline: resolve move from camera, classify raw local input like ViewerScene, then quantize only the wire movement/facing values. */
 function senderFrame(
-  state: SenderState,
   cameraForward: Vector3,
   input: { x: number; y: number },
 ): { localLocomotionDirection: LocomotionDirection | null; sentDx: number; sentDz: number; sentFacingRotation: number } {
@@ -39,27 +28,10 @@ function senderFrame(
   const moveDirection = new Vector3().addScaledVector(cameraForward, input.y).addScaledVector(cameraRight, input.x);
   if (moveDirection.lengthSq() > 1e-8) moveDirection.normalize();
 
-  const quantizedMoveDirection = new Vector3();
-  if (!quantizeDirectionVector(moveDirection, quantizedMoveDirection)) quantizedMoveDirection.copy(moveDirection);
-
-  const inputLocomotionDirection = classifyLocomotionDirectionStable(input.x, input.y, state.lastInputLocomotionDirection);
-  state.lastInputLocomotionDirection = inputLocomotionDirection;
-  if (!inputLocomotionDirection) state.facing.copy(quantizedMoveDirection);
-
-  const quantizedFacing = new Vector3();
-  quantizeDirectionVector(state.facing, quantizedFacing);
-  const scratch = new Vector3();
-  const localLocomotionDirection = classifyMovementAgainstFacing(
-    quantizedMoveDirection,
-    quantizedFacing,
-    state.lastLocomotionDirection,
-    scratch,
-    UP,
-  );
-  state.lastLocomotionDirection = localLocomotionDirection;
-
+  const localLocomotionDirection = classifyLocomotionDirection(input.x, input.y);
+  const facing = localLocomotionDirection ? cameraForward : moveDirection;
   const [sentDx, sentDz] = quantizeToCompass(moveDirection.x, moveDirection.z);
-  const sentFacingRotation = facingToRotation(state.facing);
+  const sentFacingRotation = facingToRotation(facing);
   return { localLocomotionDirection, sentDx, sentDz, sentFacingRotation };
 }
 
@@ -91,18 +63,11 @@ describe('local prediction vs remote reconstruction agree on locomotion clip', (
     for (const input of inputs) {
       it(`camera@${Math.round((azimuth * 180) / Math.PI)}deg input=(${input.x},${input.y})`, () => {
         const cameraForward = new Vector3(0, 0, -1).applyAxisAngle(UP, azimuth);
-        const sender = freshSenderState();
-
-        // Establish a stable facing by holding plain forward first, same as
-        // a real player who was already walking before this input started -
-        // classification is only meaningful once facing is grid-aligned.
-        senderFrame(sender, cameraForward, { x: 0, y: 1 });
-        senderFrame(sender, cameraForward, { x: 0, y: 1 });
 
         let local: LocomotionDirection | null = null;
         let remote: LocomotionDirection | null = null;
         for (let frame = 0; frame < 5; frame++) {
-          const result = senderFrame(sender, cameraForward, input);
+          const result = senderFrame(cameraForward, input);
           local = result.localLocomotionDirection;
           remote = receiverClassify(result.sentDx, result.sentDz, result.sentFacingRotation, remote);
         }

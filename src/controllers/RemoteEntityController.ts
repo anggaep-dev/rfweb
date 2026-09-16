@@ -12,7 +12,7 @@ import { CharacterController } from './CharacterController';
 import type { ParticleCullingContext } from './CharacterController';
 import { applyCharacterAppearance, applyEquipmentDiff, visibleEquipmentToEquipped } from './characterAppearance';
 import { LocomotionDebugGizmo } from './LocomotionDebugGizmo';
-import { NameTag } from './NameTag';
+import { NameTag, nameTagYOffsetFromBounds } from './NameTag';
 
 const UP_AXIS = new Vector3(0, 1, 0);
 const LOCAL_FORWARD = new Vector3(0, 0, -1);
@@ -298,7 +298,7 @@ export class RemoteEntityController {
         character.group.position.y = previousRenderY;
         groundQueriesRemaining = this.applyRemoteGroundHeight(remote, character.group.position, previousRenderY, delta, groundQueriesRemaining);
       }
-      remote.nameTag?.update(remote.controller.getHeadBone());
+      remote.nameTag?.update(remote.controller.group);
       // The gizmo draws what the mesh ACTUALLY shows, not the classification
       // target above - derived from the same smoothed `yaw` setWorldYaw just
       // applied, not targetYaw, so the arrow never visibly disagrees with the
@@ -437,6 +437,7 @@ export class RemoteEntityController {
       const character = await loadCharacter(race);
       if (remote.removed) return;
       const bounds = await remote.controller.mount(character, race);
+      const nameTagYOffset = nameTagYOffsetFromBounds(bounds);
       if (remote.removed) return;
       const mountedCharacter = remote.controller.getCharacter();
       if (mountedCharacter) {
@@ -447,7 +448,13 @@ export class RemoteEntityController {
 
       const appearance = await this.loadAppearance(characterId);
       if (remote.removed || !appearance) return;
-      if (appearance.name) remote.nameTag = new NameTag(this.scene, appearance.name, bounds.radius);
+      if (appearance.name) {
+        remote.nameTag = new NameTag(this.scene, appearance.name, bounds.radius, nameTagYOffset, {
+          race: appearance.race,
+          rank: appearance.rank,
+          specialRank: appearance.specialRank,
+        });
+      }
       await applyCharacterAppearance(remote.controller, appearance, () => remote.removed);
       if (remote.removed) return;
       remote.equipped = appearance.equipped ?? {};

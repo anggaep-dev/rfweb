@@ -19,7 +19,7 @@ export interface MiniMapHandle {
 }
 
 /**
- * Radar-style minimap frame, top-left - real (not mocked) local-facing and
+ * Radar-style minimap frame, top-right - real (not mocked) local-facing and
  * nearby-entity data, fed every frame via the imperative `update()` handle
  * rather than props, since OnlineScene calls it once per render frame.
  * There's still no real terrain/map data, so this only ever plots relative
@@ -58,10 +58,9 @@ const MiniMap = forwardRef<MiniMapHandle>(function MiniMap(_props, ref) {
 
   return (
     <div className="minimap">
-      <div className="minimap-compass">N</div>
       <div className="minimap-face" ref={faceRef}>
-        <div className="minimap-sweep" />
-        <div className="minimap-grid" />
+        <div className="minimap-inside" />
+        <div className="minimap-spinner" />
         {Array.from({ length: MAX_BLIPS }, (_, i) => (
           <div
             key={i}
@@ -74,10 +73,7 @@ const MiniMap = forwardRef<MiniMapHandle>(function MiniMap(_props, ref) {
         ))}
         <div ref={playerMarkerRef} className="minimap-player" />
       </div>
-      <div className="minimap-corner minimap-corner-tl" />
-      <div className="minimap-corner minimap-corner-tr" />
-      <div className="minimap-corner minimap-corner-bl" />
-      <div className="minimap-corner minimap-corner-br" />
+      <div className="minimap-frame" aria-hidden="true" />
     </div>
   );
 });

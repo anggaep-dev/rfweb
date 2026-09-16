@@ -16,6 +16,10 @@
   border-radius: 3px;
 }
 
+.item-tooltip-interactive {
+  pointer-events: auto;
+}
+
 .item-tooltip-header {
   display: flex;
   align-items: center;
@@ -104,4 +108,27 @@
 .item-tooltip-code {
   color: var(--text-muted);
   font: 500 0.6rem var(--font-mono);
+}
+
+.item-tooltip-action {
+  width: 100%;
+  border-radius: 2px;
+  border: 1px solid var(--border-chrome);
+  background: var(--surface-panel-alt);
+  color: var(--text-primary);
+  font: 700 0.68rem var(--font-display);
+  padding: 0.32rem var(--space-2);
+  cursor: pointer;
+}
+
+.item-tooltip-action:hover {
+  border-color: var(--energy-cyan);
+  color: var(--energy-cyan);
+}
+
+@media (max-width: 520px) {
+  .item-tooltip {
+    width: min(13.5rem, calc(100vw - 1rem)) !important;
+    padding: var(--space-2);
+  }
 }

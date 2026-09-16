@@ -24,6 +24,9 @@ export interface ItemTooltipProps {
   data: ItemTooltipData;
   /** The hovered slot's own bounding rect, viewport-relative - anchors the tooltip beside it, flipping to the other side rather than running off-screen. */
   anchorRect: DOMRect;
+  onUnuse?: () => void;
+  onMouseEnter?: () => void;
+  onMouseLeave?: () => void;
 }
 
 const TOOLTIP_WIDTH = 240;
@@ -40,7 +43,7 @@ function TooltipRow({ label, value }: { label: string; value: ReactNode }) {
   );
 }
 
-export default function ItemTooltip({ data, anchorRect }: ItemTooltipProps) {
+export default function ItemTooltip({ data, anchorRect, onUnuse, onMouseEnter, onMouseLeave }: ItemTooltipProps) {
   const { item } = data;
   const grade = itemGradeLabel(item?.grade);
   // Undefined only for an item with no grade data at all (never resolved to
@@ -66,7 +69,13 @@ export default function ItemTooltip({ data, anchorRect }: ItemTooltipProps) {
   // this tooltip was never actually viewport-fixed at all, just fixed
   // relative to the inventory window, and could get clipped by it.
   return createPortal(
-    <div className="item-tooltip" style={{ left, top, width: TOOLTIP_WIDTH, borderColor: gradeColor }} role="tooltip">
+    <div
+      className={`item-tooltip${onUnuse ? ' item-tooltip-interactive' : ''}`}
+      style={{ left, top, width: TOOLTIP_WIDTH, borderColor: gradeColor }}
+      role="tooltip"
+      onMouseEnter={onMouseEnter}
+      onMouseLeave={onMouseLeave}
+    >
       <div className="item-tooltip-header">
         {data.iconUrl && <img className="item-tooltip-icon" src={data.iconUrl} alt="" />}
         <div className="item-tooltip-title">
@@ -100,6 +109,11 @@ export default function ItemTooltip({ data, anchorRect }: ItemTooltipProps) {
       </div>
 
       <div className="item-tooltip-code">{data.itemCode}</div>
+      {onUnuse && (
+        <button type="button" className="item-tooltip-action" onClick={onUnuse}>
+          Unuse
+        </button>
+      )}
     </div>,
     document.body,
   );
