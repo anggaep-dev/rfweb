@@ -201,3 +201,19 @@ export async function resolveCloakMeshStem(modelId: string, raceGender: RaceGend
   if (!candidate) return null;
   return candidate.FileName.replace(/\.msh$/i, '');
 }
+
+/**
+ * Resolves a shield item's numeric Model id to its mesh filename stem, via
+ * itemResource.json - same table as weapons, and (unlike body armor/cloaks)
+ * no per-race block correction needed: shielDItem.json's Model ids already
+ * resolve directly (confirmed against real data - e.g. Accretia's "Solid
+ * Shield" Model 400754 -> "ACCRETIA_ARMOR_LSHIELD_084.MSH", Bell/Cora's
+ * "Round Shield" Model 900700 -> "BELCOR_ARMOR_LSHIELD_000.MSH", both a
+ * direct id match with the race baked into the id itself, same as weapons).
+ */
+export async function resolveShieldMeshStem(modelId: string): Promise<string | null> {
+  const { byId } = await loadItemResourceIndex();
+  const entry = byId.get(modelId);
+  if (!entry) return null;
+  return entry.FileName.replace(/\.msh$/i, '');
+}

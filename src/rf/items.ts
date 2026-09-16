@@ -26,6 +26,7 @@ export enum ModelType {
   Shoes = 5,
   Weapon = 6,
   Cloak = 7,
+  Shield = 8,
 }
 
 /**
@@ -51,8 +52,8 @@ export const ALL_MODEL_TYPES: ModelType[] = [
   ModelType.Shoes,
 ];
 
-/** Every equippable slot, body parts plus weapon and cloak - for UI iteration (equip panel, item preloading). */
-export const ALL_EQUIP_SLOTS: ModelType[] = [...ALL_MODEL_TYPES, ModelType.Weapon, ModelType.Cloak];
+/** Every equippable slot, body parts plus weapon, cloak and shield - for UI iteration (equip panel, item preloading). */
+export const ALL_EQUIP_SLOTS: ModelType[] = [...ALL_MODEL_TYPES, ModelType.Weapon, ModelType.Cloak, ModelType.Shield];
 
 /** How many pre-made variants each base-appearance slot has to choose from - see ALL_MODEL_TYPES' doc comment. Verified against every race's DEFAULT{code}.RFS: exactly 5 (numbered 000-004) per slot, no exceptions. */
 export const BASE_APPEARANCE_VARIANT_COUNT = 5;
@@ -66,6 +67,11 @@ const ITEM_FILE_BY_SLOT: Record<ModelType, string> = {
   [ModelType.Shoes]: 'shoeItem.json',
   [ModelType.Weapon]: 'weaponItem.json',
   [ModelType.Cloak]: 'cloakItem.json',
+  // Sic - matches the real on-disk filename's own capitalization typo
+  // ("shielDItem.json", capital D) exactly; case matters here since this
+  // is fetched as a URL path, not opened via a case-insensitive filesystem
+  // API.
+  [ModelType.Shield]: 'shielDItem.json',
 };
 
 /**
@@ -92,15 +98,16 @@ export const ICON_SHEET_BY_SLOT: Partial<Record<ModelType, string>> = {
   // original game data - confirmed by decoding real cloak items' IconID
   // against it (e.g. ikbpc01 "Premium Booster" -> its actual booster icon).
   [ModelType.Cloak]: 'ringcloak.dds',
+  [ModelType.Shield]: 'shield.dds',
 };
 
 /**
  * The mesh-filename token for each slot's *default* body part, e.g.
  * "{RACE}_DEFAULT_GLOVES_000.msh" - note this differs from the slot's own
  * name for Gauntlet ("GLOVES" in every mesh archive, "Gauntlet" in the
- * client's ModelType enum). Weapon and Cloak have no default part (see
- * ALL_MODEL_TYPES) so their entries are never actually read - present only
- * so this stays a total Record over ModelType.
+ * client's ModelType enum). Weapon, Cloak and Shield have no default part
+ * (see ALL_MODEL_TYPES) so their entries are never actually read - present
+ * only so this stays a total Record over ModelType.
  */
 export const MODEL_TYPE_TO_PART_TOKEN: Record<ModelType, string> = {
   [ModelType.Helmet]: 'HELMET',
@@ -111,6 +118,7 @@ export const MODEL_TYPE_TO_PART_TOKEN: Record<ModelType, string> = {
   [ModelType.Shoes]: 'SHOES',
   [ModelType.Weapon]: '',
   [ModelType.Cloak]: 'CLOAK',
+  [ModelType.Shield]: '',
 };
 
 /** Human-readable label per slot, for UI (equip panel rows, warning/error messages). */
@@ -123,6 +131,7 @@ export const SLOT_LABELS: Record<ModelType, string> = {
   [ModelType.Shoes]: 'Shoes',
   [ModelType.Weapon]: 'Weapon',
   [ModelType.Cloak]: 'Cloak',
+  [ModelType.Shield]: 'Shield',
 };
 
 const HAIR_INSTEAD_OF_HELMET_RACES = new Set<RaceGender>([
@@ -151,20 +160,32 @@ export interface ItemDefinition {
   /** Required character level to use this item, 0 if the item's file doesn't carry the field at all (faceItem.json - see loadShowcaseCandidates' doc comment). */
   levelLim: number;
   /**
-   * weaponItem.json only ("Grade" field) - the real client's item-grade tier
-   * (public/raw/client_common.bt's own `enum Grade`: 0=Normal_Item,
-   * 1=Intense_Item, 2=Type_B_Item, 3=Type_C_Item, 4=Relic_Item,
-   * 5=Uniform_Item, 6=Special_Item, 7=Majesty_Item, 8=Leon_Item,
-   * 9=Archon_Item, 45=Monster_Item - see GRADE_LABELS/itemGradeLabel).
-   * Confirmed against real data: "Intense Dagger" is Grade 1, "Dagger" is
-   * Grade 3 (Type_C_Item). Grades 1-4 additionally select a Chef/
-   * GradeEffect/ cosmetic overlay via gradeEffect.ts's gradeLetter (that
-   * A-D lettering isn't a separate naming scheme - Grade 2 "Type_B_Item"
-   * literally is Bgrade.dds, Grade 3 "Type_C_Item" is Cgrade.dds). Undefined
-   * for every other slot's item file, which doesn't carry this field at
-   * all.
+   * The real client's item-grade tier (public/raw/client_common.bt's own
+   * `enum Grade`: 0=Normal_Item, 1=Intense_Item, 2=Type_B_Item,
+   * 3=Type_C_Item, 4=Relic_Item, 5=Uniform_Item, 6=Special_Item,
+   * 7=Majesty_Item, 8=Leon_Item, 9=Archon_Item, 45=Monster_Item - see
+   * GRADE_LABELS/itemGradeLabel). Read from weaponItem.json's own bare-number
+   * "Grade" field, or every other slot's numeric-string "ItemGrade" field
+   * otherwise (see RawItemEntry) - the two are mutually exclusive per file,
+   * never both present on the same row. Confirmed against real data:
+   * "Intense Dagger" is Grade 1, "Dagger" is Grade 3 (Type_C_Item);
+   * cloakItem.json's "Premium Booster" is ItemGrade 5 (Uniform_Item). Grades
+   * 1-4 additionally select a Chef/GradeEffect/ cosmetic overlay via
+   * gradeEffect.ts's gradeLetter (that A-D lettering isn't a separate naming
+   * scheme - Grade 2 "Type_B_Item" literally is Bgrade.dds, Grade 3
+   * "Type_C_Item" is Cgrade.dds) - today only ever applied for
+   * ModelType.Weapon (see CharacterController's own equippedGradeOverlays
+   * doc comment), regardless of how many other slots now carry a real grade
+   * value.
    */
   grade?: number;
+  /** Physical defense rating ("DefFc") - present on every non-weapon slot's item file, undefined for weaponItem.json (armor/shield/cloak have defense, weapons have attack instead). */
+  defense?: number;
+  /** Elemental resistance/affinity ratings ("FireTol"/"WaterTol"/"SoilTol"/"WindTol") - same non-weapon-only presence as `defense`. 0 is the common "no effect" baseline, same convention as ItemEffect's 0/-1 - a caller should typically hide a 0 row rather than display it. */
+  fireTol?: number;
+  waterTol?: number;
+  soilTol?: number;
+  windTol?: number;
   /**
    * Row-major index into this slot's icon sprite sheet (ICON_SHEET_BY_SLOT) -
    * weaponItem.json calls the field "Icon" (a bare number); every other
@@ -177,6 +198,10 @@ export interface ItemDefinition {
   icon: number;
   /** EDF "IsExchange" - whether this item can be traded to another player. Present (as a string/number split identical to Civil/LevelLim's own) across every slot's item file, not just weaponItem.json. */
   tradeable: boolean;
+  /** EDF "IsSell" - whether this item can be sold to an NPC shop. Present across every slot's item file, same string/number split as tradeable. */
+  sellable: boolean;
+  /** EDF "IsGround" - whether this item can be dropped on the ground. Present across every slot's item file, same string/number split as tradeable. */
+  droppable: boolean;
   /** weaponItem.json only ("GAMinAF"/"GAMaxAF") - physical attack range. undefined for every other slot's item file, which doesn't carry these columns at all. */
   attackMin?: number;
   attackMax?: number;
@@ -229,17 +254,40 @@ interface RawItemEntry {
   IsExist?: string | number;
   // weaponItem.json only - a plain small JSON number (0-9 seen), no string/number split to handle here.
   Grade?: number;
+  // Every other slot's file's own grade field (helmet/upper/lower/gauntlet/
+  // shoe/cloak/shielDItem.json) - same Grade enum/value range as weaponItem.
+  // json's bare-number "Grade" above, but as a numeric string instead (e.g.
+  // "0", cloakItem.json's Premium Booster rows are "5" - Uniform_Item,
+  // matching GRADE_LABELS[5]). weaponItem.json has no "ItemGrade" field at
+  // all, so exactly one of Grade/ItemGrade is ever present on a given row.
+  ItemGrade?: string | number;
   // weaponItem.json's own icon field - a bare JSON number. Every other slot's file has no "Icon" field at all, only "IconID" below.
   Icon?: number;
   // helmet/upper/lower/gauntlet/shoe/cloak/faceItem.json's icon field - a numeric string (e.g. "39"), unlike weaponItem.json's bare-number "Icon".
   IconID?: string | number;
   // Same string-vs-number split as Civil/LevelLim above (weaponItem.json bare-number, every other slot's file zero/one as a string).
   IsExchange?: string | number;
+  // "Can this item be sold to an NPC shop" / "can it be dropped on the
+  // ground" - present across every slot's item file (weapon included),
+  // same string-vs-number split as IsExchange above.
+  IsSell?: string | number;
+  IsGround?: string | number;
   // weaponItem.json only - plain JSON numbers, no string/number split to handle.
   GAMinAF?: number;
   GAMaxAF?: number;
   MAMinAF?: number;
   MAMaxAF?: number;
+  // Physical defense rating - every non-weapon slot's item file (helmet/
+  // upper/lower/gauntlet/shoe/cloak/shielDItem.json) carries this; weaponItem.
+  // json has no "DefFc" column at all. A numeric string, same split as Civil/
+  // LevelLim above.
+  DefFc?: string | number;
+  // Elemental resistance/affinity ratings - same non-weapon-slots-only
+  // presence and numeric-string typing as DefFc above.
+  FireTol?: string | number;
+  WaterTol?: string | number;
+  SoilTol?: string | number;
+  WindTol?: string | number;
   // Present across every slot's item file, not just weaponItem.json. Codes
   // are always a plain JSON number; units are the odd one - a plain number
   // for a flat value (e.g. 3, -3) but a EUC-KR-locale comma-decimal STRING
@@ -348,9 +396,9 @@ export function itemGradeColor(grade: number | undefined): string | undefined {
 /** `specialEffectTypes` - an item's Eff1Code..Eff4Code (see parseEffects/ItemEffect), humanized (underscore->space). -1/0 (No_EffectNegative/No_Effect) are deliberately absent - parseEffects already filters those two out before an ItemEffect is ever created for one. */
 export const SPECIAL_EFFECT_TYPE_LABELS: Record<number, string> = {
   1: 'SP',
-  2: 'FP Consumption Inc',
+  2: 'FP Consumption',
   3: 'Accuracy',
-  4: 'Smart Evasion',
+  4: 'Avoidance',
   5: 'HP/FP',
   6: 'Attack',
   7: 'Defense',
@@ -370,11 +418,11 @@ export const SPECIAL_EFFECT_TYPE_LABELS: Record<number, string> = {
   23: 'HP Recovery',
   25: 'Launcher Speed',
   26: 'Force Range',
-  27: 'Decr Critical Hit',
+  27: 'Critical Hit',
   28: 'Shield Succes Rate',
-  29: 'Endurance Resistances',
+  29: 'Resistances',
   30: 'Strenght HP',
-  31: 'Force Debuff Decr',
+  31: 'Force Debuff',
   32: 'Ignore Def Rate',
   34: 'Skill Delay',
   35: 'Force Attack Delay',
@@ -442,9 +490,13 @@ async function fetchSlotItems(modelType: ModelType): Promise<ItemDefinition[]> {
   const items: ItemDefinition[] = [];
   for (const [id, entry] of Object.entries(raw)) {
     if (!entry.Model || entry.Civil === undefined) continue;
-    // Weapon/Cloak-only - see RawItemEntry.IsExist's doc comment on why this
-    // isn't applied to every slot.
-    if ((modelType === ModelType.Weapon || modelType === ModelType.Cloak) && String(entry.IsExist) === '0') continue;
+    // Weapon/Cloak/Shield-only - see RawItemEntry.IsExist's doc comment on
+    // why this isn't applied to every slot. shielDItem.json shares the same
+    // pattern (real items alongside removed/unused "*C"/"*D" placeholder
+    // variants, e.g. "Shield1C"/"Shield1D" next to "Round Shield"), not the
+    // degenerate all-zero case faceItem.json has.
+    if ((modelType === ModelType.Weapon || modelType === ModelType.Cloak || modelType === ModelType.Shield) && String(entry.IsExist) === '0')
+      continue;
     const rawIcon = Number(entry.Icon ?? entry.IconID ?? 0);
     items.push({
       id,
@@ -452,9 +504,16 @@ async function fetchSlotItems(modelType: ModelType): Promise<ItemDefinition[]> {
       model: String(entry.Model),
       civil: String(entry.Civil),
       levelLim: entry.LevelLim === undefined ? 0 : Number(entry.LevelLim),
-      grade: entry.Grade,
+      grade: entry.Grade ?? (entry.ItemGrade === undefined ? undefined : Number(entry.ItemGrade)),
+      defense: entry.DefFc === undefined ? undefined : Number(entry.DefFc),
+      fireTol: entry.FireTol === undefined ? undefined : Number(entry.FireTol),
+      waterTol: entry.WaterTol === undefined ? undefined : Number(entry.WaterTol),
+      soilTol: entry.SoilTol === undefined ? undefined : Number(entry.SoilTol),
+      windTol: entry.WindTol === undefined ? undefined : Number(entry.WindTol),
       icon: Number.isFinite(rawIcon) ? rawIcon : 0,
       tradeable: Number(entry.IsExchange) === 1,
+      sellable: Number(entry.IsSell) === 1,
+      droppable: Number(entry.IsGround) === 1,
       attackMin: entry.GAMinAF,
       attackMax: entry.GAMaxAF,
       forceAttackMin: entry.MAMinAF,

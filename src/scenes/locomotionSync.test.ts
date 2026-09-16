@@ -1,6 +1,6 @@
 import { Vector3 } from 'three';
 import { describe, expect, it } from 'vitest';
-import { facingToRotation, quantizeToCompass, rotationToYaw } from '../net/compassRotation';
+import { facingToRotation, quantizeDirectionVector, quantizeToCompass, rotationToYaw } from '../net/compassRotation';
 import { classifyLocomotionDirection, classifyMovementAgainstFacing } from '../rf/character';
 import type { LocomotionDirection } from '../rf/character';
 
@@ -19,20 +19,31 @@ const LOCAL_FORWARD = new Vector3(0, 0, -1);
  * game clients.
  */
 
-/** Mirrors OnlineScene's per-frame sender pipeline: resolve move from camera, classify raw local input like ViewerScene, then quantize only the wire movement/facing values. */
+/** Mirrors OnlineScene's per-frame sender pipeline: resolve move from camera, classify raw local input like ViewerScene, then snap local prediction and wire movement to the same 8-way compass vector. */
 function senderFrame(
   cameraForward: Vector3,
   input: { x: number; y: number },
-): { localLocomotionDirection: LocomotionDirection | null; sentDx: number; sentDz: number; sentFacingRotation: number } {
+): {
+  localLocomotionDirection: LocomotionDirection | null;
+  predictedMoveDirection: Vector3;
+  predictedFaceDirection: Vector3;
+  sentDx: number;
+  sentDz: number;
+  sentFacingRotation: number;
+} {
   const cameraRight = new Vector3().crossVectors(cameraForward, UP).normalize();
   const moveDirection = new Vector3().addScaledVector(cameraForward, input.y).addScaledVector(cameraRight, input.x);
   if (moveDirection.lengthSq() > 1e-8) moveDirection.normalize();
 
   const localLocomotionDirection = classifyLocomotionDirection(input.x, input.y);
   const facing = localLocomotionDirection ? cameraForward : moveDirection;
-  const [sentDx, sentDz] = quantizeToCompass(moveDirection.x, moveDirection.z);
+  const predictedMoveDirection = new Vector3();
+  const predictedFaceDirection = new Vector3();
+  quantizeDirectionVector(moveDirection, predictedMoveDirection);
+  quantizeDirectionVector(facing, predictedFaceDirection);
+  const [sentDx, sentDz] = quantizeToCompass(moveDirection.x, -moveDirection.z);
   const sentFacingRotation = facingToRotation(facing);
-  return { localLocomotionDirection, sentDx, sentDz, sentFacingRotation };
+  return { localLocomotionDirection, predictedMoveDirection, predictedFaceDirection, sentDx, sentDz, sentFacingRotation };
 }
 
 /** Mirrors RemoteEntityController.tick()'s classification (against targetYaw, not the smoothed render `yaw` - see its own doc comment) from wire values alone. */
@@ -44,7 +55,7 @@ function receiverClassify(
 ): LocomotionDirection | null {
   const len = Math.hypot(sentDx, sentDz);
   if (len < 1e-6) return previous; // idle - RemoteEntityController skips classification entirely while !isMoving
-  const moveDirection = new Vector3(sentDx / len, 0, sentDz / len);
+  const moveDirection = new Vector3(sentDx / len, 0, -sentDz / len);
   const facing = LOCAL_FORWARD.clone().applyAxisAngle(UP, rotationToYaw(sentFacingRotation));
   const scratch = new Vector3();
   return classifyMovementAgainstFacing(moveDirection, facing, previous, scratch, UP);
@@ -75,5 +86,35 @@ describe('local prediction vs remote reconstruction agree on locomotion clip', (
         expect(remote).toBe(local);
       });
     }
+  }
+});
+
+describe('local prediction uses the same compass vector as the wire movement', () => {
+  const cameraAzimuths = Array.from({ length: 72 }, (_, i) => (i * Math.PI) / 36); // every 5deg, full circle
+
+  for (const azimuth of cameraAzimuths) {
+    it(`camera@${Math.round((azimuth * 180) / Math.PI)}deg forward input`, () => {
+      const cameraForward = new Vector3(0, 0, -1).applyAxisAngle(UP, azimuth);
+      const result = senderFrame(cameraForward, { x: 0, y: 1 });
+      const len = Math.hypot(result.sentDx, result.sentDz);
+
+      expect(result.predictedMoveDirection.x).toBeCloseTo(result.sentDx / len, 6);
+      expect(result.predictedMoveDirection.z).toBeCloseTo(-result.sentDz / len, 6);
+    });
+  }
+});
+
+describe('local facing is also compass-snapped', () => {
+  const cameraAzimuths = Array.from({ length: 72 }, (_, i) => (i * Math.PI) / 36); // every 5deg, full circle
+
+  for (const azimuth of cameraAzimuths) {
+    it(`camera@${Math.round((azimuth * 180) / Math.PI)}deg forward input faces the sent compass direction`, () => {
+      const cameraForward = new Vector3(0, 0, -1).applyAxisAngle(UP, azimuth);
+      const result = senderFrame(cameraForward, { x: 0, y: 1 });
+      const facing = LOCAL_FORWARD.clone().applyAxisAngle(UP, rotationToYaw(result.sentFacingRotation));
+
+      expect(result.predictedFaceDirection.x).toBeCloseTo(facing.x, 6);
+      expect(result.predictedFaceDirection.z).toBeCloseTo(facing.z, 6);
+    });
   }
 });

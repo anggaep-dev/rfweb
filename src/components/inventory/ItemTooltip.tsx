@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { effectRowLabel, formatEffectValue, itemGradeColor, itemGradeLabel, itemRaceLabel } from '../../rf/items';
+import { SLOT_LABELS, effectRowLabel, formatEffectValue, itemGradeColor, itemGradeLabel, itemRaceLabel } from '../../rf/items';
 import type { ItemDefinition, ModelType } from '../../rf/items';
 import { talicSlots } from '../../rf/itemUpgrade';
 import './ItemTooltip.css';
@@ -43,6 +43,23 @@ function TooltipRow({ label, value }: { label: string; value: ReactNode }) {
   );
 }
 
+function TooltipSection({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <div className="item-tooltip-section">
+      <div className="item-tooltip-section-title">{title}</div>
+      {children}
+    </div>
+  );
+}
+
+/** Elements section rows - only ones with a genuinely nonzero value are shown (0 is "no elemental affinity", same convention as ItemEffect's own 0/-1 "no effect" codes), so the whole section is simply omitted when every one of an item's four tolerances is 0/absent. */
+const ELEMENT_FIELDS: [label: string, pick: (item: ItemDefinition) => number | undefined][] = [
+  ['Fire', (item) => item.fireTol],
+  ['Water', (item) => item.waterTol],
+  ['Soil', (item) => item.soilTol],
+  ['Wind', (item) => item.windTol],
+];
+
 export default function ItemTooltip({ data, anchorRect, onUnuse, onMouseEnter, onMouseLeave }: ItemTooltipProps) {
   const { item } = data;
   const grade = itemGradeLabel(item?.grade);
@@ -56,6 +73,7 @@ export default function ItemTooltip({ data, anchorRect, onUnuse, onMouseEnter, o
   // item_code (item undefined) with quantity 1 and no locked/rental status
   // otherwise renders an empty bordered strip with nothing in it.
   const hasRows = Boolean(item) || (data.quantity ?? 0) > 1 || data.isLocked || data.isRental;
+  const visibleElements = item ? ELEMENT_FIELDS.map(([label, pick]) => [label, pick(item)] as const).filter(([, v]) => v !== undefined && v !== 0) : [];
 
   const overflowsRight = anchorRect.right + VIEWPORT_MARGIN + TOOLTIP_WIDTH > window.innerWidth;
   const left = overflowsRight ? anchorRect.left - VIEWPORT_MARGIN - TOOLTIP_WIDTH : anchorRect.right + VIEWPORT_MARGIN;
@@ -88,14 +106,43 @@ export default function ItemTooltip({ data, anchorRect, onUnuse, onMouseEnter, o
 
       {hasRows && (
         <div className="item-tooltip-rows">
-          {item && <TooltipRow label="Level" value={item.levelLim} />}
-          {item && data.modelType !== undefined && <TooltipRow label="Race" value={itemRaceLabel(item.civil, data.modelType)} />}
-          {item?.attackMin !== undefined && <TooltipRow label="Attack" value={`${item.attackMin} - ${item.attackMax}`} />}
-          {item?.forceAttackMin !== undefined && <TooltipRow label="Force Attack" value={`${item.forceAttackMin} - ${item.forceAttackMax}`} />}
-          {item && <TooltipRow label="Trade" value={item.tradeable ? 'Possible' : 'Not possible'} />}
-          {item?.effects.map((effect, i) => (
-            <TooltipRow key={i} label={effectRowLabel(effect)} value={formatEffectValue(effect.unit)} />
-          ))}
+          {item && (
+            <TooltipSection title="Info">
+              {data.modelType !== undefined && <TooltipRow label="Type" value={SLOT_LABELS[data.modelType]} />}
+              <TooltipRow label="Level" value={item.levelLim} />
+              {data.modelType !== undefined && <TooltipRow label="Race" value={itemRaceLabel(item.civil, data.modelType)} />}
+              {item.attackMin !== undefined && <TooltipRow label="Attack" value={`${item.attackMin} - ${item.attackMax}`} />}
+              {item.forceAttackMin !== undefined && (
+                <TooltipRow label="Force Attack" value={`${item.forceAttackMin} - ${item.forceAttackMax}`} />
+              )}
+              {item.defense !== undefined && <TooltipRow label="Defense" value={item.defense} />}
+            </TooltipSection>
+          )}
+
+          {item && item.effects.length > 0 && (
+            <TooltipSection title="Effects">
+              {item.effects.map((effect, i) => (
+                <TooltipRow key={i} label={effectRowLabel(effect)} value={formatEffectValue(effect.unit)} />
+              ))}
+            </TooltipSection>
+          )}
+
+          {visibleElements.length > 0 && (
+            <TooltipSection title="Elements">
+              {visibleElements.map(([label, value]) => (
+                <TooltipRow key={label} label={label} value={value} />
+              ))}
+            </TooltipSection>
+          )}
+
+          {item && (
+            <TooltipSection title="Trade">
+              <TooltipRow label="Can be sell" value={item.sellable ? 'Yes' : 'No'} />
+              <TooltipRow label="Can be trade" value={item.tradeable ? 'Yes' : 'No'} />
+              <TooltipRow label="Can be drop" value={item.droppable ? 'Yes' : 'No'} />
+            </TooltipSection>
+          )}
+
           {data.quantity !== undefined && data.quantity > 1 && <TooltipRow label="Quantity" value={data.quantity} />}
           {data.isLocked && <TooltipRow label="Status" value="Locked" />}
           {data.isRental && <TooltipRow label="Status" value="Rental" />}

@@ -1405,6 +1405,113 @@ export async function loadWeaponMeshObjects(stem: string, built: BuiltSkeleton, 
   return buildObjectsFromParsedMesh(parsed.objects, parsed.texture, built, stem, referenceSkeleton, weaponToken);
 }
 
+// Shield meshes come from the same itemResource.json table and ITEM/
+// archive family as weapons (see resolveShieldMeshStem in resource.ts) and
+// are rigid parts naming a real skeleton bone in their own parentName, just
+// like weapons - so this reuses the exact same pipeline (pre-converted
+// .glb first, raw .msh/.dds fallback, fixed-reference-skeleton retargeting
+// for rigid-attach) rather than duplicating it.
+//
+// UNLIKE weapons, though, a shield is NOT always authored against Accretia:
+// verified against each shield's own shipped .bn skeleton file (unused for
+// skinning, exactly like a weapon's own .bn - see loadWeaponReferenceSkeleton's
+// doc comment) - "ACCRETIA_ARMOR_LSHIELD_*"'s own "Bip01 L Hand" world bind
+// position matches Accretia's real skeleton almost exactly (same small
+// grip-offset residual weapons show), while "BELCOR_ARMOR_LSHIELD_*" (the
+// stem shared by ALL of Bell_Male/Bell_Female/Cora_Male/Cora_Female, per
+// resolveShieldMeshStem's own doc comment) instead matches Bell_Female's
+// skeleton specifically - same bone count (25) and the same near-exact
+// position match, not a generic "Bell/Cora" rig and not whichever of those
+// 4 races actually equips it. Using the wielder's own skeleton (as body-
+// part items correctly do) or always defaulting to Accretia (as weapons
+// always do) both silently misplace a BELCOR shield on 3 of its 4 usable
+// races - see shieldReferenceSkeletonFor.
+const SHIELD_CDN_BASE = `${RFS_CDN_ROOT}/shield`;
+const SHIELD_GLB_CDN_BASE = `${SHIELD_CDN_BASE}/glb`;
+
+const shieldMeshPoolCache = new Map<string, Promise<ParsedWeaponMesh | null>>();
+
+async function loadParsedShieldMeshUncached(stem: string): Promise<ParsedWeaponMesh | null> {
+  try {
+    const glbBuffer = await fetchBuffer(`${SHIELD_GLB_CDN_BASE}/${stem}.glb`);
+    return await parseRfGlb(glbBuffer);
+  } catch (err) {
+    console.warn(`No usable "${stem}.glb" on the shield CDN, falling back to raw .msh/.dds:`, err);
+  }
+
+  let meshBuffer: ArrayBuffer;
+  try {
+    meshBuffer = await fetchBuffer(`${SHIELD_CDN_BASE}/mesh/${stem}.msh`);
+  } catch (err) {
+    console.warn(`No "${stem}.msh" on the shield CDN:`, err);
+    return null;
+  }
+
+  let texture: Texture | null = null;
+  try {
+    const texBuffer = await fetchBuffer(`${SHIELD_CDN_BASE}/tex/${stem}.dds`);
+    texture = decodeRftTexture(texBuffer);
+    texture.userData.pooled = true;
+  } catch (err) {
+    console.warn(`No usable texture for ${stem}:`, err);
+  }
+
+  let objects: RfMeshObject[];
+  try {
+    objects = parseMesh(meshBuffer);
+  } catch (err) {
+    console.warn(`Failed to parse "${stem}.msh":`, err);
+    return null;
+  }
+
+  return { objects, texture };
+}
+
+function loadParsedShieldMesh(stem: string): Promise<ParsedWeaponMesh | null> {
+  let cached = shieldMeshPoolCache.get(stem);
+  if (!cached) {
+    cached = loadParsedShieldMeshUncached(stem);
+    shieldMeshPoolCache.set(stem, cached);
+  }
+  return cached;
+}
+
+// See SHIELD_CDN_BASE's doc comment above for why this is a second, distinct
+// reference skeleton rather than reusing loadWeaponReferenceSkeleton's
+// Accretia one. Loaded once and cached, same as the weapon one.
+let bellFemaleReferenceSkeletonPromise: Promise<BuiltSkeleton> | null = null;
+function loadBellFemaleReferenceSkeleton(): Promise<BuiltSkeleton> {
+  if (!bellFemaleReferenceSkeletonPromise) {
+    bellFemaleReferenceSkeletonPromise = getRaceAssets(RaceGender.Bell_Female).then(({ skeletonBuffer }) =>
+      buildThreeSkeleton(parseSkeleton(skeletonBuffer)),
+    );
+  }
+  return bellFemaleReferenceSkeletonPromise;
+}
+
+/**
+ * Picks the fixed reference skeleton a given shield stem was actually
+ * authored against - see SHIELD_CDN_BASE's doc comment for the verification.
+ * Only "ACCRETIA_"-stemmed shields are confirmed against Accretia;
+ * Bell_Female is the confirmed match for "BELCOR_" and the default for
+ * anything else (the rare all-race "COM_ARMOR_LSHIELD_*" pair has no
+ * shipped .bn to check, so this is an unverified best guess for those
+ * specifically, not a third confirmed case - revisit if one turns out
+ * visibly misplaced).
+ */
+function shieldReferenceSkeletonFor(stem: string): Promise<BuiltSkeleton> {
+  return stem.toUpperCase().startsWith('ACCRETIA_') ? loadWeaponReferenceSkeleton() : loadBellFemaleReferenceSkeleton();
+}
+
+/** Builds the ready-to-attach three.js object(s) for an equipped shield - see loadWeaponMeshObjects, whose pipeline this mirrors (no weaponToken equivalent for shields, so no WEAPON_PLACEMENT_FIXUPS lookup - and see shieldReferenceSkeletonFor for why the reference skeleton isn't always the same one weapons use). */
+export async function loadShieldMeshObjects(stem: string, built: BuiltSkeleton): Promise<Object3D[]> {
+  const parsed = await loadParsedShieldMesh(stem);
+  if (!parsed) return [];
+
+  const referenceSkeleton = await shieldReferenceSkeletonFor(stem);
+  return buildObjectsFromParsedMesh(parsed.objects, parsed.texture, built, stem, referenceSkeleton);
+}
+
 // Keyed by race so a preload (or a repeat visit to an already-loaded race)
 // never re-fetches. In-flight promises are cached too, not just settled
 // results, so two overlapping requests for the same not-yet-loaded race

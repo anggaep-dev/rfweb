@@ -8,7 +8,7 @@ export const MAX_CHARACTERS_PER_ACCOUNT = 3;
 export const INVENTORY_SLOT_COUNT = 100;
 
 /** 1-of-5 pre-made variant chosen at creation for each base-appearance slot (Helmet/Face/Upper/Lower/Gauntlet/Shoes only - see items.ts's ALL_MODEL_TYPES doc comment). Every one of the six base slots is required (no "unset" state), so this is a total Record over that subset, not Partial. */
-export type BaseModelType = Exclude<ModelType, ModelType.Weapon | ModelType.Cloak>;
+export type BaseModelType = Exclude<ModelType, ModelType.Weapon | ModelType.Cloak | ModelType.Shield>;
 export type BaseAppearance = Record<BaseModelType, number>;
 
 /** Same six slots as items.ts's ALL_MODEL_TYPES, narrowed to BaseModelType so it can key a BaseAppearance without a cast. */

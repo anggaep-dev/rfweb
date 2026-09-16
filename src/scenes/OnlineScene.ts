@@ -10,7 +10,7 @@ import { NameTag, nameTagYOffsetFromBounds } from '../controllers/NameTag';
 import { RemoteEntityController } from '../controllers/RemoteEntityController';
 import { SceneController } from '../controllers/SceneController';
 import { getCharacterProfile } from '../net/CharacterClient';
-import { facingToRotation, quantizeToCompass } from '../net/compassRotation';
+import { facingToRotation, quantizeDirectionVector, quantizeToCompass, rotationToYaw } from '../net/compassRotation';
 import { getMapDetails } from '../net/MapClient';
 import type {
   EntitySnapshot,
@@ -253,12 +253,10 @@ function defaultWsUrl(): string {
  * update()), same as ViewerScene's debug controls and every other
  * third-person control scheme: right-click-dragging the camera changes
  * which way "forward" points, matching the direction the character actually
- * runs. The server's own MovementInput only understands a fixed 8-way
- * compass though (movement/system.go's directionToRotation), so the
- * continuous camera-relative direction gets quantized (see
- * compassRotation.ts's quantizeToCompass) before being sent - purely for
- * the network report; the character's own local rendering still moves
- * smoothly along the exact continuous direction.
+ * runs. The server's own MovementInput is 8-way for player input, so the
+ * continuous camera-relative direction gets snapped to the nearest compass
+ * axis (see compassRotation.ts's quantizeToCompass) before being
+ * sent and before local prediction advances the character.
  *
  * `sessionToken` (from LoginScreen's real login() call - see
  * net/AuthClient.ts) and `characterId` (which of the account's characters,
@@ -284,6 +282,8 @@ export class OnlineScene implements AppScene {
   /** Raw (x=right, y=forward) intent, camera-relative - see setMoveInput(). Set from outside (OnlineScreen's useKeyboardMove), null while no movement key is held. */
   private moveInput: { x: number; y: number } | null = null;
   private readonly moveDirection = new Vector3();
+  private readonly predictedMoveDirection = new Vector3();
+  private readonly predictedFaceDirection = new Vector3();
   private readonly cameraForward = new Vector3();
   private readonly cameraRight = new Vector3();
   // Which way the character is actually oriented, world-space. Mirrors
@@ -291,7 +291,7 @@ export class OnlineScene implements AppScene {
   // strafe/backward keeps facing the camera's horizontal forward vector.
   // Starts facing world -Z so an idle character has a sane default.
   private readonly facing = new Vector3(0, 0, -1);
-  /** The last (dx, dz, running) actually sent to the server - compared against every frame in update() so a MovementInput only goes out when something reportable actually changed (a key press/release, a running toggle, or the camera rotating enough to cross into a different compass octant), not on every single frame. */
+  /** The last (dx, dz, running) actually sent to the server - compared against every frame in update() so a MovementInput only goes out when something reportable actually changed (a key press/release, a running toggle, or the camera rotating enough to cross into a different compass direction), not on every single frame. */
   private sentDir: [number, number] = [0, 0];
   private sentRunning = false;
   private isRunning = false;
@@ -702,19 +702,29 @@ export class OnlineScene implements AppScene {
     if (this.moveInput) {
       const input = this.moveInput;
       this.updateMoveDirectionFromCamera();
-      // Same local rule as ViewerScene: resolve movement from the current
-      // camera angle, then use raw local input only to choose animation/
-      // facing style. Compass quantization happens only when reporting to
-      // the server below, so it cannot feed back into local zigzag.
+      // Same local rule as ViewerScene: resolve facing/animation from the
+      // current camera angle and raw local input, but move along the exact
+      // snapped 8-way compass vector the server will simulate. If local
+      // prediction uses the continuous camera-relative vector while the
+      // server only sees snapped movement, their positions slowly diverge
+      // and reconciliation has to keep tugging the player back.
       const locomotionDirection = classifyLocomotionDirection(input.x, input.y);
       const faceDirection = locomotionDirection ? this.cameraForward : this.moveDirection;
-      this.facing.copy(faceDirection);
-      this.characterController.setMoveDirection(this.moveDirection, faceDirection, locomotionDirection);
-      // moveDirection is render-space (camera-relative); the server's
-      // dir_z increments a native Z (see rfworld's movement/system.go) - see
-      // nativeToScene's own doc comment on why that's the negation of this
-      // scene's Z, the same as every other native<->scene conversion here.
-      this.reportMovementIfChanged(...quantizeToCompass(this.moveDirection.x, -this.moveDirection.z));
+      const hasMoveDirection = quantizeDirectionVector(this.moveDirection, this.predictedMoveDirection);
+      const hasFaceDirection = quantizeDirectionVector(faceDirection, this.predictedFaceDirection);
+      if (hasMoveDirection && hasFaceDirection) {
+        this.facing.copy(this.predictedFaceDirection);
+        this.characterController.setWorldYaw(rotationToYaw(facingToRotation(this.predictedFaceDirection)));
+        this.characterController.setMoveDirection(this.predictedMoveDirection, this.predictedFaceDirection, locomotionDirection);
+        // moveDirection is render-space (camera-relative); the server's
+        // dir_z increments a native Z (see rfworld's movement/system.go) - see
+        // nativeToScene's own doc comment on why that's the negation of this
+        // scene's Z, the same as every other native<->scene conversion here.
+        this.reportMovementIfChanged(...quantizeToCompass(this.moveDirection.x, -this.moveDirection.z));
+      } else {
+        this.characterController.setMoveDirection(null);
+        this.reportMovementIfChanged(0, 0);
+      }
     } else {
       this.characterController.setMoveDirection(null);
       this.reportMovementIfChanged(0, 0);

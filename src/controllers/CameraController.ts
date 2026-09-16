@@ -5,8 +5,6 @@ import type { CharacterBounds } from './CharacterController';
 
 export type CamMode = 'third' | 'first' | 'debug';
 
-/** How quickly the orbit target catches up to the character, per second (exponential smoothing rate). */
-const FOLLOW_SMOOTHING_RATE = 4;
 /** How quickly the 3rd-person orbit re-aligns to directly behind the character while it moves. */
 const CAMERA_BEHIND_ROTATE_RATE = 4;
 const UP_AXIS = new Vector3(0, 1, 0);
@@ -173,13 +171,9 @@ export class CameraController {
    * Instantly carries both the orbit target and the camera itself by
    * `offset` - for a hard teleport (OnlineScene's own GM `%goto` handling),
    * where the character's position just jumped by a large, discontinuous
-   * distance. Without this, update()'s own per-frame follow (which
-   * deliberately LERPs toward the character at FOLLOW_SMOOTHING_RATE, so
-   * ordinary walking feels smooth) would instead spend the next ~1s visibly
-   * sweeping/flying the camera across the whole gap - the same "camera
-   * position += target's own per-frame delta" trick that keeps zoom
-   * distance fixed during normal follow, just applied in one instant step
-   * instead of smoothed over many frames.
+   * distance. This mirrors update()'s strict follow translation: carry the
+   * camera by the same delta as the orbit target so the zoom distance stays
+   * fixed across a discontinuous position jump.
    */
   teleport(offset: Vector3): void {
     this.controls.target.add(offset);
@@ -242,18 +236,10 @@ export class CameraController {
     }
 
     if (this.mode === 'third' && ctx.characterPosition) {
-      const hips = ctx.hipsBone;
-      if (hips) {
-        hips.getWorldPosition(this.followPoint);
-      } else {
-        this.followPoint.set(ctx.characterPosition.x, 0, ctx.characterPosition.z);
-      }
-      // Walk/run animate the hips bone up and down as part of the gait -
-      // real motion for the mesh, but not something the camera should
-      // chase. Take X/Z from the hips (so it stays centered as the
-      // character sways) but Y from the stable root + a fixed height.
-      this.followPoint.y = ctx.characterPosition.y + this.followHeight;
-      const t = 1 - Math.exp(-FOLLOW_SMOOTHING_RATE * delta);
+      // Follow the stable character root, not the animated hips bone.
+      // The hips sway during walk/run, and smoothing toward that animated
+      // point lets the player drift away from screen center at run speed.
+      this.followPoint.set(ctx.characterPosition.x, ctx.characterPosition.y + this.followHeight, ctx.characterPosition.z);
       // OrbitControls.update() re-derives its orbit offset from
       // (camera.position - target) on every call, then adds that same
       // offset back onto the *new* target - so moving target alone is a
@@ -262,7 +248,7 @@ export class CameraController {
       // so the zoom distance) fixed while actually translating with the
       // character.
       this.prevOrbitTarget.copy(this.controls.target);
-      this.controls.target.lerp(this.followPoint, t);
+      this.controls.target.copy(this.followPoint);
       this.orbitTargetDelta.copy(this.controls.target).sub(this.prevOrbitTarget);
       this.camera.position.add(this.orbitTargetDelta);
 

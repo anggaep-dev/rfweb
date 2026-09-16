@@ -11,6 +11,7 @@ import {
   characterGlbCdnBase,
   getWeaponClip,
   loadCloakAnimationRig,
+  loadShieldMeshObjects,
   loadWeaponMeshObjects,
   weaponClipKey,
 } from '../rf/character';
@@ -35,7 +36,7 @@ import { ALL_MODEL_TYPES, MODEL_TYPE_TO_PART_TOKEN, ModelType } from '../rf/item
 import type { ItemDefinition } from '../rf/items';
 import { ParticleEffect, describeParticleEntity } from '../rf/particleSystem';
 import type { ParticleEntityDebugInfo, ParticleLiveValues } from '../rf/particleSystem';
-import { resolveCloakMeshStem, resolveItemMeshStem, resolveWeaponMesh } from '../rf/resource';
+import { resolveCloakMeshStem, resolveItemMeshStem, resolveShieldMeshStem, resolveWeaponMesh } from '../rf/resource';
 
 const ARRIVE_FRACTION_OF_RADIUS = 0.04;
 /**
@@ -1402,6 +1403,7 @@ export class CharacterController {
     if (modelType === ModelType.Weapon) return this.equipWeapon(item);
     if (modelType === ModelType.Cloak) return this.equipCloak(item);
     if (modelType === ModelType.Helmet) return this.equipHelmet(item);
+    if (modelType === ModelType.Shield) return this.equipShield(item);
 
     const character = this.character;
     const raceGender = this.raceGender;
@@ -1562,6 +1564,60 @@ export class CharacterController {
     // of the current mode, so they're ready the instant the
     // player toggles into War.
     this.applyWeaponVisibility();
+
+    return 'equipped';
+  }
+
+  /**
+   * Shield-slot equip: like Weapon, has no default appearance (an
+   * unequipped character just shows nothing there) and is a rigid part
+   * resolved via resolveShieldMeshStem/loadShieldMeshObjects - the same
+   * itemResource.json-backed, rigid-attach-by-bone-name pipeline weapons
+   * use (see loadShieldMeshObjects's own doc comment), just without a
+   * weaponToken/combat-clip angle (shieldItem.json has no equivalent to
+   * carry one, and shields don't drive their own attack animation).
+   */
+  private async equipShield(item: ItemDefinition | null): Promise<EquipResult> {
+    const character = this.character;
+    const raceGender = this.raceGender;
+    if (!character || raceGender === null) return 'no-character';
+
+    this.currentBodyItem[ModelType.Shield] = item;
+    const previous = this.equippedObjects[ModelType.Shield];
+
+    if (!item) {
+      if (previous) {
+        for (const obj of previous) {
+          obj.parent?.remove(obj);
+          disposeObject3D(obj);
+        }
+        delete this.equippedObjects[ModelType.Shield];
+      }
+      this.disposeGlowOverlayFor(ModelType.Shield);
+      return 'default';
+    }
+
+    const stem = await resolveShieldMeshStem(item.model);
+    if (this.character !== character) return 'no-character'; // superseded mid-await
+    if (!stem) return 'unavailable';
+
+    const newObjects = await loadShieldMeshObjects(stem, character.builtSkeleton);
+    if (this.character !== character) return 'no-character'; // superseded mid-await
+    if (newObjects.length === 0) return 'unavailable';
+
+    if (previous) {
+      for (const obj of previous) {
+        obj.parent?.remove(obj);
+        disposeObject3D(obj);
+      }
+    }
+    this.disposeGlowOverlayFor(ModelType.Shield);
+
+    for (const obj of newObjects) {
+      if (!obj.parent) character.group.add(obj);
+    }
+    this.equippedObjects[ModelType.Shield] = newObjects;
+    void this.applySurfaceShineFor(item, newObjects).then(() => this.applyGlowOverlay(ModelType.Shield, item, character, newObjects));
 
     return 'equipped';
   }
