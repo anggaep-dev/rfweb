@@ -1,0 +1,329 @@
+.shortcut-bar {
+  --shortcut-slot-size: clamp(1.95rem, 5.8vw, 2.85rem);
+  --shortcut-slot-gap: clamp(2px, 0.5vw, 5px);
+  --shortcut-row-number-size: clamp(1rem, 3.4vw, 1.3rem);
+  position: fixed;
+  left: 50%;
+  bottom: max(0.45rem, calc(env(safe-area-inset-bottom) + 0.45rem));
+  z-index: 520;
+  display: flex;
+  align-items: flex-end;
+  gap: clamp(3px, 0.9vw, 0.45rem);
+  max-width: calc(100vw - 0.75rem);
+  transform: translateX(-50%);
+  pointer-events: auto;
+  touch-action: manipulation;
+  user-select: none;
+}
+
+.shortcut-row-dropdown {
+  position: relative;
+  flex-shrink: 0;
+  padding-bottom: 2px;
+}
+
+.shortcut-row-dropdown-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: clamp(3.3rem, 11vw, 4.1rem);
+  height: clamp(1.35rem, 4vw, 1.65rem);
+  padding: 0 0.45rem;
+  border-radius: 2px;
+  border: 1px solid rgba(45, 52, 70, 0.9);
+  background: linear-gradient(180deg, rgba(32, 39, 55, 0.9), rgba(16, 19, 27, 0.9));
+  color: var(--text-secondary);
+  font: 700 clamp(0.55rem, 1.8vw, 0.66rem) var(--font-display);
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: 0 1px 0 var(--border-bevel-light) inset, 0 0 8px rgba(0, 0, 0, 0.38);
+  list-style: none;
+}
+
+.shortcut-row-dropdown-trigger::-webkit-details-marker {
+  display: none;
+}
+
+.shortcut-row-dropdown-trigger::after {
+  content: '';
+  width: 0;
+  height: 0;
+  margin-left: 0.35rem;
+  border-inline: 0.25rem solid transparent;
+  border-top: 0.32rem solid currentColor;
+}
+
+.shortcut-row-dropdown[open] .shortcut-row-dropdown-trigger {
+  border-color: var(--energy-cyan);
+  color: var(--text-primary);
+}
+
+.shortcut-row-dropdown-menu {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 0.25rem);
+  z-index: 2;
+  display: grid;
+  min-width: 100%;
+  padding: 3px;
+  border: 1px solid rgba(45, 52, 70, 0.9);
+  border-radius: 3px;
+  background: rgba(16, 19, 27, 0.9);
+  box-shadow: 0 0.55rem 1.2rem rgba(0, 0, 0, 0.48);
+}
+
+.shortcut-row-dropdown-item {
+  display: grid;
+  grid-template-columns: 0.75rem 1fr;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 4.4rem;
+  padding: 0.35rem 0.45rem;
+  border: 0;
+  border-radius: 2px;
+  background: transparent;
+  color: var(--text-secondary);
+  font: 700 0.66rem var(--font-display);
+  text-align: left;
+  cursor: pointer;
+}
+
+.shortcut-row-dropdown-item:hover,
+.shortcut-row-dropdown-item:focus-visible {
+  outline: 0;
+  background: rgba(34, 211, 238, 0.12);
+  color: var(--text-primary);
+}
+
+.shortcut-row-dropdown-check {
+  width: 0.58rem;
+  height: 0.58rem;
+  border: 1px solid rgba(45, 52, 70, 0.9);
+  border-radius: 2px;
+  background: rgba(5, 6, 8, 0.8);
+}
+
+.shortcut-row-dropdown-item-active .shortcut-row-dropdown-check {
+  border-color: var(--energy-cyan);
+  background: var(--energy-cyan);
+  box-shadow: 0 0 8px rgba(34, 211, 238, 0.3);
+}
+
+.shortcut-row-stack {
+  display: flex;
+  flex-direction: column-reverse;
+  gap: 3px;
+  padding: clamp(3px, 0.8vw, 6px);
+  border: 1px solid rgba(45, 52, 70, 0.9);
+  border-radius: 3px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.06), transparent 18%),
+    linear-gradient(180deg, rgba(24, 28, 38, 0.9) 0%, rgba(16, 19, 27, 0.9) 100%);
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.72) inset,
+    0 1px 0 rgba(255, 255, 255, 0.08) inset,
+    0 0.45rem 1.25rem rgba(0, 0, 0, 0.48);
+}
+
+.shortcut-row {
+  display: grid;
+  grid-template-columns: var(--shortcut-row-number-size) repeat(10, var(--shortcut-slot-size));
+  gap: var(--shortcut-slot-gap);
+  width: max-content;
+}
+
+.shortcut-row-number {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--shortcut-row-number-size);
+  height: var(--shortcut-slot-size);
+  border: 1px solid rgba(45, 52, 70, 0.9);
+  border-radius: 2px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.05), transparent 32%),
+    linear-gradient(180deg, rgba(32, 39, 55, 0.9), rgba(16, 19, 27, 0.9));
+  color: var(--text-secondary);
+  font: 800 clamp(0.58rem, 1.9vw, 0.72rem) var(--font-mono);
+  line-height: 1;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.5) inset;
+}
+
+.shortcut-slot {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--shortcut-slot-size);
+  height: var(--shortcut-slot-size);
+  min-width: 0;
+  min-height: 0;
+  padding: 2px;
+  overflow: hidden;
+  border: 1px solid rgba(92, 103, 112, 0.78);
+  border-radius: 2px;
+  background:
+    radial-gradient(circle at 50% 38%, rgba(255, 255, 255, 0.06), transparent 46%),
+    linear-gradient(180deg, rgba(11, 13, 17, 0.98), rgba(35, 38, 43, 0.95));
+  color: var(--text-muted);
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.56) inset,
+    0 1px 0 rgba(255, 255, 255, 0.06);
+  cursor: default;
+  touch-action: manipulation;
+}
+
+.shortcut-slot::after {
+  content: '';
+  position: absolute;
+  inset: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  pointer-events: none;
+}
+
+.shortcut-slot:hover {
+  border-color: var(--border-chrome);
+}
+
+.shortcut-slot:focus-visible {
+  outline: 2px solid var(--energy-cyan);
+  outline-offset: 2px;
+}
+
+.shortcut-slot-filled {
+  cursor: pointer;
+  border-color: var(--border-chrome);
+  color: var(--text-primary);
+}
+
+.shortcut-slot-drop-ready {
+  cursor: copy;
+}
+
+.shortcut-slot-carry-source {
+  opacity: 0.45;
+  filter: saturate(0.75);
+}
+
+.shortcut-slot-carry-source::before {
+  content: '';
+  position: absolute;
+  inset: 2px;
+  z-index: 1;
+  border: 1px dashed rgba(34, 211, 238, 0.78);
+  pointer-events: none;
+}
+
+.shortcut-slot-equipped {
+  border-color: var(--energy-cyan);
+  box-shadow:
+    0 0 0 1px rgba(34, 211, 238, 0.75) inset,
+    0 0 9px rgba(34, 211, 238, 0.42),
+    0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+.shortcut-slot-icon {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  image-rendering: pixelated;
+}
+
+.shortcut-slot-label {
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--text-secondary);
+  font: 800 clamp(0.55rem, 2.2vw, 0.76rem) var(--font-display);
+  line-height: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shortcut-slot-qty {
+  position: absolute;
+  right: 2px;
+  bottom: 1px;
+  color: var(--text-primary);
+  font: 800 clamp(0.52rem, 1.7vw, 0.66rem) var(--font-mono);
+  line-height: 1;
+  text-shadow: 0 1px 2px #000;
+}
+
+.shortcut-slot-clear {
+  position: absolute;
+  top: 1px;
+  right: 1px;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: clamp(0.72rem, 2vw, 0.9rem);
+  height: clamp(0.72rem, 2vw, 0.9rem);
+  padding: 0;
+  border: 1px solid rgba(0, 0, 0, 0.5);
+  border-radius: 2px;
+  background: rgba(22, 24, 30, 0.82);
+  color: #f0d6b6;
+  font: 800 clamp(0.48rem, 1.5vw, 0.58rem) var(--font-display);
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s, color 0.12s, border-color 0.12s;
+}
+
+.shortcut-slot:hover .shortcut-slot-clear,
+.shortcut-slot-clear:focus-visible {
+  opacity: 1;
+}
+
+.shortcut-slot-clear:hover {
+  border-color: rgba(255, 128, 128, 0.72);
+  color: #ffb0a3;
+}
+
+.shortcut-carry-preview {
+  position: fixed;
+  z-index: 900;
+  width: var(--shortcut-slot-size);
+  height: var(--shortcut-slot-size);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px;
+  border: 1px solid var(--energy-cyan);
+  border-radius: 2px;
+  background:
+    radial-gradient(circle at 50% 38%, rgba(255, 255, 255, 0.08), transparent 46%),
+    rgba(16, 19, 27, 0.9);
+  box-shadow: 0 0 0 1px rgba(34, 211, 238, 0.55) inset, 0 0 12px rgba(34, 211, 238, 0.28);
+  pointer-events: none;
+  transform: translate(8px, 8px);
+}
+
+@media (max-width: 720px), (pointer: coarse) {
+  .shortcut-bar {
+    --shortcut-slot-size: clamp(1.65rem, 8.2vw, 2.3rem);
+    --shortcut-slot-gap: 2px;
+    --shortcut-row-number-size: clamp(0.92rem, 4vw, 1.12rem);
+    bottom: max(5.75rem, calc(env(safe-area-inset-bottom) + 5.75rem));
+  }
+
+  .shortcut-row-stack {
+    gap: 2px;
+  }
+
+  .shortcut-slot-clear {
+    opacity: 1;
+  }
+}
+
+@media (max-width: 390px) {
+  .shortcut-bar {
+    --shortcut-slot-size: calc((100vw - 5.1rem) / 10);
+    gap: 2px;
+  }
+
+  .shortcut-row-stack {
+    padding: 3px;
+  }
+}

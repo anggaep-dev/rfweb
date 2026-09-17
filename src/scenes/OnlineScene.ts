@@ -1,4 +1,4 @@
-import { Frustum, Matrix4, Sphere, Vector3 } from 'three';
+import { DoubleSide, Frustum, Matrix4, Mesh, MeshBasicMaterial, RingGeometry, Sphere, Vector3 } from 'three';
 import type { PerspectiveCamera, Scene } from 'three';
 import type { WebGPURenderer } from 'three/webgpu';
 import { CameraController } from '../controllers/CameraController';
@@ -10,7 +10,7 @@ import { NameTag, nameTagYOffsetFromBounds } from '../controllers/NameTag';
 import { RemoteEntityController } from '../controllers/RemoteEntityController';
 import { SceneController } from '../controllers/SceneController';
 import { getCharacterProfile } from '../net/CharacterClient';
-import { facingToRotation, quantizeDirectionVector, quantizeToCompass, rotationToYaw } from '../net/compassRotation';
+import { continuousRotationFromVector, rotationToYaw } from '../net/compassRotation';
 import { getMapDetails } from '../net/MapClient';
 import type {
   EntitySnapshot,
@@ -24,8 +24,8 @@ import type {
 import { SERVER_PORT, isSecurePage, pageHostname } from '../net/serverHost';
 import type { ConnectionStatus } from '../net/WorldConnection';
 import { WorldConnection } from '../net/WorldConnection';
-import { classifyLocomotionDirection, loadCharacter } from '../rf/character';
-import type { RaceGender } from '../rf/character';
+import { classifyLocomotionDirectionStable, loadCharacter } from '../rf/character';
+import type { LocomotionDirection, RaceGender } from '../rf/character';
 import type { EquippedItems } from '../rf/characterProfile';
 import { initSocketGlowBatching } from '../rf/glowEffect';
 import { preloadItemIconSheets } from '../rf/itemIcon';
@@ -220,6 +220,13 @@ const SERVER_RUN_UNITS_PER_TICK = 3;
 const ASSUMED_SERVER_TICK_HZ = 30;
 const SERVER_WALK_UNITS_PER_SEC = SERVER_WALK_UNITS_PER_TICK * ASSUMED_SERVER_TICK_HZ;
 const SERVER_RUN_TO_WALK_RATIO = SERVER_RUN_UNITS_PER_TICK / SERVER_WALK_UNITS_PER_TICK;
+/** Max resend rate for a MovementInput whose direction/facing is merely drifting (not starting/stopping/toggling run) - see reportMovementIfChanged's own doc comment for why this throttle exists now that direction/facing are continuous. */
+const MOVEMENT_RESEND_INTERVAL_SEC = 0.05;
+const SPATIAL_GRID_CELL_SIZE = 100;
+const DEFAULT_WORLD_AOI_CELL_RADIUS = 8;
+const WORLD_AOI_CELL_RADIUS = parsePositiveIntEnv(import.meta.env.VITE_WORLD_AOI_CELL_RADIUS as string | undefined, DEFAULT_WORLD_AOI_CELL_RADIUS);
+const WORLD_AOI_FRONTEND_RADIUS = WORLD_AOI_CELL_RADIUS * SPATIAL_GRID_CELL_SIZE;
+const DEBUG_CIRCLE_OPACITY = 0.9;
 
 /**
  * Default game server WebSocket endpoint - derived from whatever
@@ -230,6 +237,12 @@ const SERVER_RUN_TO_WALK_RATIO = SERVER_RUN_UNITS_PER_TICK / SERVER_WALK_UNITS_P
  */
 function defaultWsUrl(): string {
   return `${isSecurePage() ? 'wss:' : 'ws:'}//${pageHostname()}:${SERVER_PORT}/ws`;
+}
+
+function parsePositiveIntEnv(raw: string | undefined, fallback: number): number {
+  if (!raw) return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
 }
 
 /**
@@ -253,10 +266,11 @@ function defaultWsUrl(): string {
  * update()), same as ViewerScene's debug controls and every other
  * third-person control scheme: right-click-dragging the camera changes
  * which way "forward" points, matching the direction the character actually
- * runs. The server's own MovementInput is 8-way for player input, so the
- * continuous camera-relative direction gets snapped to the nearest compass
- * axis (see compassRotation.ts's quantizeToCompass) before being
- * sent and before local prediction advances the character.
+ * runs. Direction and facing are both sent to (and simulated by) the server
+ * as continuous vectors/angles - not snapped to the old fixed 8-way compass
+ * grid movement/system.go used to simulate - so local prediction can drive
+ * setMoveDirection with the exact camera-relative vector too, same as
+ * ViewerScene's own (offline, unnetworked) equivalent.
  *
  * `sessionToken` (from LoginScreen's real login() call - see
  * net/AuthClient.ts) and `characterId` (which of the account's characters,
@@ -281,9 +295,8 @@ export class OnlineScene implements AppScene {
 
   /** Raw (x=right, y=forward) intent, camera-relative - see setMoveInput(). Set from outside (OnlineScreen's useKeyboardMove), null while no movement key is held. */
   private moveInput: { x: number; y: number } | null = null;
+  private localLocomotionDirection: LocomotionDirection | null = null;
   private readonly moveDirection = new Vector3();
-  private readonly predictedMoveDirection = new Vector3();
-  private readonly predictedFaceDirection = new Vector3();
   private readonly cameraForward = new Vector3();
   private readonly cameraRight = new Vector3();
   // Which way the character is actually oriented, world-space. Mirrors
@@ -291,9 +304,12 @@ export class OnlineScene implements AppScene {
   // strafe/backward keeps facing the camera's horizontal forward vector.
   // Starts facing world -Z so an idle character has a sane default.
   private readonly facing = new Vector3(0, 0, -1);
-  /** The last (dx, dz, running) actually sent to the server - compared against every frame in update() so a MovementInput only goes out when something reportable actually changed (a key press/release, a running toggle, or the camera rotating enough to cross into a different compass direction), not on every single frame. */
+  /** The last (dx, dz, facing, running) actually sent to the server - see reportMovementIfChanged's own doc comment. */
   private sentDir: [number, number] = [0, 0];
+  private sentFacing = 0;
   private sentRunning = false;
+  /** Seconds accumulated since the last actual send - see reportMovementIfChanged. */
+  private movementSendElapsed = 0;
   private isRunning = false;
   private myPlayerId: number | null = null;
   /**
@@ -359,6 +375,9 @@ export class OnlineScene implements AppScene {
   private readonly lastLocalGroundSamplePosition = new Vector3(Number.NaN, Number.NaN, Number.NaN);
   private localGroundTargetY: number | null = null;
   private localGroundSampleTimer = Number.POSITIVE_INFINITY;
+  private circleDebugVisible = false;
+  private frontendCullCircle: Mesh<RingGeometry, MeshBasicMaterial> | null = null;
+  private aoiCellCircle: Mesh<RingGeometry, MeshBasicMaterial> | null = null;
 
   private readonly handleRunKeyDown = (event: KeyboardEvent) => this.handleRunKeyChange(event, true);
   private readonly handleRunKeyUp = (event: KeyboardEvent) => this.handleRunKeyChange(event, false);
@@ -425,6 +444,7 @@ export class OnlineScene implements AppScene {
   /** Camera-relative move intent (x=right, y=forward), or null when idle - see OnlineScreen's useKeyboardMove, the same channel ViewerScene's WASD/mobile-joystick input uses. */
   setMoveInput(input: { x: number; y: number } | null): void {
     this.moveInput = input;
+    if (!input) this.localLocomotionDirection = null;
   }
 
   /** Sends a chat-all message - see ChatBox. Empty/whitespace-only is silently dropped rather than sending a blank line to every other client. */
@@ -437,15 +457,46 @@ export class OnlineScene implements AppScene {
 
   private handleLocalChatCommand(message: string): boolean {
     const args = message.split(/\s+/);
-    if (args[0]?.toLowerCase() !== '%col') return false;
-    if (args.length !== 2 || (args[1] !== '0' && args[1] !== '1')) {
-      this.addLocalSystemMessage('Usage: %col 1 to show map debug overlays, %col 0 to hide map debug overlays');
+    const command = args[0]?.toLowerCase();
+    if (command === '%col') {
+      if (args.length !== 2 || (args[1] !== '0' && args[1] !== '1')) {
+        this.addLocalSystemMessage('Usage: %col 1 to show map debug overlays, %col 0 to hide map debug overlays');
+        return true;
+      }
+      const visible = args[1] === '1';
+      this.setMapDebugOverlaysVisible(visible);
+      this.addLocalSystemMessage(`Map debug overlays ${visible ? 'shown' : 'hidden'}`);
       return true;
     }
-    const visible = args[1] === '1';
-    this.setMapDebugOverlaysVisible(visible);
-    this.addLocalSystemMessage(`Map debug overlays ${visible ? 'shown' : 'hidden'}`);
-    return true;
+    if (command === '%circle') {
+      if (args.length !== 2 || (args[1] !== '0' && args[1] !== '1')) {
+        this.addLocalSystemMessage('Usage: %circle 1 to show distance circles, %circle 0 to hide them');
+        return true;
+      }
+      const visible = args[1] === '1';
+      this.setCircleDebugVisible(visible);
+      const frontendDistance = this.frontendRenderDistance();
+      this.addLocalSystemMessage(
+        visible
+          ? `Distance circles shown. Frontend character culling/render distance: ${Math.round(frontendDistance)} units (camera far). WORLD_AOI_CELL_RADIUS: ${WORLD_AOI_CELL_RADIUS} cells x ${SPATIAL_GRID_CELL_SIZE} = ~${WORLD_AOI_FRONTEND_RADIUS} units.`
+          : 'Distance circles hidden.',
+      );
+      return true;
+    }
+    if (command === '%cell') {
+      if (args.length > 2) {
+        this.addLocalSystemMessage('Usage: %cell [radius] to simulate AOI cells from your current position');
+        return true;
+      }
+      const radius = args[1] === undefined ? WORLD_AOI_CELL_RADIUS : Number.parseInt(args[1], 10);
+      if (!Number.isFinite(radius) || radius < 0) {
+        this.addLocalSystemMessage('Usage: %cell [radius] where radius is 0 or higher');
+        return true;
+      }
+      this.reportCellSimulation(radius);
+      return true;
+    }
+    return false;
   }
 
   private addLocalSystemMessage(message: string): void {
@@ -460,6 +511,115 @@ export class OnlineScene implements AppScene {
     if (!this.loadedMap) return;
     this.loadedMap.debugOverlay.visible = visible;
     this.loadedMap.collisionOverlay.visible = visible;
+  }
+
+  private frontendRenderDistance(): number {
+    return this.cameraController.camera.far;
+  }
+
+  private reportCellSimulation(radius: number): void {
+    const sideCells = radius * 2 + 1;
+    const aoiCells = sideCells * sideCells;
+    const worldSpan = sideCells * SPATIAL_GRID_CELL_SIZE;
+    const frontendRadiusCells = Math.ceil(this.frontendRenderDistance() / SPATIAL_GRID_CELL_SIZE);
+    const frontendSideCells = frontendRadiusCells * 2 + 1;
+    const frontendCells = frontendSideCells * frontendSideCells;
+
+    const mapCellSummary = this.loadedMap?.bounds ? this.loadedMapCellSummary() : 'map cells unavailable';
+    if (!this.hasServerSelfPosition) {
+      this.addLocalSystemMessage(
+        `%cell ${radius}: AOI square ${sideCells}x${sideCells} = ${aoiCells} cells (~${worldSpan}x${worldSpan} units). Frontend camera far covers ~${frontendRadiusCells} cells radius (${frontendCells} square cells). ${mapCellSummary}. Waiting for server position to count tracked entities.`,
+      );
+      return;
+    }
+
+    const centerCell = this.spatialCellFor(this.serverSelfPosition.x, this.serverSelfPosition.z);
+    const trackedInside = this.countTrackedEntitiesInCellRadius(centerCell.gx, centerCell.gz, radius);
+    const trackedTotal = this.remoteEntityController.getEntityPositions().length + 1;
+    this.addLocalSystemMessage(
+      `%cell ${radius}: center cell (${centerCell.gx}, ${centerCell.gz}), AOI square ${sideCells}x${sideCells} = ${aoiCells} cells (~${worldSpan}x${worldSpan} units). Tracked entities inside simulated AOI: ${trackedInside}/${trackedTotal}. Frontend camera far covers ~${frontendRadiusCells} cells radius (${frontendCells} square cells). ${mapCellSummary}.`,
+    );
+  }
+
+  private spatialCellFor(x: number, z: number): { gx: number; gz: number } {
+    return {
+      gx: Math.floor(x / SPATIAL_GRID_CELL_SIZE),
+      gz: Math.floor(z / SPATIAL_GRID_CELL_SIZE),
+    };
+  }
+
+  private countTrackedEntitiesInCellRadius(centerGx: number, centerGz: number, radius: number): number {
+    let count = 1;
+    for (const position of this.remoteEntityController.getEntityPositions()) {
+      const cell = this.spatialCellFor(position.x, position.z);
+      if (Math.abs(cell.gx - centerGx) <= radius && Math.abs(cell.gz - centerGz) <= radius) count++;
+    }
+    return count;
+  }
+
+  private loadedMapCellSummary(): string {
+    const bounds = this.loadedMap?.bounds;
+    if (!bounds) return 'map cells unavailable';
+    const minNativeZ = -bounds.max.z;
+    const maxNativeZ = -bounds.min.z;
+    const minCell = this.spatialCellFor(bounds.min.x, minNativeZ);
+    const maxCell = this.spatialCellFor(bounds.max.x, maxNativeZ);
+    const cellsX = maxCell.gx - minCell.gx + 1;
+    const cellsZ = maxCell.gz - minCell.gz + 1;
+    return `Loaded map bounds cover ${cellsX}x${cellsZ} = ${cellsX * cellsZ} spatial cells.`;
+  }
+
+  private setCircleDebugVisible(visible: boolean): void {
+    this.circleDebugVisible = visible;
+    if (visible) this.ensureCircleDebugOverlay();
+    if (this.frontendCullCircle) this.frontendCullCircle.visible = visible;
+    if (this.aoiCellCircle) this.aoiCellCircle.visible = visible;
+  }
+
+  private ensureCircleDebugOverlay(): void {
+    const frontendDistance = this.frontendRenderDistance();
+    this.frontendCullCircle ??= this.createDebugCircle(frontendDistance, 0x22d3ee, 'Frontend render/culling distance');
+    this.aoiCellCircle ??= this.createDebugCircle(WORLD_AOI_FRONTEND_RADIUS, 0x9c62ea, 'WORLD_AOI_CELL_RADIUS');
+    if (!this.frontendCullCircle.parent) this.sceneController.scene.add(this.frontendCullCircle);
+    if (!this.aoiCellCircle.parent) this.sceneController.scene.add(this.aoiCellCircle);
+  }
+
+  private createDebugCircle(radius: number, color: number, name: string): Mesh<RingGeometry, MeshBasicMaterial> {
+    const thickness = Math.max(2, Math.min(24, radius * 0.004));
+    const geometry = new RingGeometry(Math.max(0.1, radius - thickness), radius + thickness, 192);
+    const material = new MeshBasicMaterial({
+      color,
+      side: DoubleSide,
+      transparent: true,
+      opacity: DEBUG_CIRCLE_OPACITY,
+      depthTest: false,
+      depthWrite: false,
+    });
+    const circle = new Mesh(geometry, material);
+    circle.name = name;
+    circle.rotation.x = -Math.PI / 2;
+    circle.renderOrder = 20;
+    circle.visible = this.circleDebugVisible;
+    return circle;
+  }
+
+  private updateCircleDebugOverlay(position: Vector3 | null): void {
+    if (!this.circleDebugVisible || !position) return;
+    this.ensureCircleDebugOverlay();
+    const y = position.y + 0.08;
+    this.frontendCullCircle?.position.set(position.x, y, position.z);
+    this.aoiCellCircle?.position.set(position.x, y + 0.02, position.z);
+  }
+
+  private disposeCircleDebugOverlay(): void {
+    for (const circle of [this.frontendCullCircle, this.aoiCellCircle]) {
+      if (!circle) continue;
+      circle.parent?.remove(circle);
+      circle.geometry.dispose();
+      circle.material.dispose();
+    }
+    this.frontendCullCircle = null;
+    this.aoiCellCircle = null;
   }
 
   /** See InventoryWindow's own Sell button - `quantity = 0` (the default) sells the slot's full stack, per docs/inventory-action.md. */
@@ -653,7 +813,7 @@ export class OnlineScene implements AppScene {
       this.callbacks.onInventoryChange?.(this.inventoryState);
       // Skipped (not faked with a placeholder) if the profile fetch failed above - same cosmetic-only degradation as the appearance/equipment it came bundled with.
       if (profile?.name) {
-        this.nameTag = new NameTag(this.sceneController.scene, profile.name, bounds.radius, nameTagYOffsetFromBounds(bounds, character.group.position.y), {
+        this.nameTag = new NameTag(this.sceneController.scene, profile.name, nameTagYOffsetFromBounds(bounds, character.group.position.y), {
           race: profile.race,
           rank: profile.rank,
           specialRank: profile.specialRank,
@@ -688,12 +848,29 @@ export class OnlineScene implements AppScene {
     if (this.moveDirection.lengthSq() > 1e-8) this.moveDirection.normalize();
   }
 
-  /** Sends a MovementInput only when something reportable actually changed since the last one - see sentDir/sentRunning's doc comment. */
-  private reportMovementIfChanged(dx: number, dz: number): void {
-    if (this.sentDir[0] === dx && this.sentDir[1] === dz && this.sentRunning === this.isRunning) return;
+  /**
+   * Sends a MovementInput, throttled now that direction/facing are
+   * continuous (the camera can rotate every frame while a key is held,
+   * which would otherwise resend at full render framerate instead of the
+   * old fixed 8-way scheme's naturally-infrequent discrete state changes -
+   * see MOVEMENT_RESEND_INTERVAL_SEC). Sends immediately, bypassing the
+   * throttle, for a discrete change that matters for responsiveness
+   * (starting/stopping movement, toggling run); otherwise at most once
+   * every MOVEMENT_RESEND_INTERVAL_SEC while direction or facing is still
+   * drifting with the camera.
+   */
+  private reportMovementIfChanged(dx: number, dz: number, facing: number, delta: number): void {
+    this.movementSendElapsed += delta;
+    const wasMoving = this.sentDir[0] !== 0 || this.sentDir[1] !== 0;
+    const isMoving = dx !== 0 || dz !== 0;
+    const discreteChange = wasMoving !== isMoving || this.sentRunning !== this.isRunning;
+    const drifted = dx !== this.sentDir[0] || dz !== this.sentDir[1] || facing !== this.sentFacing;
+    if (!discreteChange && (!drifted || this.movementSendElapsed < MOVEMENT_RESEND_INTERVAL_SEC)) return;
     this.sentDir = [dx, dz];
+    this.sentFacing = facing;
     this.sentRunning = this.isRunning;
-    this.connection.sendMovement(dx, dz, this.isRunning, facingToRotation(this.facing));
+    this.movementSendElapsed = 0;
+    this.connection.sendMovement(dx, dz, this.isRunning, facing);
   }
 
   update(delta: number): void {
@@ -703,31 +880,39 @@ export class OnlineScene implements AppScene {
       const input = this.moveInput;
       this.updateMoveDirectionFromCamera();
       // Same local rule as ViewerScene: resolve facing/animation from the
-      // current camera angle and raw local input, but move along the exact
-      // snapped 8-way compass vector the server will simulate. If local
-      // prediction uses the continuous camera-relative vector while the
-      // server only sees snapped movement, their positions slowly diverge
-      // and reconciliation has to keep tugging the player back.
-      const locomotionDirection = classifyLocomotionDirection(input.x, input.y);
+      // current camera angle and raw local input - both move and face along
+      // the exact continuous camera-relative vector the server now
+      // simulates too (see this class's own doc comment), no snapping to a
+      // fixed 8-way grid on either end.
+      const locomotionDirection = classifyLocomotionDirectionStable(input.x, input.y, this.localLocomotionDirection);
+      this.localLocomotionDirection = locomotionDirection;
       const faceDirection = locomotionDirection ? this.cameraForward : this.moveDirection;
-      const hasMoveDirection = quantizeDirectionVector(this.moveDirection, this.predictedMoveDirection);
-      const hasFaceDirection = quantizeDirectionVector(faceDirection, this.predictedFaceDirection);
+      // updateMoveDirectionFromCamera already normalizes both (or leaves
+      // them ~zero if the camera is looking straight up/down, the one
+      // degenerate case where there's genuinely no horizontal direction to
+      // move/face) - lengthSq is this class's own "is this real" check,
+      // replacing quantizeDirectionVector's identical role for the old
+      // snapped path.
+      const hasMoveDirection = this.moveDirection.lengthSq() > 1e-8;
+      const hasFaceDirection = faceDirection.lengthSq() > 1e-8;
       if (hasMoveDirection && hasFaceDirection) {
-        this.facing.copy(this.predictedFaceDirection);
-        this.characterController.setWorldYaw(rotationToYaw(facingToRotation(this.predictedFaceDirection)));
-        this.characterController.setMoveDirection(this.predictedMoveDirection, this.predictedFaceDirection, locomotionDirection);
+        this.facing.copy(faceDirection);
+        const facingRotation = continuousRotationFromVector(this.facing);
+        this.characterController.setWorldYaw(rotationToYaw(facingRotation));
+        this.characterController.setMoveDirection(this.moveDirection, this.facing, locomotionDirection);
         // moveDirection is render-space (camera-relative); the server's
         // dir_z increments a native Z (see rfworld's movement/system.go) - see
         // nativeToScene's own doc comment on why that's the negation of this
         // scene's Z, the same as every other native<->scene conversion here.
-        this.reportMovementIfChanged(...quantizeToCompass(this.moveDirection.x, -this.moveDirection.z));
+        this.reportMovementIfChanged(this.moveDirection.x, -this.moveDirection.z, facingRotation, delta);
       } else {
         this.characterController.setMoveDirection(null);
-        this.reportMovementIfChanged(0, 0);
+        this.reportMovementIfChanged(0, 0, continuousRotationFromVector(this.facing), delta);
       }
     } else {
       this.characterController.setMoveDirection(null);
-      this.reportMovementIfChanged(0, 0);
+      this.reportMovementIfChanged(0, 0, continuousRotationFromVector(this.facing), delta);
+      this.localLocomotionDirection = null;
     }
 
     this.characterController.update(delta);
@@ -735,16 +920,27 @@ export class OnlineScene implements AppScene {
     this.updateLocalGroundHeight(delta);
 
     const character = this.characterController.getCharacter();
+    this.updateCircleDebugOverlay(character ? character.group.position : null);
     this.cameraController.update(delta, {
       hipsBone: this.characterController.getHipsBone(),
       headBone: this.characterController.getHeadBone(),
       characterGroupQuaternion: character ? character.group.quaternion : null,
       characterPosition: character ? character.group.position : null,
       isMoving: this.characterController.isMoving(),
-      // Keep camera auto-panning off for straight forward/back movement.
-      // Horizontal input is the only time the follow camera is allowed to
-      // re-center while moving.
-      suppressBehindFollow: Math.abs(this.moveInput?.x ?? 0) <= Math.abs(this.moveInput?.y ?? 0),
+      // Always suppressed, not just for forward/back-dominant input (the
+      // previous condition here) - CameraUpdateContext's own doc comment
+      // already explains why this auto-follow is fundamentally unstable for
+      // ANY OnlineScene movement (a closed loop: it chases facing, which
+      // chases the camera itself), not just diagonal/strafe-dominant input.
+      // The horizontal-input carve-out this used to have left exactly that
+      // case unprotected, which is fine with a mouse but visibly fights a
+      // touch drag: on mobile, a joystick pushed sideways/diagonally while
+      // the other thumb drags the camera hit this every time the drag
+      // paused or released, snapping the camera back toward "behind the
+      // character" against the player's own active input - confirmed live
+      // (the CameraController touch-drag fix alone wasn't enough; this was
+      // still re-engaging the instant a drag ended, mid-hold).
+      suppressBehindFollow: true,
     });
 
     // Must run after cameraController.update() above (needs this frame's
@@ -772,7 +968,7 @@ export class OnlineScene implements AppScene {
       this.debugOrigin,
       this.facing,
       this.moveInput ? this.moveDirection : null,
-      this.moveInput ? classifyLocomotionDirection(this.moveInput.x, this.moveInput.y) : null,
+      this.moveInput ? this.localLocomotionDirection : null,
       this.characterController.getCurrentClipKey(),
     );
 
@@ -820,6 +1016,7 @@ export class OnlineScene implements AppScene {
     this.cameraController.dispose();
     this.characterController.dispose();
     this.remoteEntityController.dispose();
+    this.disposeCircleDebugOverlay();
     this.nameTag?.dispose(this.sceneController.scene);
     this.debugGizmo?.dispose();
     if (this.loadedMap) {

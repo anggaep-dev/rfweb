@@ -5,9 +5,28 @@ import './MobileControls.css';
 
 /** Max distance (px) the stick can travel from center before clamping - also the divisor that turns that travel into a [-1, 1] input magnitude. */
 const JOYSTICK_RADIUS_PX = 48;
+/** Ignore tiny touches around the center so a resting thumb cannot produce direction flicker. */
+const JOYSTICK_DEADZONE = 0.18;
+
+/**
+ * Movement/facing stopped snapping to a fixed 8-way compass grid everywhere
+ * else in the pipeline (OnlineScene, the wire protocol, the server sim -
+ * see compassRotation.ts's own doc comment) - this used to be the one
+ * remaining place still quantizing input to 45deg steps (a leftover from
+ * before that change), which showed up as the local debug gizmo visibly
+ * snapping even though desktop/keyboard input already moved smoothly. Past
+ * the deadzone, pass the stick's raw continuous (x, y) straight through -
+ * already magnitude <= 1 by construction (see updateFromClientPoint's own
+ * clamp to JOYSTICK_RADIUS_PX before this is called), same convention
+ * useKeyboardMove's cardinal-only ±1/0 values already use.
+ */
+function resolveJoystickInput(x: number, y: number): { x: number; y: number } | null {
+  if (Math.hypot(x, y) < JOYSTICK_DEADZONE) return null;
+  return { x, y };
+}
 
 export interface MobileControlsProps {
-  /** Fires on every drag update with a stick vector (x = right, y = forward, each roughly [-1, 1]), and with null the instant the stick is released. */
+  /** Fires with a continuous (x = right, y = forward) vector, magnitude <= 1, and with null the instant the stick is released or inside the deadzone. */
   onMove: (input: { x: number; y: number } | null) => void;
   /** Attack/skill buttons render now so the joystick's layout is final, but have no gameplay behind them yet - wired up once combat exists. */
   onAttack?: () => void;
@@ -19,6 +38,18 @@ export default function MobileControls({ onMove, onAttack, onSkill }: MobileCont
   const baseRef = useRef<HTMLDivElement>(null);
   const stickRef = useRef<HTMLDivElement>(null);
   const activePointerId = useRef<number | null>(null);
+  const lastMove = useRef<{ x: number; y: number } | null>(null);
+
+  const emitMove = useCallback(
+    (input: { x: number; y: number } | null) => {
+      const previous = lastMove.current;
+      if (!input && !previous) return;
+      if (input && previous && Math.abs(input.x - previous.x) < 1e-6 && Math.abs(input.y - previous.y) < 1e-6) return;
+      lastMove.current = input;
+      onMove(input);
+    },
+    [onMove],
+  );
 
   // The knob's on-screen position is written straight to the DOM instead of
   // through React state - a held/dragged touch can fire pointermove at a
@@ -39,16 +70,16 @@ export default function MobileControls({ onMove, onAttack, onSkill }: MobileCont
       }
       if (stickRef.current) stickRef.current.style.transform = `translate(${dx}px, ${dy}px)`;
       // Screen Y grows downward, so pushing the stick up (negative dy) is forward (positive y).
-      onMove({ x: dx / JOYSTICK_RADIUS_PX, y: -dy / JOYSTICK_RADIUS_PX });
+      emitMove(resolveJoystickInput(dx / JOYSTICK_RADIUS_PX, -dy / JOYSTICK_RADIUS_PX));
     },
-    [onMove],
+    [emitMove],
   );
 
   const release = useCallback(() => {
     activePointerId.current = null;
     if (stickRef.current) stickRef.current.style.transform = 'translate(0px, 0px)';
-    onMove(null);
-  }, [onMove]);
+    emitMove(null);
+  }, [emitMove]);
 
   const handlePointerDown = useCallback(
     (event: ReactPointerEvent<HTMLDivElement>) => {

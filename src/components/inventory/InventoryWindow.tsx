@@ -6,6 +6,7 @@ import { findItemDefinitionByCode } from '../../rf/items';
 import type { ItemDefinition, ModelType } from '../../rf/items';
 import { getItemIconUrl } from '../../rf/itemIcon';
 import { Card } from '../ui';
+import type { ShortcutCarry, ShortcutCarryPointer } from '../hud/shortcutBarTypes';
 import ItemTooltip from './ItemTooltip';
 import type { ItemTooltipData } from './ItemTooltip';
 import './InventoryWindow.css';
@@ -45,6 +46,8 @@ export interface InventoryWindowProps {
   onUse: (slotIndex: number) => void;
   /** EquipmentSlotKey, moved back into the first available bag stack/slot by the server. */
   onUnuse: (slotKey: EquipmentSlotKey) => void;
+  shortcutCarry: ShortcutCarry | null;
+  onPickShortcutItem: (slotIndex: number, itemCode: string, point: ShortcutCarryPointer) => void;
 }
 
 type EquipIconType = 'helmet' | 'amulet' | 'weapon' | 'upper' | 'shield' | 'lower' | 'gauntlet' | 'shoe' | 'ring' | 'bullet' | 'cloak';
@@ -86,6 +89,8 @@ const BAG_COUNT = 5;
 /** 5 columns x 4 rows, 5 bags - exactly covers InventorySlot's 100 real slots (docs/inventory.md). */
 const BAG_SLOT_COUNT = 20;
 const HOVER_CLOSE_DELAY_MS = 120;
+const LONG_PRESS_MS = 420;
+const LONG_PRESS_MOVE_TOLERANCE = 10;
 
 interface DragState {
   offsetX: number;
@@ -182,10 +187,14 @@ function collectItemCodes(inventory: InventoryState, equipment: EquipmentDisplay
  * empty despite something being equipped there - see EquipmentDisplay's own
  * doc comment; every other slot here reflects the server's actual state.
  */
-export default function InventoryWindow({ onClose, inventory, equipment, onSell, onDrop, onUse, onUnuse }: InventoryWindowProps) {
+export default function InventoryWindow({ onClose, inventory, equipment, onSell, onDrop, onUse, onUnuse, shortcutCarry, onPickShortcutItem }: InventoryWindowProps) {
   const windowRef = useRef<HTMLDivElement>(null);
   const dragState = useRef<DragState | null>(null);
   const hoverCloseTimer = useRef<number | null>(null);
+  const longPressTimer = useRef<number | null>(null);
+  const longPressStart = useRef<ShortcutCarryPointer | null>(null);
+  const suppressNextTap = useRef(false);
+  const lastPointerType = useRef<string>('mouse');
   const [activeBag, setActiveBag] = useState(0);
   const [selectedSlot, setSelectedSlot] = useState<number | null>(null);
   const [hover, setHover] = useState<HoverTarget | null>(null);
@@ -297,8 +306,15 @@ export default function InventoryWindow({ onClose, inventory, equipment, onSell,
     setSelectedSlot(null);
   };
 
-  const handleSelectSlot = (slotIndex: number) => {
-    setSelectedSlot((current) => (current === slotIndex ? null : slotIndex));
+  const clearLongPressTimer = () => {
+    if (longPressTimer.current === null) return;
+    window.clearTimeout(longPressTimer.current);
+    longPressTimer.current = null;
+  };
+
+  const pickBagSlotForShortcut = (item: InventorySlot, point: ShortcutCarryPointer) => {
+    setSelectedSlot(item.slotIndex);
+    onPickShortcutItem(item.slotIndex, item.itemCode, point);
   };
 
   const handleBagSlotEnter = (event: ReactMouseEvent<HTMLButtonElement>, item: InventorySlot) => {
@@ -332,6 +348,7 @@ export default function InventoryWindow({ onClose, inventory, equipment, onSell,
   useEffect(
     () => () => {
       if (hoverCloseTimer.current !== null) window.clearTimeout(hoverCloseTimer.current);
+      if (longPressTimer.current !== null) window.clearTimeout(longPressTimer.current);
     },
     [],
   );
@@ -357,6 +374,42 @@ export default function InventoryWindow({ onClose, inventory, equipment, onSell,
     event.preventDefault();
     if (item.isLocked) return;
     onUse(item.slotIndex);
+  };
+
+  const handleBagSlotPointerDown = (event: ReactPointerEvent<HTMLButtonElement>, item: InventorySlot) => {
+    lastPointerType.current = event.pointerType;
+    clearLongPressTimer();
+    if (event.pointerType === 'mouse') return;
+    longPressStart.current = { x: event.clientX, y: event.clientY };
+    longPressTimer.current = window.setTimeout(() => {
+      suppressNextTap.current = true;
+      pickBagSlotForShortcut(item, { x: event.clientX, y: event.clientY });
+    }, LONG_PRESS_MS);
+  };
+
+  const handleBagSlotPointerMove = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    if (!longPressStart.current) return;
+    if (Math.hypot(event.clientX - longPressStart.current.x, event.clientY - longPressStart.current.y) <= LONG_PRESS_MOVE_TOLERANCE) return;
+    clearLongPressTimer();
+    longPressStart.current = null;
+  };
+
+  const handleBagSlotPointerEnd = () => {
+    clearLongPressTimer();
+    longPressStart.current = null;
+  };
+
+  const handleBagSlotClick = (event: ReactMouseEvent<HTMLButtonElement>, item: InventorySlot) => {
+    if (suppressNextTap.current) {
+      suppressNextTap.current = false;
+      event.preventDefault();
+      return;
+    }
+    if (lastPointerType.current === 'mouse') {
+      pickBagSlotForShortcut(item, { x: event.clientX, y: event.clientY });
+      return;
+    }
+    if (!item.isLocked) onUse(item.slotIndex);
   };
 
   const slotByKey = Object.fromEntries(EQUIP_SLOTS.map((slot) => [slot.key, slot])) as Record<EquipmentSlotKey, EquipSlotDef>;
@@ -430,11 +483,15 @@ export default function InventoryWindow({ onClose, inventory, equipment, onSell,
               <button
                 key={slotIndex}
                 type="button"
-                className={`bag-slot${item ? ' bag-slot-occupied' : ''}${selectedSlot === slotIndex ? ' bag-slot-selected' : ''}`}
+                className={`bag-slot${item ? ' bag-slot-occupied' : ''}${selectedSlot === slotIndex ? ' bag-slot-selected' : ''}${shortcutCarry?.source === 'inventory' && shortcutCarry.slotIndex === slotIndex ? ' bag-slot-carry-source' : ''}`}
                 disabled={!item}
                 aria-label={item && display ? `${display.name}${item.quantity > 1 ? ` x${item.quantity}` : ''}` : `Empty slot ${slotIndex + 1}`}
-                onClick={() => handleSelectSlot(slotIndex)}
+                onClick={item ? (event) => handleBagSlotClick(event, item) : undefined}
                 onContextMenu={item ? (event) => handleBagSlotContextMenu(event, item) : undefined}
+                onPointerDown={item ? (event) => handleBagSlotPointerDown(event, item) : undefined}
+                onPointerMove={item ? handleBagSlotPointerMove : undefined}
+                onPointerUp={item ? handleBagSlotPointerEnd : undefined}
+                onPointerCancel={item ? handleBagSlotPointerEnd : undefined}
                 onMouseEnter={item ? (event) => handleBagSlotEnter(event, item) : undefined}
                 onMouseLeave={item ? handleHoverLeave : undefined}
               >

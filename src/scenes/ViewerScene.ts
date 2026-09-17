@@ -10,7 +10,8 @@ import type { EffectSocketInspection, ParticleCullingContext, WeaponDebugInfo } 
 import { SceneController } from '../controllers/SceneController';
 import { advanceParticleBatchClocks, getParticleBatchCount, initParticleBatching, setParticleEffectCountForBudget, setParticleRandomnessEnabled } from '../rf/particleSystem';
 import { initSocketGlowBatching } from '../rf/glowEffect';
-import { classifyLocomotionDirection } from '../rf/character';
+import { classifyLocomotionDirectionStable } from '../rf/character';
+import type { LocomotionDirection } from '../rf/character';
 import type { RaceGender } from '../rf/character';
 import type { AppScene } from './AppScene';
 
@@ -113,6 +114,7 @@ export class ViewerScene implements AppScene {
 
   /** Raw directional input (x = right, y = forward) from whichever source last drove it - the mobile joystick or WASD/arrow keys - or null while neither is active. Converted to a camera-relative world direction each frame in update(). */
   private moveInput: { x: number; y: number } | null = null;
+  private localLocomotionDirection: LocomotionDirection | null = null;
   private readonly moveForward = new Vector3();
   private readonly moveRight = new Vector3();
   private readonly moveDirection = new Vector3();
@@ -266,6 +268,7 @@ export class ViewerScene implements AppScene {
   /** Continuous directional input from the mobile joystick or WASD/arrow keys: x = right, y = forward, both roughly [-1, 1] (magnitude scales speed). Pass null on release. Resolved to a camera-relative world direction fresh every frame in update(), so it stays correct as the camera orbits. */
   setMoveInput(input: { x: number; y: number } | null): void {
     this.moveInput = input;
+    if (!input) this.localLocomotionDirection = null;
     if (input) this.sceneController.hideTargetMarker(); // engaging supersedes any pending click-to-move
   }
 
@@ -444,11 +447,13 @@ export class ViewerScene implements AppScene {
       // direction - see classifyLocomotionDirection. Forward-dominant input
       // (null here) keeps the original behavior: plain walk/run, facing the
       // resultant (possibly diagonal) direction, which was already smooth.
-      const locomotionDirection = classifyLocomotionDirection(x, y);
+      const locomotionDirection = classifyLocomotionDirectionStable(x, y, this.localLocomotionDirection);
+      this.localLocomotionDirection = locomotionDirection;
       const faceDirection = locomotionDirection ? this.moveForward : this.moveDirection;
       this.characterController.setMoveDirection(this.moveDirection, faceDirection, locomotionDirection);
     } else {
       this.characterController.setMoveDirection(null);
+      this.localLocomotionDirection = null;
     }
 
     const { arrived } = this.characterController.update(delta);

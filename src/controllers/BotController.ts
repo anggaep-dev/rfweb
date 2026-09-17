@@ -27,8 +27,21 @@ const BOT_WANDER_MAX_RADIUS = 100;
 // independent timing.
 const BOT_WANDER_PAUSE_MIN_SEC = 1;
 const BOT_WANDER_PAUSE_MAX_SEC = 4;
-/** Distant bots contribute neither draw traversal nor per-frame skeletal work. Kept aligned with ParticleEffect's hard render range. */
-const BOT_RENDER_DISTANCE = 250;
+/**
+ * Distant bots contribute neither draw traversal nor per-frame skeletal
+ * work. Kept aligned with ParticleEffect's hard render range. Two thresholds
+ * with a deliberate gap (not one shared distance) - a bot's distance to the
+ * camera sitting right at a single threshold flips `visible` every frame
+ * from ordinary movement-sized jitter, and each hidden frame completely
+ * skips that bot's update() (see the `continue` below), so flip-flopping
+ * every frame means alternating "frozen" and "catch-up jump" frames -
+ * visibly identical to a real position/animation bug, confirmed as the
+ * actual cause of "far-away bot looks jittery" reports. Show only once a
+ * bot gets meaningfully closer than where it was hidden so ordinary
+ * wandering/camera drift can't retrigger this near the boundary.
+ */
+const BOT_HIDE_DISTANCE = 250;
+const BOT_SHOW_DISTANCE = 220;
 /** Hidden bots still need to move and advance their mixers, just not at display refresh rate. */
 const HIDDEN_BOT_UPDATE_INTERVAL_SEC = 1 / 8;
 
@@ -48,6 +61,8 @@ interface Bot {
   pauseRemaining: number;
   /** Delta accumulated while this bot is outside the camera's render range. */
   hiddenUpdateElapsed: number;
+  /** Current show/hide state - see BOT_HIDE_DISTANCE/BOT_SHOW_DISTANCE's own doc comment for why this needs hysteresis instead of being recomputed fresh from distance alone every frame. */
+  visible: boolean;
 }
 
 export interface SpawnBotOptions {
@@ -231,7 +246,7 @@ export class BotController {
 
       // Also randomized (not 0) so bots spawned in the same batch don't all
       // take their first step on the same frame either.
-      this.bots.push({ controller, home, pauseRemaining: randomWanderPause(), hiddenUpdateElapsed: 0 });
+      this.bots.push({ controller, home, pauseRemaining: randomWanderPause(), hiddenUpdateElapsed: 0, visible: true });
       added++;
     }
     return added;
@@ -259,7 +274,9 @@ export class BotController {
   update(delta: number, camera: Camera, particleCulling: ParticleCullingContext): void {
     for (const bot of this.bots) {
       const group = bot.controller.group;
-      const visible = !group || group.position.distanceToSquared(particleCulling.cameraPosition) <= BOT_RENDER_DISTANCE ** 2;
+      const thresholdDistance = bot.visible ? BOT_HIDE_DISTANCE : BOT_SHOW_DISTANCE;
+      const visible = !group || group.position.distanceToSquared(particleCulling.cameraPosition) <= thresholdDistance ** 2;
+      bot.visible = visible;
       if (group) group.visible = visible;
 
       // A hidden bot's mixer and movement still progress in batched time so

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import ChatBox from '../hud/ChatBox';
 import FpsCounter from '../hud/FpsCounter';
 import FullscreenButton from '../hud/FullscreenButton';
@@ -8,6 +8,9 @@ import MiniMap from '../hud/MiniMap';
 import type { MiniMapHandle } from '../hud/MiniMap';
 import MobileControls from '../hud/MobileControls';
 import PingIndicator from '../hud/PingIndicator';
+import ShortcutBar from '../hud/ShortcutBar';
+import { createEmptyShortcutGrid, SHORTCUT_ROW_COUNT } from '../hud/shortcutBarTypes';
+import type { ShortcutCarry, ShortcutCarryPointer, ShortcutEntry, ShortcutGrid } from '../hud/shortcutBarTypes';
 import VitalsBar from '../hud/VitalsBar';
 import { useKeyboardMove } from '../../hooks/useKeyboardMove';
 import type { RaceGender } from '../../rf/character';
@@ -43,6 +46,26 @@ export default function OnlineScreen({ sceneManager, initialRaceGender, sessionT
   const [chatEntries, setChatEntries] = useState<ChatLogEntry[]>([]);
   const [inventory, setInventory] = useState<InventoryState>(EMPTY_INVENTORY);
   const [equipment, setEquipment] = useState<EquipmentDisplay>({});
+  const [shortcutRows, setShortcutRows] = useState<ShortcutGrid>(() => createEmptyShortcutGrid());
+  const [shortcutRowVisibility, setShortcutRowVisibility] = useState<boolean[]>(() =>
+    Array.from({ length: SHORTCUT_ROW_COUNT }, (_, index) => index === 0),
+  );
+  const [shortcutCarry, setShortcutCarry] = useState<ShortcutCarry | null>(null);
+  const [shortcutCarryPointer, setShortcutCarryPointer] = useState<ShortcutCarryPointer | null>(null);
+  const equippedItemCodes = useMemo(() => {
+    const codes = new Set<string>();
+    for (const visual of Object.values(equipment)) {
+      if (visual?.itemCode) codes.add(visual.itemCode);
+    }
+    return codes;
+  }, [equipment]);
+  const equippedSlotByItemCode = useMemo(() => {
+    const slots = new Map<string, EquipmentSlotKey>();
+    for (const [slotKey, visual] of Object.entries(equipment) as [EquipmentSlotKey, { itemCode: string; upgrade: string } | undefined][]) {
+      if (visual?.itemCode) slots.set(visual.itemCode, slotKey);
+    }
+    return slots;
+  }, [equipment]);
 
   // Assigned by the mount effect below, so handleMoveInput (and any other
   // future per-frame input) can reach the scene without needing it in its
@@ -117,6 +140,93 @@ export default function OnlineScreen({ sceneManager, initialRaceGender, sessionT
     onlineSceneRef.current?.unuseEquipmentItem(slotKey);
   }, []);
 
+  useEffect(() => {
+    if (!shortcutCarry) return;
+    const handlePointerMove = (event: PointerEvent) => setShortcutCarryPointer({ x: event.clientX, y: event.clientY });
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      setShortcutCarry(null);
+      setShortcutCarryPointer(null);
+    };
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [shortcutCarry]);
+
+  const handleAssignShortcut = useCallback(
+    (rowIndex: number, colIndex: number, shortcut: ShortcutEntry) => {
+      if (shortcut.kind === 'inventory' && inventory.slots[shortcut.slotIndex]?.itemCode !== shortcut.itemCode) return;
+      setShortcutRows((current) =>
+        current.map((row, r) => (r === rowIndex ? row.map((entry, c) => (c === colIndex ? shortcut : entry)) : row)),
+      );
+      setShortcutRowVisibility((current) => current.map((visible, index) => (index === rowIndex ? true : visible)));
+    },
+    [inventory.slots],
+  );
+
+  const handleClearShortcut = useCallback((rowIndex: number, colIndex: number) => {
+    setShortcutRows((current) => current.map((row, r) => (r === rowIndex ? row.map((entry, c) => (c === colIndex ? null : entry)) : row)));
+  }, []);
+
+  const handlePickInventoryShortcut = useCallback((slotIndex: number, itemCode: string, point: ShortcutCarryPointer) => {
+    if (inventory.slots[slotIndex]?.itemCode !== itemCode) return;
+    setShortcutCarry({ source: 'inventory', slotIndex, itemCode });
+    setShortcutCarryPointer(point);
+  }, [inventory.slots]);
+
+  const handlePickShortcut = useCallback((rowIndex: number, colIndex: number, shortcut: ShortcutEntry, point: ShortcutCarryPointer) => {
+    setShortcutCarry({ source: 'shortcut', rowIndex, colIndex, shortcut });
+    setShortcutCarryPointer(point);
+  }, []);
+
+  const handleMoveShortcut = useCallback((sourceRowIndex: number, sourceColIndex: number, targetRowIndex: number, targetColIndex: number) => {
+    if (sourceRowIndex === targetRowIndex && sourceColIndex === targetColIndex) return;
+    setShortcutRows((current) => {
+      const source = current[sourceRowIndex]?.[sourceColIndex];
+      if (!source || !current[targetRowIndex]) return current;
+      const target = current[targetRowIndex][targetColIndex] ?? null;
+      return current.map((row, rowIndex) =>
+        row.map((entry, colIndex) => {
+          if (rowIndex === sourceRowIndex && colIndex === sourceColIndex) return target;
+          if (rowIndex === targetRowIndex && colIndex === targetColIndex) return source;
+          return entry;
+        }),
+      );
+    });
+  }, []);
+
+  const handleDropShortcut = useCallback(
+    (rowIndex: number, colIndex: number) => {
+      if (!shortcutCarry) return;
+      if (shortcutCarry.source === 'inventory') {
+        if (inventory.slots[shortcutCarry.slotIndex]?.itemCode === shortcutCarry.itemCode) {
+          handleAssignShortcut(rowIndex, colIndex, {
+            kind: 'inventory',
+            slotIndex: shortcutCarry.slotIndex,
+            itemCode: shortcutCarry.itemCode,
+          });
+        }
+      } else {
+        handleMoveShortcut(shortcutCarry.rowIndex, shortcutCarry.colIndex, rowIndex, colIndex);
+      }
+      setShortcutCarry(null);
+      setShortcutCarryPointer(null);
+    },
+    [handleAssignShortcut, handleMoveShortcut, inventory.slots, shortcutCarry],
+  );
+
+  const handleCancelShortcutCarry = useCallback(() => {
+    setShortcutCarry(null);
+    setShortcutCarryPointer(null);
+  }, []);
+
+  const handleToggleShortcutRow = useCallback((rowIndex: number) => {
+    setShortcutRowVisibility((current) => current.map((visible, index) => (index === rowIndex ? !visible : visible)));
+  }, []);
+
   return (
     <div className="online-screen">
       {status === 'ready' && <MiniMap ref={miniMapRef} />}
@@ -126,6 +236,24 @@ export default function OnlineScreen({ sceneManager, initialRaceGender, sessionT
       {status === 'ready' && <FullscreenButton />}
       {status === 'ready' && <HudIconRow onOpenInventory={handleToggleInventory} onOpenSettings={onExit} settingsLabel={onExit ? 'Exit' : 'Settings'} />}
       {status === 'ready' && <VitalsBar />}
+      {status === 'ready' && (
+        <ShortcutBar
+          shortcutCarry={shortcutCarry}
+          shortcutCarryPointer={shortcutCarryPointer}
+          inventory={inventory}
+          equippedItemCodes={equippedItemCodes}
+          equippedSlotByItemCode={equippedSlotByItemCode}
+          shortcuts={shortcutRows}
+          rowVisibility={shortcutRowVisibility}
+          onDropShortcut={handleDropShortcut}
+          onClear={handleClearShortcut}
+          onCancelCarry={handleCancelShortcutCarry}
+          onPickShortcut={handlePickShortcut}
+          onToggleRow={handleToggleShortcutRow}
+          onUseInventorySlot={handleUseItem}
+          onUnuseEquipmentSlot={handleUnuseItem}
+        />
+      )}
       {status === 'ready' && <MobileControls onMove={handleMoveInput} />}
       {status === 'ready' && inventoryOpen && (
         <InventoryWindow
@@ -136,6 +264,8 @@ export default function OnlineScreen({ sceneManager, initialRaceGender, sessionT
           onDrop={handleDropItem}
           onUse={handleUseItem}
           onUnuse={handleUnuseItem}
+          shortcutCarry={shortcutCarry}
+          onPickShortcutItem={handlePickInventoryShortcut}
         />
       )}
 

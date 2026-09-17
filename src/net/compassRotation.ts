@@ -1,18 +1,22 @@
 import { Vector3 } from 'three';
 
 /**
- * The server's rotation encoding: 0-255, but only ever one of 8 discrete
- * 32-step compass values in practice (0=North/-Z, 32=NE, 64=East/+X, ...
- * 224=NW - see movement/system.go's directionToRotation on the backend,
- * which mints EntitySnapshot/EntityUpdate's rotation this way, and which
- * MovementInput's own facing field - see proto/protocol.proto - now uses
- * identically so the server can just trust it instead of re-deriving facing
- * from movement direction alone). rotationToYaw decodes it (for rendering
- * another player smoothly - see RemoteEntityController); quantizeToCompass/
- * facingToRotation encode it (for reporting the local player's own actual
- * movement/facing - see OnlineScene - now camera-relative and therefore a
- * continuous angle, not always already axis-aligned like the old fixed-
- * compass WASD scheme was).
+ * The server's rotation encoding: 0-255 around a full turn (0=North/-Z,
+ * 64=East/+X, 128=South/+Z, 192=West/-X, continuous in between - see
+ * movement/system.go on the backend, which mints EntitySnapshot/
+ * EntityUpdate's rotation this way, and which MovementInput's own facing
+ * field - see proto/protocol.proto - now uses identically so the server can
+ * just trust it instead of re-deriving facing from movement direction
+ * alone). Movement direction/facing are both genuinely continuous now (see
+ * OnlineScene, camera-relative) - rotationToYaw decodes any value in this
+ * range (for rendering another player smoothly - see
+ * RemoteEntityController), and continuousRotationFromVector encodes any
+ * angle back (for reporting the local player's own actual facing).
+ *
+ * quantizeToCompass/quantizeDirectionVector/facingToRotation below still
+ * snap to one of 8 fixed 32-step compass directions - kept for whatever
+ * still deliberately wants that (e.g. debug tooling), not because the wire
+ * or the server require it any more.
  */
 
 const COMPASS_ROTATION_BY_KEY: Record<string, number> = {
@@ -56,6 +60,22 @@ export function rotationToYaw(rotation: number): number {
 export function facingToRotation(facing: Vector3): number {
   const [dx, dz] = quantizeToCompass(facing.x, facing.z);
   return COMPASS_ROTATION_BY_KEY[`${dx},${dz}`] ?? 0;
+}
+
+/**
+ * Converts a world-space facing vector to the compass encoding WITHOUT
+ * snapping to one of the 8 compass directions first - the exact inverse of
+ * rotationToYaw (see compassRotation.test.ts's round-trip test), for a
+ * character whose facing can now be any continuous angle (see
+ * OnlineScene.ts). Derived from rotationToYaw's own math: that function
+ * computes `facing = (-sin(yaw), -cos(yaw))` for `yaw = rotationToYaw(r)`,
+ * so solving for r given a target (x, z) gives `yaw = atan2(-x, -z)` and
+ * `r = -yaw / (2*PI) * 256`, wrapped into [0, 256).
+ */
+export function continuousRotationFromVector(facing: Vector3): number {
+  const yaw = Math.atan2(-facing.x, -facing.z);
+  const raw = (-yaw / (Math.PI * 2)) * 256;
+  return Math.round(((raw % 256) + 256) % 256) % 256;
 }
 
 /**

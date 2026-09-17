@@ -1,6 +1,6 @@
 import { Vector3 } from 'three';
 import { describe, expect, it } from 'vitest';
-import { facingToRotation, quantizeDirectionVector, quantizeToCompass, rotationToYaw } from './compassRotation';
+import { continuousRotationFromVector, facingToRotation, quantizeDirectionVector, quantizeToCompass, rotationToYaw } from './compassRotation';
 
 describe('quantizeToCompass', () => {
   it('snaps the 4 cardinal directions exactly', () => {
@@ -57,6 +57,40 @@ describe('rotationToYaw / facingToRotation round-trip', () => {
       // input (+0 normalizes any -0 from a component that rounds to zero).
       expect(Math.sign(Math.round(decoded.x)) + 0).toBe(Math.sign(x) + 0);
       expect(Math.sign(Math.round(decoded.z)) + 0).toBe(Math.sign(z) + 0);
+    }
+  });
+});
+
+describe('continuousRotationFromVector / rotationToYaw round-trip', () => {
+  it('recovers the exact octant cases (same as facingToRotation)', () => {
+    const cases: [number, number, number][] = [
+      [0, -1, 0],
+      [1, -1, 32],
+      [1, 0, 64],
+      [1, 1, 96],
+      [0, 1, 128],
+      [-1, 1, 160],
+      [-1, 0, 192],
+      [-1, -1, 224],
+    ];
+    for (const [x, z, expected] of cases) {
+      const facing = new Vector3(x, 0, z).normalize();
+      expect(continuousRotationFromVector(facing)).toBeCloseTo(expected, 5);
+    }
+  });
+
+  it('recovers an arbitrary continuous angle, not just the 8 compass directions', () => {
+    for (let deg = 0; deg < 360; deg += 7) {
+      const rad = (deg * Math.PI) / 180;
+      // Same construction rotationToYaw's own decode uses, so this is a true round-trip.
+      const facing = new Vector3(0, 0, -1).applyAxisAngle(new Vector3(0, 1, 0), rad);
+      const rotation = continuousRotationFromVector(facing);
+      const decoded = new Vector3(0, 0, -1).applyAxisAngle(new Vector3(0, 1, 0), rotationToYaw(rotation));
+      // 1 decimal place, not 2: the wire only carries 256 discrete steps
+      // over 360 degrees (~1.4deg resolution), so up to ~0.0123 of
+      // component-wise round-trip error is expected quantization, not a bug.
+      expect(decoded.x).toBeCloseTo(facing.x, 1);
+      expect(decoded.z).toBeCloseTo(facing.z, 1);
     }
   });
 });

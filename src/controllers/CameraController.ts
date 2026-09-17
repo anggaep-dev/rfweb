@@ -65,8 +65,19 @@ export class CameraController {
 
   private firstPersonYaw = 0;
   private firstPersonPitch = 0;
-  /** True while the right mouse button is held - manual orbiting, so the auto-behind-follow yields. */
+  /**
+   * True while the user is manually orbiting - the desktop right mouse
+   * button, or any touch (OrbitControls' own TOUCH.ROTATE/DOLLY_PAN mapping
+   * treats every touch on the canvas as orbit/dolly input, one-finger drag
+   * being mobile's only stand-in for a desktop right-drag - see the
+   * constructor's own comment) - so the auto-behind-follow below yields.
+   * `orbitTouchCount` (not a plain boolean) because a two-finger pinch that
+   * drops to one finger mid-gesture is still actively orbiting even though
+   * one of its pointerup events fires - a boolean would wrongly flip to
+   * "not dragging" right as the remaining finger keeps going.
+   */
   private rightDragging = false;
+  private orbitTouchCount = 0;
   private leftDragging = false;
 
   // Reusable scratch objects, kept off the per-frame allocation path.
@@ -84,12 +95,24 @@ export class CameraController {
       this.rightDragging = true;
       return;
     }
+    if (event.pointerType === 'touch') {
+      this.orbitTouchCount++;
+      this.rightDragging = true;
+      return;
+    }
     if (event.button === 0) this.leftDragging = true;
   };
-  // Tracked on window, not the canvas, so releasing the button after the
-  // cursor has dragged off-canvas still clears the flag.
+  // Tracked on window, not the canvas, so releasing the button (or lifting
+  // the finger) after the pointer has dragged off-canvas still clears the
+  // flag - also covers pointercancel (see handlePointerCancel below), the
+  // same "OS steals the touch mid-drag" failure mode MobileControls' own
+  // joystick has to guard against.
   private readonly handleWindowPointerUp = (event: PointerEvent) => {
     if (event.button === 2) this.rightDragging = false;
+    if (event.pointerType === 'touch') {
+      this.orbitTouchCount = Math.max(0, this.orbitTouchCount - 1);
+      this.rightDragging = this.orbitTouchCount > 0;
+    }
     if (event.button === 0) this.leftDragging = false;
   };
   private readonly handlePointerMove = (event: PointerEvent) => {
@@ -135,6 +158,7 @@ export class CameraController {
     domElement.addEventListener('pointerdown', this.handlePointerDown);
     domElement.addEventListener('pointermove', this.handlePointerMove);
     window.addEventListener('pointerup', this.handleWindowPointerUp);
+    window.addEventListener('pointercancel', this.handleWindowPointerUp);
   }
 
   setMode(mode: CamMode): void {
@@ -297,6 +321,7 @@ export class CameraController {
     this.domElement.removeEventListener('pointerdown', this.handlePointerDown);
     this.domElement.removeEventListener('pointermove', this.handlePointerMove);
     window.removeEventListener('pointerup', this.handleWindowPointerUp);
+    window.removeEventListener('pointercancel', this.handleWindowPointerUp);
     this.controls.dispose();
   }
 }

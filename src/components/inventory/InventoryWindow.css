@@ -306,6 +306,7 @@
   padding: 2px;
   overflow: hidden;
   cursor: default;
+  touch-action: manipulation;
 }
 
 .bag-slot-occupied {
@@ -319,6 +320,20 @@
 .bag-slot-selected {
   border-color: var(--energy-cyan);
   box-shadow: 0 0 0 1px var(--energy-cyan) inset;
+}
+
+.bag-slot-carry-source {
+  opacity: 0.45;
+  filter: saturate(0.75);
+}
+
+.bag-slot-carry-source::before {
+  content: '';
+  position: absolute;
+  inset: 2px;
+  z-index: 1;
+  border: 1px dashed rgba(245, 214, 91, 0.78);
+  pointer-events: none;
 }
 
 .bag-slot-name {

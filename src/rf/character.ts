@@ -158,9 +158,12 @@ export function classifyLocomotionDirectionStable(
 
 /**
  * Classifies a world-space `moveDirection` against a world-space `facing`
- * (both assumed already snapped to the same 8-way compass grid the network
- * protocol carries - see compassRotation.ts) into a LocomotionDirection,
- * via classifyLocomotionDirectionStable. Shared by OnlineScene (local
+ * into a LocomotionDirection, via classifyLocomotionDirectionStable - both
+ * vectors can be any continuous angle now (the network protocol no longer
+ * snaps movement/facing to a fixed 8-way compass grid - see
+ * compassRotation.ts), which classifyLocomotionDirectionStable already
+ * handles correctly (it only ever compares relative magnitudes, never
+ * assumed axis-alignment). Shared by OnlineScene (local
  * prediction, classifying its own moveDirection against its own facing) and
  * RemoteEntityController (classifying a remote entity's server-reported
  * travel direction against its server-reported facing) - both need the

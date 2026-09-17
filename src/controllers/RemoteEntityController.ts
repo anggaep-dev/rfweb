@@ -49,11 +49,14 @@ interface RemoteEntity {
   /** Same source, distinguishing Running from plain Moving - see MoveMode. */
   isRunning: boolean;
   /**
-   * The entity's actual world-space travel direction, world units - derived
-   * from the latest EntityUpdate's dx/dz (a snapshot/enter carries no delta
-   * to derive this from, so it just keeps whatever it last was, or the
-   * facing-matching default set at spawn, until a real update arrives).
-   * This is NOT necessarily the same direction as `facing` - a player
+   * The entity's actual world-space travel direction, unit vector - from
+   * the latest EntityUpdate's move_dir_x/z (the server's own continuous
+   * MovingDirX/DirZ, NOT derived from dx/dz - see the update() call site's
+   * own doc comment for why that distinction matters). A snapshot/enter
+   * carries no move direction to derive this from, so it just keeps
+   * whatever it last was, or the facing-matching default set at spawn,
+   * until a real update arrives. This is NOT necessarily the same direction
+   * as `facing` - a player
    * stepping backward or strafing (relative to which way they're facing)
    * has a facing/travel mismatch, which is exactly what needs to be
    * classified (see tick()) so the correct backward/strafe clip plays
@@ -179,12 +182,23 @@ export class RemoteEntityController {
     remote.targetYaw = rotationToYaw(entityUpdate.rotation);
     remote.isMoving = entityUpdate.state !== ENTITY_STATE_IDLE;
     remote.isRunning = entityUpdate.state === ENTITY_STATE_RUNNING;
-    if (entityUpdate.dx !== 0 || entityUpdate.dz !== 0) {
-      const len = Math.hypot(entityUpdate.dx, entityUpdate.dz);
-      // moveDirection is a render-space facing hint (see its own doc
-      // comment) built from a native dx/dz delta - see nativeToScene's own
-      // doc comment on why Z flips going from one space to the other.
-      remote.moveDirection.set(entityUpdate.dx / len, 0, -entityUpdate.dz / len);
+    // moveDirection comes from the server's own continuous MoveDirX/Z (see
+    // EntityUpdate's doc comment in protocol.proto), NOT derived from this
+    // tick's dx/dz position delta - movement is a fractional accumulator
+    // server-side now (rfworld's movement/system.go), so a near-but-not-
+    // exactly-45-degree diagonal produces a Bresenham-style stair-step of
+    // per-tick integer deltas ((1,0), (0,1), (1,0), ...) even though the
+    // true direction is one stable diagonal angle. Reconstructing direction
+    // from dx/dz alone (the old approach, back when every tick's delta WAS
+    // exactly one of 8 fixed unit vectors) made this classification flicker
+    // rapidly for any diagonal-ish movement - visible on other clients as
+    // the moving character's animation clip rapidly flipping between
+    // forward/strafe. moveDirection is a render-space facing hint (see its
+    // own doc comment) - see nativeToScene's own doc comment on why Z flips
+    // going from one space to the other.
+    const len = Math.hypot(entityUpdate.moveDirX, entityUpdate.moveDirZ);
+    if (len > 1e-6) {
+      remote.moveDirection.set(entityUpdate.moveDirX / len, 0, -entityUpdate.moveDirZ / len);
     }
   }
 
@@ -449,7 +463,7 @@ export class RemoteEntityController {
       const appearance = await this.loadAppearance(characterId);
       if (remote.removed || !appearance) return;
       if (appearance.name) {
-        remote.nameTag = new NameTag(this.scene, appearance.name, bounds.radius, nameTagYOffset, {
+        remote.nameTag = new NameTag(this.scene, appearance.name, nameTagYOffset, {
           race: appearance.race,
           rank: appearance.rank,
           specialRank: appearance.specialRank,

@@ -2,7 +2,7 @@ import { CanvasTexture, Sprite, SpriteMaterial, Vector3 } from 'three';
 import type { Box3, Object3D, Scene } from 'three';
 import { RaceGender } from '../rf/character';
 
-const FONT = 'bold 64px "Space Grotesk", system-ui, sans-serif';
+const FONT = 'bold 64px "Tahoma", system-ui, sans-serif';
 /** design.md's vital-emerald token (src/styles/tokens.css's --vital-emerald) - this project's established "green," not an arbitrary one. */
 const TEXT_COLOR = '#34d179';
 const OUTLINE_COLOR = 'rgba(10, 14, 21, 0.9)';
@@ -13,20 +13,31 @@ const RANK_ICON_DRAW_SIZE = 64;
 const RANK_ICON_GAP = 12;
 const RANK_SHEET_COLUMNS = 8;
 const RANK_SHEET_URL = '/game-gui/allrank.png';
-/**
- * Sized as a fraction of the character's own bounding radius, not a fixed
- * world-unit height - same "radius-relative" convention CharacterController
- * already uses (WALK_SPEED_RADIUS_PER_SEC, ARRIVE_FRACTION_OF_RADIUS) for
- * exactly this reason: race models differ hugely in native mesh scale
- * (confirmed empirically - a Bell_Female's head bone alone sits at world
- * Y≈13, nowhere near a "1 unit ≈ 1 meter" assumption), so a fixed height
- * that looked right for one race would be imperceptibly tiny on another. A
- * fixed constant here (the original bug) rendered at ~3% of the character's
- * actual height - technically on-screen, but invisible in practice.
- */
-const SPRITE_HEIGHT_RADIUS_FACTOR = 0.18;
 /** Small clearance above the static mounted character bounds, so the tag does not bob with animated head bones. */
 const ROOT_CLEARANCE_RADIUS_FACTOR = 0.12;
+
+/**
+ * The gameplay camera's own vertical FOV (see CameraController's
+ * `new PerspectiveCamera(50, ...)`) - needed to convert a target on-screen
+ * height fraction into a `Sprite.scale.y` value once `sizeAttenuation` is
+ * off (see below), since that conversion is FOV-dependent. Both call sites
+ * (OnlineScene, RemoteEntityController) share this one camera, so a single
+ * constant is safe here rather than threading the live FOV through.
+ */
+const CAMERA_VERTICAL_FOV_DEGREES = 50;
+/** Target name tag height as a fraction of the viewport height - tune this (not SPRITE_SCALE_Y directly) if the tag looks too big/small on screen. */
+const TARGET_SCREEN_HEIGHT_FRACTION = 0.035;
+/**
+ * With `sizeAttenuation: false` (see the Sprite constructor below), three.js
+ * cancels the usual "shrink with distance" perspective divide, so
+ * `Sprite.scale` stops meaning world units and instead maps directly to a
+ * fraction of the viewport - independent of both camera distance AND
+ * viewport resolution (it only cancels out to a plain fraction-of-FOV, see
+ * the derivation this constant is named for), which is exactly why a
+ * fixed-size-on-screen name tag no longer needs the old per-race radius
+ * scaling: `scale.y = targetScreenFraction * 2 * tan(fov / 2)`.
+ */
+const SPRITE_SCALE_Y = TARGET_SCREEN_HEIGHT_FRACTION * 2 * Math.tan((CAMERA_VERTICAL_FOV_DEGREES * Math.PI) / 180 / 2);
 
 export type SpecialRankBadge = 'owner' | 'vip' | 'dev' | 'mod' | 'gm';
 
@@ -167,15 +178,31 @@ export class NameTag {
   private readonly rootWorldPosition = new Vector3();
   private readonly yOffset: number;
 
-  /** `radius` is the same CharacterBounds.radius returned by CharacterController.mount(); `yOffset` is a fixed root-relative height from those same mount bounds. */
-  constructor(scene: Scene, name: string, radius: number, yOffset: number, rankInfo?: NameTagRank) {
+  /** `yOffset` is a fixed root-relative height from the character's mount bounds (see nameTagYOffsetFromBounds). */
+  constructor(scene: Scene, name: string, yOffset: number, rankInfo?: NameTagRank) {
     const { texture, aspect } = createNameTagTexture(name, rankInfo);
-    const height = radius * SPRITE_HEIGHT_RADIUS_FACTOR;
-    // depthWrite off so the tag never occludes anything behind it in the
-    // depth buffer; depthTest stays on (default) so it's still properly
-    // hidden behind real geometry (a wall, another player) in front of it.
-    this.sprite = new Sprite(new SpriteMaterial({ map: texture, transparent: true, depthWrite: false }));
-    this.sprite.scale.set(height * aspect, height, 1);
+    this.sprite = new Sprite(
+      new SpriteMaterial({
+        map: texture,
+        transparent: true,
+        // Never occludes anything behind it in the depth buffer; depthTest
+        // stays on (default) so it's still properly hidden behind real
+        // geometry (a wall, another player) in front of it.
+        depthWrite: false,
+        // Keeps the tag a constant on-screen size regardless of camera
+        // zoom/distance (see SPRITE_SCALE_Y's own doc comment) instead of
+        // shrinking/growing like normal world-space geometry.
+        sizeAttenuation: false,
+        // Sprites aren't lit by scene lights to begin with (SpriteMaterial
+        // has no lighting model), but fog and tone-mapping exposure are the
+        // two other scene-wide "atmosphere" knobs that could otherwise dim
+        // or tint it - opt out of both so the tag always renders at its
+        // exact designed colors.
+        fog: false,
+        toneMapped: false,
+      }),
+    );
+    this.sprite.scale.set(SPRITE_SCALE_Y * aspect, SPRITE_SCALE_Y, 1);
     this.yOffset = yOffset;
     scene.add(this.sprite);
   }

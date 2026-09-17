@@ -37,8 +37,16 @@ export class GroundHeightProvider {
   private readonly bounds: Box3 | null;
   private readonly raycaster = new Raycaster();
   private readonly rayOrigin = new Vector3();
-  private readonly normalMatrix = new Matrix3();
   private readonly normal = new Vector3();
+  /**
+   * Per-hit-object normal matrix cache. The map is static (never moves after
+   * load - see this class's own doc comment), so `getNormalMatrix` - a 4x4
+   * invert+transpose - is otherwise wasted work recomputed on every single
+   * hit of every query, for every entity, every frame. Keyed by object
+   * identity (not a single shared matrix) so a multi-mesh map group still
+   * gets a correct per-child matrix, same as before caching.
+   */
+  private readonly normalMatrixCache = new WeakMap<Object3D, Matrix3>();
 
   constructor(mapObject3D: Object3D, bounds: Box3 | null = null) {
     this.mapObject3D = mapObject3D;
@@ -84,8 +92,12 @@ export class GroundHeightProvider {
 
   private isUsableGroundHit(hit: Intersection<Object3D>): boolean {
     if (!hit.face) return true;
-    this.normalMatrix.getNormalMatrix(hit.object.matrixWorld);
-    this.normal.copy(hit.face.normal).applyMatrix3(this.normalMatrix).normalize();
+    let normalMatrix = this.normalMatrixCache.get(hit.object);
+    if (!normalMatrix) {
+      normalMatrix = new Matrix3().getNormalMatrix(hit.object.matrixWorld);
+      this.normalMatrixCache.set(hit.object, normalMatrix);
+    }
+    this.normal.copy(hit.face.normal).applyMatrix3(normalMatrix).normalize();
     return this.normal.y >= MIN_UP_NORMAL_Y;
   }
 }

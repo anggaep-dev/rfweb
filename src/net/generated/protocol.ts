@@ -171,22 +171,29 @@ export function inventoryActionTypeToJSON(object: InventoryActionType): string {
 
 export interface MovementInput {
   sequence: number;
+  /**
+   * Camera-relative movement direction, normalized (or zero for "not
+   * moving") - a continuous vector, not the old fixed -1/0/1 8-way grid
+   * (see movement/system.go's Process on the backend, which normalizes
+   * and scales by speed instead of looking the pair up in a fixed table).
+   */
   dirX: number;
   dirZ: number;
   running: boolean;
   /**
-   * Which way the character is actually facing - same 0-255/32-step compass
+   * Which way the character is actually facing - same 0-255 compass
    * encoding as EntitySnapshot/EntityUpdate's own rotation field (0=North/
-   * -Z, 32=NE, 64=East/+X, ...224=NW; see movement/system.go's
-   * directionToRotation on the backend). NOT necessarily the same as the
-   * dir_x/dir_z being moved in - moving backward or strafing (holding only
-   * S, or only A/D) keeps the character facing whichever way it was
-   * already facing rather than turning to face the movement itself, so
-   * this needs to travel separately instead of the server re-deriving
-   * rotation from dir_x/dir_z alone (which was the old, incorrect
-   * behavior - it made every remote observer see the mover spin to face
-   * straight backward/sideways instead of the correct backward/strafe
-   * pose).
+   * -Z, 64=East/+X, 128=South/+Z, 192=West/-X, continuous in between - see
+   * compassRotation.ts's rotationToYaw on the client and movement/system.go
+   * on the backend), now a genuinely continuous angle rather than always
+   * one of 8 fixed 32-step values. NOT necessarily the same direction as
+   * dir_x/dir_z - moving backward or strafing (holding only S, or only
+   * A/D) keeps the character facing whichever way it was already facing
+   * rather than turning to face the movement itself, so this needs to
+   * travel separately instead of the server re-deriving rotation from
+   * dir_x/dir_z alone (which was the old, incorrect behavior - it made
+   * every remote observer see the mover spin to face straight backward/
+   * sideways instead of the correct backward/strafe pose).
    */
   facing: number;
 }
@@ -369,6 +376,17 @@ export interface EntityUpdate {
   dz: number;
   rotation: number;
   state: number;
+  /**
+   * The player's actual continuous movement direction this tick - NOT
+   * derivable from dx/dz any more now that movement is a fractional
+   * accumulator server-side (see rfworld's movement/system.go), so a
+   * near-but-not-exactly-45-degree diagonal produces a Bresenham-style
+   * stair-step of per-tick integer deltas even though the true direction
+   * is one stable diagonal angle. See RemoteEntityController's own doc
+   * comment for the visible symptom this fixes.
+   */
+  moveDirX: number;
+  moveDirZ: number;
 }
 
 export interface EntityExit {
@@ -542,10 +560,10 @@ export const MovementInput: MessageFns<MovementInput> = {
       writer.uint32(8).uint32(message.sequence);
     }
     if (message.dirX !== 0) {
-      writer.uint32(16).sint32(message.dirX);
+      writer.uint32(21).float(message.dirX);
     }
     if (message.dirZ !== 0) {
-      writer.uint32(24).sint32(message.dirZ);
+      writer.uint32(29).float(message.dirZ);
     }
     if (message.running !== false) {
       writer.uint32(32).bool(message.running);
@@ -578,19 +596,19 @@ export const MovementInput: MessageFns<MovementInput> = {
             continue;
           }
           case 2: {
-            if (tag !== 16) {
+            if (tag !== 21) {
               break;
             }
 
-            message.dirX = reader.sint32();
+            message.dirX = reader.float();
             continue;
           }
           case 3: {
-            if (tag !== 24) {
+            if (tag !== 29) {
               break;
             }
 
-            message.dirZ = reader.sint32();
+            message.dirZ = reader.float();
             continue;
           }
           case 4: {
@@ -645,10 +663,10 @@ export const MovementInput: MessageFns<MovementInput> = {
       obj.sequence = Math.round(message.sequence);
     }
     if (message.dirX !== 0) {
-      obj.dirX = Math.round(message.dirX);
+      obj.dirX = message.dirX;
     }
     if (message.dirZ !== 0) {
-      obj.dirZ = Math.round(message.dirZ);
+      obj.dirZ = message.dirZ;
     }
     if (message.running !== false) {
       obj.running = message.running;
@@ -3284,7 +3302,7 @@ export const EntityEnter: MessageFns<EntityEnter> = {
 };
 
 function createBaseEntityUpdate(): EntityUpdate {
-  return { entityId: 0, dx: 0, dy: 0, dz: 0, rotation: 0, state: 0 };
+  return { entityId: 0, dx: 0, dy: 0, dz: 0, rotation: 0, state: 0, moveDirX: 0, moveDirZ: 0 };
 }
 
 export const EntityUpdate: MessageFns<EntityUpdate> = {
@@ -3306,6 +3324,12 @@ export const EntityUpdate: MessageFns<EntityUpdate> = {
     }
     if (message.state !== 0) {
       writer.uint32(48).uint32(message.state);
+    }
+    if (message.moveDirX !== 0) {
+      writer.uint32(61).float(message.moveDirX);
+    }
+    if (message.moveDirZ !== 0) {
+      writer.uint32(69).float(message.moveDirZ);
     }
     return writer;
   },
@@ -3371,6 +3395,22 @@ export const EntityUpdate: MessageFns<EntityUpdate> = {
             message.state = reader.uint32();
             continue;
           }
+          case 7: {
+            if (tag !== 61) {
+              break;
+            }
+
+            message.moveDirX = reader.float();
+            continue;
+          }
+          case 8: {
+            if (tag !== 69) {
+              break;
+            }
+
+            message.moveDirZ = reader.float();
+            continue;
+          }
         }
         if ((tag & 7) === 4 || tag === 0) {
           break;
@@ -3395,6 +3435,16 @@ export const EntityUpdate: MessageFns<EntityUpdate> = {
       dz: isSet(object.dz) ? globalThis.Number(object.dz) : 0,
       rotation: isSet(object.rotation) ? globalThis.Number(object.rotation) : 0,
       state: isSet(object.state) ? globalThis.Number(object.state) : 0,
+      moveDirX: isSet(object.moveDirX)
+        ? globalThis.Number(object.moveDirX)
+        : isSet(object.move_dir_x)
+        ? globalThis.Number(object.move_dir_x)
+        : 0,
+      moveDirZ: isSet(object.moveDirZ)
+        ? globalThis.Number(object.moveDirZ)
+        : isSet(object.move_dir_z)
+        ? globalThis.Number(object.move_dir_z)
+        : 0,
     };
   },
 
@@ -3418,6 +3468,12 @@ export const EntityUpdate: MessageFns<EntityUpdate> = {
     if (message.state !== 0) {
       obj.state = Math.round(message.state);
     }
+    if (message.moveDirX !== 0) {
+      obj.moveDirX = message.moveDirX;
+    }
+    if (message.moveDirZ !== 0) {
+      obj.moveDirZ = message.moveDirZ;
+    }
     return obj;
   },
 
@@ -3432,6 +3488,8 @@ export const EntityUpdate: MessageFns<EntityUpdate> = {
     message.dz = object.dz ?? 0;
     message.rotation = object.rotation ?? 0;
     message.state = object.state ?? 0;
+    message.moveDirX = object.moveDirX ?? 0;
+    message.moveDirZ = object.moveDirZ ?? 0;
     return message;
   },
 };

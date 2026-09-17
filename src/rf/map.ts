@@ -1,6 +1,6 @@
 import { Box3, BufferAttribute, BufferGeometry, Color, DoubleSide, Group, Mesh, MeshBasicMaterial, MeshStandardMaterial, SphereGeometry, Vector3 } from 'three';
 import { acceleratedRaycast, computeBoundsTree, disposeBoundsTree } from 'three-mesh-bvh';
-import type { Texture } from 'three';
+import type { Object3D, Texture } from 'three';
 import { materialAlphaOptions } from './character';
 import { fetchChefAssetCaseInsensitive } from './glowEffect';
 import { parseBsp } from './bsp';
@@ -49,6 +49,25 @@ function ensureMeshBVHInstalled(): void {
   BufferGeometry.prototype.disposeBoundsTree = disposeBoundsTree;
   Mesh.prototype.raycast = acceleratedRaycast;
   meshBVHInstalled = true;
+}
+
+/**
+ * three.js's equivalent of Babylon's `mesh.freezeWorldMatrix()` - nothing
+ * under a loaded map ever moves/rotates/rescales again after this function
+ * builds it, so there's no reason for the renderer's per-frame scene
+ * traversal to keep recomposing and re-multiplying every mesh's matrix. Bake
+ * `matrixWorld` once (while auto-update is still on) then flip both
+ * auto-update flags off for the whole subtree so later `updateMatrixWorld`
+ * calls skip it entirely. Must run in this order - flipping the flags first
+ * would freeze each object at its stale (usually identity) matrixWorld
+ * instead of the correct baked one.
+ */
+function freezeStaticObject3D(root: Object3D): void {
+  root.updateMatrixWorld(true);
+  root.traverse((obj) => {
+    obj.matrixAutoUpdate = false;
+    obj.matrixWorldAutoUpdate = false;
+  });
 }
 
 export interface LoadedMap {
@@ -340,7 +359,14 @@ async function loadMapUncached(mapName?: string): Promise<LoadedMap> {
     groundGeometry.computeBoundsTree();
     groundObject3D = new Mesh(groundGeometry, new MeshBasicMaterial({ side: DoubleSide }));
     groundObject3D.name = `MapGround_${resolvedName}`;
+    freezeStaticObject3D(groundObject3D);
   }
+
+  const debugOverlay = buildDebugOverlay(portals, monsterSpawns, soundEntities);
+  const collisionOverlay = buildCollisionOverlay(collisionWalls);
+  freezeStaticObject3D(object3D);
+  freezeStaticObject3D(debugOverlay);
+  freezeStaticObject3D(collisionOverlay);
 
   return {
     name: resolvedName,
@@ -351,8 +377,8 @@ async function loadMapUncached(mapName?: string): Promise<LoadedMap> {
     portals,
     monsterSpawns,
     soundEntities,
-    debugOverlay: buildDebugOverlay(portals, monsterSpawns, soundEntities),
-    collisionOverlay: buildCollisionOverlay(collisionWalls),
+    debugOverlay,
+    collisionOverlay,
     collisionWalls,
   };
 }

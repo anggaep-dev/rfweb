@@ -1,6 +1,6 @@
 import { Vector3 } from 'three';
 import { describe, expect, it } from 'vitest';
-import { facingToRotation, quantizeDirectionVector, quantizeToCompass, rotationToYaw } from '../net/compassRotation';
+import { continuousRotationFromVector, rotationToYaw } from '../net/compassRotation';
 import { classifyLocomotionDirection, classifyMovementAgainstFacing } from '../rf/character';
 import type { LocomotionDirection } from '../rf/character';
 
@@ -17,16 +17,21 @@ const LOCAL_FORWARD = new Vector3(0, 0, -1);
  * timing) once isolated like this, so any real classification disagreement
  * should be reproducible here in milliseconds instead of by eyeballing two
  * game clients.
+ *
+ * Updated when movement/facing stopped snapping to a fixed 8-way compass
+ * grid (see OnlineScene.ts's own doc comment) - the sender pipeline below
+ * now sends the exact continuous camera-relative vector/angle, matching
+ * what OnlineScene.update() actually does.
  */
 
-/** Mirrors OnlineScene's per-frame sender pipeline: resolve move from camera, classify raw local input like ViewerScene, then snap local prediction and wire movement to the same 8-way compass vector. */
+/** Mirrors OnlineScene's per-frame sender pipeline: resolve move from camera, classify raw local input like ViewerScene, then send the exact continuous vector/facing - no compass snapping on either end any more. */
 function senderFrame(
   cameraForward: Vector3,
   input: { x: number; y: number },
 ): {
   localLocomotionDirection: LocomotionDirection | null;
-  predictedMoveDirection: Vector3;
-  predictedFaceDirection: Vector3;
+  moveDirection: Vector3;
+  faceDirection: Vector3;
   sentDx: number;
   sentDz: number;
   sentFacingRotation: number;
@@ -36,14 +41,14 @@ function senderFrame(
   if (moveDirection.lengthSq() > 1e-8) moveDirection.normalize();
 
   const localLocomotionDirection = classifyLocomotionDirection(input.x, input.y);
-  const facing = localLocomotionDirection ? cameraForward : moveDirection;
-  const predictedMoveDirection = new Vector3();
-  const predictedFaceDirection = new Vector3();
-  quantizeDirectionVector(moveDirection, predictedMoveDirection);
-  quantizeDirectionVector(facing, predictedFaceDirection);
-  const [sentDx, sentDz] = quantizeToCompass(moveDirection.x, -moveDirection.z);
-  const sentFacingRotation = facingToRotation(facing);
-  return { localLocomotionDirection, predictedMoveDirection, predictedFaceDirection, sentDx, sentDz, sentFacingRotation };
+  const faceDirection = (localLocomotionDirection ? cameraForward : moveDirection).clone();
+  // moveDirection is render-space (camera-relative); the server's dir_z
+  // increments a native Z - see nativeToScene's own doc comment on why
+  // that's the negation of scene Z, same convention OnlineScene itself uses.
+  const sentDx = moveDirection.x;
+  const sentDz = -moveDirection.z;
+  const sentFacingRotation = continuousRotationFromVector(faceDirection);
+  return { localLocomotionDirection, moveDirection, faceDirection, sentDx, sentDz, sentFacingRotation };
 }
 
 /** Mirrors RemoteEntityController.tick()'s classification (against targetYaw, not the smoothed render `yaw` - see its own doc comment) from wire values alone. */
@@ -89,32 +94,38 @@ describe('local prediction vs remote reconstruction agree on locomotion clip', (
   }
 });
 
-describe('local prediction uses the same compass vector as the wire movement', () => {
+describe('local prediction sends the exact same vector it renders with', () => {
   const cameraAzimuths = Array.from({ length: 72 }, (_, i) => (i * Math.PI) / 36); // every 5deg, full circle
 
   for (const azimuth of cameraAzimuths) {
     it(`camera@${Math.round((azimuth * 180) / Math.PI)}deg forward input`, () => {
       const cameraForward = new Vector3(0, 0, -1).applyAxisAngle(UP, azimuth);
       const result = senderFrame(cameraForward, { x: 0, y: 1 });
-      const len = Math.hypot(result.sentDx, result.sentDz);
 
-      expect(result.predictedMoveDirection.x).toBeCloseTo(result.sentDx / len, 6);
-      expect(result.predictedMoveDirection.z).toBeCloseTo(-result.sentDz / len, 6);
+      // No quantization step any more - the sent dx/dz are exactly
+      // moveDirection's own components (Z negated for the native/scene
+      // convention), not a lossy compass-snapped approximation of them.
+      expect(result.sentDx).toBe(result.moveDirection.x);
+      expect(result.sentDz).toBe(-result.moveDirection.z);
     });
   }
 });
 
-describe('local facing is also compass-snapped', () => {
+describe('local facing round-trips through the wire encoding', () => {
   const cameraAzimuths = Array.from({ length: 72 }, (_, i) => (i * Math.PI) / 36); // every 5deg, full circle
 
   for (const azimuth of cameraAzimuths) {
-    it(`camera@${Math.round((azimuth * 180) / Math.PI)}deg forward input faces the sent compass direction`, () => {
+    it(`camera@${Math.round((azimuth * 180) / Math.PI)}deg forward input faces the sent angle`, () => {
       const cameraForward = new Vector3(0, 0, -1).applyAxisAngle(UP, azimuth);
       const result = senderFrame(cameraForward, { x: 0, y: 1 });
-      const facing = LOCAL_FORWARD.clone().applyAxisAngle(UP, rotationToYaw(result.sentFacingRotation));
+      const decodedFacing = LOCAL_FORWARD.clone().applyAxisAngle(UP, rotationToYaw(result.sentFacingRotation));
 
-      expect(result.predictedFaceDirection.x).toBeCloseTo(facing.x, 6);
-      expect(result.predictedFaceDirection.z).toBeCloseTo(facing.z, 6);
+      // Unlike sentDx/sentDz above, facing DOES go through a real (lossy)
+      // encode/decode round trip - 256 discrete steps over 360deg, ~1.4deg
+      // resolution - so this allows for that quantization, same tolerance
+      // as compassRotation.test.ts's own round-trip test.
+      expect(decodedFacing.x).toBeCloseTo(result.faceDirection.x, 1);
+      expect(decodedFacing.z).toBeCloseTo(result.faceDirection.z, 1);
     });
   }
 });
