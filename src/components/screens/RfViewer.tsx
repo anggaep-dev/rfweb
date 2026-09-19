@@ -6,6 +6,8 @@ import EffectEditPanel from '../debug/EffectEditPanel';
 import EquipPanel from '../debug/EquipPanel';
 import FullscreenButton from '../hud/FullscreenButton';
 import MobileControls from '../hud/MobileControls';
+import MonsterPanel from '../debug/MonsterPanel';
+import type { SearchableSelectOption } from '../debug/SearchableSelect';
 import StatsPanel from '../debug/StatsPanel';
 import WeaponEditPanel from '../debug/WeaponEditPanel';
 import type { CamMode } from '../../controllers/CameraController';
@@ -15,6 +17,8 @@ import { RaceGender } from '../../rf/character';
 import type { GradeLiveValues } from '../../rf/gradeEffect';
 import { ALL_EQUIP_SLOTS, SLOT_LABELS, loadUsableSlotItems } from '../../rf/items';
 import type { ModelType, ItemDefinition } from '../../rf/items';
+import { loadMonsterManifest } from '../../rf/monster';
+import type { MonsterMode } from '../../controllers/MonsterController';
 import type { ParticleEffect, ParticleLiveValues } from '../../rf/particleSystem';
 import type { SceneManager } from '../../scenes/SceneManager';
 import type { ViewerDebugStats, WeaponEditState } from '../../scenes/ViewerScene';
@@ -90,6 +94,22 @@ export default function RfViewer({ sceneManager, initialRaceGender, onExit }: Rf
   const [showStats, setShowStats] = useState(false);
   const [showEquip, setShowEquip] = useState(false);
   const [showBasePart, setShowBasePart] = useState(false);
+
+  // %mon 1/0 - the "%moncall" monster-spawn/animation-preview tool (see
+  // MonsterBotController). monsterNames loads once (a static manifest, not
+  // tied to raceGender/status the way slotItems is); spawnedMonsterCount and
+  // monsterClipNames mirror the live controller's own state, refreshed after
+  // every spawn/clear - including ones typed directly as "%moncall"/
+  // "%clearmonsters" into the GM console rather than through this panel's
+  // own buttons (see handleCommandSubmit's fallthrough branch), so the two
+  // ways of driving it never fall out of sync.
+  const [showMonster, setShowMonster] = useState(false);
+  const [monsterNames, setMonsterNames] = useState<SearchableSelectOption[] | undefined>(undefined);
+  const [selectedMonster, setSelectedMonster] = useState('');
+  const [monsterMode, setMonsterMode] = useState<MonsterMode>('peace');
+  const [monsterSpawnCount, setMonsterSpawnCount] = useState(1);
+  const [spawnedMonsterCount, setSpawnedMonsterCount] = useState(0);
+  const [monsterClipNames, setMonsterClipNames] = useState<string[]>([]);
 
   // %wpedit 1/0 - a Blender-style move/rotate gizmo on the equipped weapon,
   // for hand-tuning its placement against what CharacterController computed
@@ -223,6 +243,21 @@ export default function RfViewer({ sceneManager, initialRaceGender, onExit }: Rf
   useEffect(() => {
     viewerSceneRef.current?.setWeaponEditEnabled(showWeaponEdit);
   }, [showWeaponEdit]);
+
+  // Static manifest of converted monster stems - fetched once, independent
+  // of raceGender/status (unlike slotItems, this has nothing to do with the
+  // currently-loaded character).
+  useEffect(() => {
+    let cancelled = false;
+    loadMonsterManifest()
+      .then((names) => {
+        if (!cancelled) setMonsterNames(names.map((name) => ({ id: name, name })));
+      })
+      .catch((err: unknown) => console.warn('Failed to load monster manifest:', err));
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     raceGenderRef.current = raceGender;
@@ -395,6 +430,34 @@ export default function RfViewer({ sceneManager, initialRaceGender, onExit }: Rf
       });
   }, []);
 
+  /** Re-reads the live counts/clip-names off the controller after any spawn/clear, regardless of whether it happened via this panel's own buttons or a raw "%moncall"/"%clearmonsters" console command - see showMonster's own doc comment. */
+  const syncMonsterState = useCallback(() => {
+    setSpawnedMonsterCount(viewerSceneRef.current?.monsterBotController.count ?? 0);
+    setMonsterClipNames(viewerSceneRef.current?.monsterBotController.getLastSpawnedClipNames() ?? []);
+  }, []);
+
+  const handleMonsterSpawn = useCallback(() => {
+    if (!selectedMonster) return;
+    viewerSceneRef.current?.monsterBotController
+      .spawnMonsters(selectedMonster, monsterSpawnCount, monsterMode)
+      .then((added) => {
+        syncMonsterState();
+        setCommandFeedback(added > 0 ? `Spawned ${added} "${selectedMonster}" (${monsterMode}).` : `Failed to spawn "${selectedMonster}" - see console.`);
+      });
+  }, [selectedMonster, monsterSpawnCount, monsterMode, syncMonsterState]);
+
+  const handleMonsterClear = useCallback(() => {
+    const removed = viewerSceneRef.current?.monsterBotController.clearMonsters() ?? 0;
+    syncMonsterState();
+    setCommandFeedback(`Removed ${removed} monster${removed === 1 ? '' : 's'}.`);
+  }, [syncMonsterState]);
+
+  const handleMonsterClipSelect = useCallback((clip: string) => {
+    viewerSceneRef.current?.monsterBotController.setClipForAll(clip);
+  }, []);
+
+  const handleMonsterClose = useCallback(() => setShowMonster(false), []);
+
   const handleCommandSubmit = () => {
     const trimmed = commandInput.trim();
     if (!trimmed) return;
@@ -427,6 +490,14 @@ export default function RfViewer({ sceneManager, initialRaceGender, onExit }: Rf
       // command for "the whole appearance toolset", not two separate ones.
       setShowBasePart(show);
       setCommandFeedback(`Equip panel ${show ? 'shown' : 'hidden'}.`);
+      return;
+    }
+
+    const monMatch = /^%mon\s+([01])$/.exec(trimmed);
+    if (monMatch) {
+      const show = monMatch[1] === '1';
+      setShowMonster(show);
+      setCommandFeedback(`Monster panel ${show ? 'shown' : 'hidden'}.`);
       return;
     }
 
@@ -514,7 +585,14 @@ export default function RfViewer({ sceneManager, initialRaceGender, onExit }: Rf
 
     viewerSceneRef.current
       ?.runCommand(trimmed)
-      .then((result) => setCommandFeedback(result))
+      .then((result) => {
+        setCommandFeedback(result);
+        // "%moncall"/"%clearmonsters" typed directly (rather than via the
+        // Monster panel's own buttons) still need this panel's mirrored
+        // state refreshed - cheap enough to just always resync rather than
+        // pattern-match which commands might have touched it.
+        syncMonsterState();
+      })
       .catch((err: unknown) => setCommandFeedback(`Error: ${err instanceof Error ? err.message : String(err)}`));
   };
 
@@ -596,6 +674,24 @@ export default function RfViewer({ sceneManager, initialRaceGender, onExit }: Rf
           slotItems={slotItems}
           onEquipChange={handleEquipChange}
           onClose={handleEquipClose}
+        />
+      )}
+
+      {status === 'ready' && showMonster && (
+        <MonsterPanel
+          monsterNames={monsterNames}
+          selectedMonster={selectedMonster}
+          onSelectedMonsterChange={setSelectedMonster}
+          spawnCount={monsterSpawnCount}
+          onSpawnCountChange={setMonsterSpawnCount}
+          mode={monsterMode}
+          onModeChange={setMonsterMode}
+          onSpawn={handleMonsterSpawn}
+          onClear={handleMonsterClear}
+          spawnedCount={spawnedMonsterCount}
+          clipNames={monsterClipNames}
+          onClipSelect={handleMonsterClipSelect}
+          onClose={handleMonsterClose}
         />
       )}
 

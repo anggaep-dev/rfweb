@@ -224,6 +224,24 @@ export class RemoteEntityController {
     this.applyVisibleEquipment(remote, visibleEquipment);
   }
 
+  /**
+   * Plays one entity's attack swing (see AttackAttemptEvent - fires on every
+   * validated swing, hit or miss, so bystanders see the same swing the
+   * attacker's own client already played instantly on click). Reuses
+   * CharacterController.playAttack() as-is: it auto-switches that entity's
+   * own BattleMode to 'war' first (same "pressing attack switches you to
+   * combat stance" behavior the local player already gets), so a remote
+   * entity's idle/walk/run clips flip to their combat variants from this
+   * point on too, not just the swing itself. No-op if the entity isn't
+   * tracked yet (e.g. the attempt arrived before this entity's own spawn()
+   * resolved) or its model hasn't mounted.
+   */
+  playAttack(entityId: number): void {
+    const remote = this.entities.get(entityId);
+    if (!remote) return;
+    void remote.controller.playAttack();
+  }
+
   /** Diffs+applies a VisibleEquipment onto one entity's controller, updating `equipped` to match - shared by applyAppearanceUpdate (a live gear change) and spawn/snap (the entity's own current/initial equipment, once appearanceReady - see latestVisibleEquipment's own doc comment). */
   private applyVisibleEquipment(remote: RemoteEntity, visibleEquipment: VisibleEquipment | undefined): void {
     const next = visibleEquipmentToEquipped(visibleEquipment);

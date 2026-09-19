@@ -19,6 +19,7 @@ import { buildAnimationClip, parseAnimation } from './animation';
 import type { BindPose, RfAnimation } from './animation';
 import { parseMesh } from './mesh';
 import type { RfMeshObject } from './mesh';
+import { resolveAttackAnimationFileNames } from './resource';
 import { buildThreeSkeleton, parseSkeleton } from './skeleton';
 import type { BuiltSkeleton, RfSkeleton } from './skeleton';
 import { decodeRftTexture } from './texture';
@@ -1766,6 +1767,73 @@ export async function getWeaponClip(
     return clip;
   } catch (err) {
     console.warn(`Skipping weapon animation "${fileName}":`, err);
+    return null;
+  }
+}
+
+/** One-shot melee/ranged attack swing (docs/rf-format-notes.md's `ATA` archive: `COMBAT_ATTACK_{weapon}_{TOP|MIDDLE|BOTTOM}`) - three swing variants per weapon token, picked randomly per attack by the caller (CharacterController.playAttack) rather than always the same one. */
+export type AttackVariant = 'top' | 'middle' | 'bottom';
+export const ATTACK_VARIANTS: AttackVariant[] = ['top', 'middle', 'bottom'];
+
+/** Cache key (also the character.clips key) for one attack swing variant. */
+export function attackClipKey(weaponToken: string, variant: AttackVariant): string {
+  return `attack:${weaponToken}:${variant}`;
+}
+
+/**
+ * Lazily builds (and caches onto `character.clips`) one attack-swing variant
+ * for a weapon token - mirrors getWeaponClip's shape exactly, but against
+ * the `ATA` archive instead of `COA`/`MOA`, and with no directional
+ * counterpart (an attack swing doesn't change with movement direction).
+ * `weaponToken` follows the same "NONE" empty-handed convention getWeaponClip
+ * documents - an unarmed attack is real data too, not a missing-clip
+ * fallback. Returns null if this race/weapon/variant combination has no
+ * clip (not every weapon has all 3 variants) - callers should try another
+ * variant before giving up, not treat it as an error.
+ */
+export async function getAttackClip(
+  raceGender: RaceGender,
+  character: RfCharacter,
+  weaponToken: string,
+  variant: AttackVariant,
+): Promise<AnimationClip | null> {
+  const key = attackClipKey(weaponToken, variant);
+  const cached = character.clips[key];
+  if (cached) return cached;
+
+  const race = RACE_CONFIGS[raceGender];
+  // The trailing "_NN_NN" isn't a predictable "_01_00" - real data has e.g.
+  // both "..._MIDDLE_02_00.ANI" and "..._MIDDLE_02_01.ANI" for the very same
+  // race/weapon (see resolveAttackAnimationFileNames's own doc comment), so
+  // this looks up the real filename(s) instead of constructing a guess -
+  // picking randomly among them when there's more than one, for the same
+  // "not always the identical swing" variety ATTACK_VARIANTS itself gives.
+  const fileNames = await resolveAttackAnimationFileNames(race.nameToken, weaponToken, variant.toUpperCase() as 'TOP' | 'MIDDLE' | 'BOTTOM');
+  if (fileNames.length === 0) {
+    console.warn(
+      `[attack] resolveAttackAnimationFileNames found no real entry for prefix "${race.nameToken}_COMBAT_ATTACK_${weaponToken}_${variant.toUpperCase()}" - this race/weapon/variant combination has no attack swing in playerResource.json's Ani table at all (not every weapon has all 3 variants).`,
+    );
+    return null;
+  }
+  const fileName = fileNames[Math.floor(Math.random() * fileNames.length)];
+
+  const folder = `${ANI_CDN_BASE}/${race.aniCode}ATA`;
+  const url = `${folder}/${aniCdnFileName(fileName)}`;
+  let buffer: ArrayBuffer;
+  try {
+    buffer = await fetchBuffer(url);
+  } catch (err) {
+    console.warn(`[attack] found "${fileName}" in playerResource.json but fetching it failed - ${url}:`, err);
+    return null;
+  }
+
+  try {
+    const bindPoseByBone = await getBindPoseByBoneAsync(raceGender);
+    const clip = buildAnimationClip(key, parseAnimation(buffer), bindPoseByBone);
+    character.clips[key] = clip;
+    return clip;
+  } catch (err) {
+    console.warn(`Skipping attack animation "${fileName}":`, err);
     return null;
   }
 }

@@ -155,6 +155,13 @@ message InventoryRequest {
     }
 }
 
+// Bare-bones, skeleton-less melee attack placeholder - the server checks
+// range and its own AttSpd-derived cooldown and applies flat damage, not a
+// real skills/animus combat system. See docs/monster.md.
+message AttackRequest {
+    uint32 target_entity_id = 1;
+}
+
 message ClientPacket {
     oneof payload {
         MovementInput     movement  = 1;
@@ -162,10 +169,35 @@ message ClientPacket {
         WhisperRequest    whisper   = 3;
         PingRequest       ping      = 4;
         InventoryRequest  inventory = 5;
+        AttackRequest     attack    = 6;
     }
 }
 
 // ─── Server → Client ─────────────────────────────────────────────────────────
+
+// Distinguishes a player-controlled entity from a server-driven monster -
+// the client needs this to know which controller owns an EntitySnapshot
+// (the usual character rig vs MonsterController's glb-driven skeleton, see
+// docs/monster.md) and whether to read visible_equipment or monster.
+enum EntityKind {
+    ENTITY_KIND_PLAYER = 0;
+    ENTITY_KIND_MONSTER = 1;
+}
+
+// Resolved template/runtime state for a MONSTER-kind entity. model_stem is
+// already resolved server-side (see docs/monster.md's Code>>8 relationship)
+// - the client just loadMonster()s it directly, same name the map's own
+// monsterSpawns[].monsters[].model field already carries for preload.
+message MonsterInfo {
+    string code = 1;
+    string name = 2;
+    string model_stem = 3;
+    uint32 hp = 4;
+    uint32 max_hp = 5;
+    // 0 = peace, 1 = war - same split MonsterController's clip selection uses.
+    uint32 mode = 6;
+    float scale_rate = 7;
+}
 
 message EntitySnapshot {
     uint32 entity_id = 1;
@@ -173,6 +205,8 @@ message EntitySnapshot {
     sint32 y = 3;
     sint32 z = 4;
     uint32 rotation = 5;
+    // 0 = idle, 1 = moving, 2 = running, 3 = dead - players never use 3
+    // today, but a MONSTER-kind entity's death reuses this shared field.
     uint32 state = 6;
     // Race (matches the client's RaceGender enum: 0=Bell_Male, 1=Bell_Female,
     // 2=Cora_Male, 3=Cora_Female, 4=Accretia) and character_id (the same id
@@ -188,6 +222,8 @@ message EntitySnapshot {
     // render another player's actual gear from this snapshot alone, without
     // needing to wait on a separate appearance fetch to resolve first.
     VisibleEquipment visible_equipment = 9;
+    EntityKind kind = 10;
+    MonsterInfo monster = 11;
 }
 
 message EquipmentVisual {
@@ -232,6 +268,14 @@ message EntityUpdate {
     // comment for the visible symptom this fixes.
     float move_dir_x = 7;
     float move_dir_z = 8;
+    // Present only when a MONSTER-kind entity's HP actually changed this
+    // tick (damage or regen).
+    optional uint32 hp = 9;
+    // Present only when a MONSTER-kind entity's PEACE/WAR mode actually
+    // changed this tick - the only place a mode change reaches an already-
+    // tracked client, since a monster that gets aggroed mid-session never
+    // leaves AOI to get a fresh EntityEnter re-delivering it.
+    optional uint32 mode = 10;
 }
 
 message EntityExit {
@@ -246,12 +290,35 @@ message EntityAppearanceUpdate {
     VisibleEquipment visible_equipment = 2;
 }
 
+// Minimal damage-feedback signal for AttackRequest - enough for a client-
+// side damage number/flash, not a full combat log.
+message CombatHitEvent {
+    uint32 attacker_id = 1;
+    uint32 target_id = 2;
+    int32  damage = 3;
+    uint32 target_hp_after = 4;
+    bool   killed = 5;
+}
+
+// Fires for every validated attack swing - hit OR miss - so nearby viewers
+// can play the attacker's own swing animation regardless of outcome,
+// matching what the attacker already sees locally the instant they click
+// Attack (see OnlineScene.attackSelectedTarget). CombatHitEvent stays
+// hit-only (it's damage feedback, not swing feedback) - a miss still emits
+// this event, just no CombatHitEvent alongside it.
+message AttackAttemptEvent {
+    uint32 attacker_id = 1;
+    uint32 target_id = 2;
+}
+
 message WorldDelta {
     uint32 server_tick = 1;
     repeated EntityEnter  enters  = 2;
     repeated EntityUpdate updates = 3;
     repeated EntityExit   exits   = 4;
     repeated EntityAppearanceUpdate appearance_updates = 5;
+    repeated CombatHitEvent combat_hits = 6;
+    repeated AttackAttemptEvent attack_attempts = 7;
 }
 
 message ChatEvent {

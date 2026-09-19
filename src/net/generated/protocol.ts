@@ -118,6 +118,45 @@ export function chatTypeToJSON(object: ChatType): string {
   }
 }
 
+/**
+ * Distinguishes a player-controlled entity from a server-driven monster -
+ * the client needs this to know which controller owns an EntitySnapshot
+ * (the usual character rig vs MonsterController's glb-driven skeleton, see
+ * docs/monster.md) and whether to read visible_equipment or monster.
+ */
+export enum EntityKind {
+  ENTITY_KIND_PLAYER = 0,
+  ENTITY_KIND_MONSTER = 1,
+  UNRECOGNIZED = -1,
+}
+
+export function entityKindFromJSON(object: any): EntityKind {
+  switch (object) {
+    case 0:
+    case "ENTITY_KIND_PLAYER":
+      return EntityKind.ENTITY_KIND_PLAYER;
+    case 1:
+    case "ENTITY_KIND_MONSTER":
+      return EntityKind.ENTITY_KIND_MONSTER;
+    case -1:
+    case "UNRECOGNIZED":
+    default:
+      return EntityKind.UNRECOGNIZED;
+  }
+}
+
+export function entityKindToJSON(object: EntityKind): string {
+  switch (object) {
+    case EntityKind.ENTITY_KIND_PLAYER:
+      return "ENTITY_KIND_PLAYER";
+    case EntityKind.ENTITY_KIND_MONSTER:
+      return "ENTITY_KIND_MONSTER";
+    case EntityKind.UNRECOGNIZED:
+    default:
+      return "UNRECOGNIZED";
+  }
+}
+
 export enum InventoryActionType {
   INVENTORY_ACTION_UNSPECIFIED = 0,
   INVENTORY_ACTION_INSERT = 1,
@@ -306,6 +345,15 @@ export interface InventoryRequest {
     | undefined;
 }
 
+/**
+ * Bare-bones, skeleton-less melee attack placeholder - the server checks
+ * range and its own AttSpd-derived cooldown and applies flat damage, not a
+ * real skills/animus combat system. See docs/monster.md.
+ */
+export interface AttackRequest {
+  targetEntityId: number;
+}
+
 export interface ClientPacket {
   payload?:
     | { $case: "movement"; movement: MovementInput }
@@ -313,7 +361,25 @@ export interface ClientPacket {
     | { $case: "whisper"; whisper: WhisperRequest }
     | { $case: "ping"; ping: PingRequest }
     | { $case: "inventory"; inventory: InventoryRequest }
+    | { $case: "attack"; attack: AttackRequest }
     | undefined;
+}
+
+/**
+ * Resolved template/runtime state for a MONSTER-kind entity. model_stem is
+ * already resolved server-side (see docs/monster.md's Code>>8 relationship)
+ * - the client just loadMonster()s it directly, same name the map's own
+ * monsterSpawns[].monsters[].model field already carries for preload.
+ */
+export interface MonsterInfo {
+  code: string;
+  name: string;
+  modelStem: string;
+  hp: number;
+  maxHp: number;
+  /** 0 = peace, 1 = war - same split MonsterController's clip selection uses. */
+  mode: number;
+  scaleRate: number;
 }
 
 export interface EntitySnapshot {
@@ -322,6 +388,10 @@ export interface EntitySnapshot {
   y: number;
   z: number;
   rotation: number;
+  /**
+   * 0 = idle, 1 = moving, 2 = running, 3 = dead - players never use 3
+   * today, but a MONSTER-kind entity's death reuses this shared field.
+   */
   state: number;
   /**
    * Race (matches the client's RaceGender enum: 0=Bell_Male, 1=Bell_Female,
@@ -341,6 +411,8 @@ export interface EntitySnapshot {
    * needing to wait on a separate appearance fetch to resolve first.
    */
   visibleEquipment?: VisibleEquipment | undefined;
+  kind: EntityKind;
+  monster?: MonsterInfo | undefined;
 }
 
 export interface EquipmentVisual {
@@ -387,6 +459,20 @@ export interface EntityUpdate {
    */
   moveDirX: number;
   moveDirZ: number;
+  /**
+   * Present only when a MONSTER-kind entity's HP actually changed this
+   * tick (damage or regen).
+   */
+  hp?:
+    | number
+    | undefined;
+  /**
+   * Present only when a MONSTER-kind entity's PEACE/WAR mode actually
+   * changed this tick - the only place a mode change reaches an already-
+   * tracked client, since a monster that gets aggroed mid-session never
+   * leaves AOI to get a fresh EntityEnter re-delivering it.
+   */
+  mode?: number | undefined;
 }
 
 export interface EntityExit {
@@ -403,12 +489,39 @@ export interface EntityAppearanceUpdate {
   visibleEquipment?: VisibleEquipment | undefined;
 }
 
+/**
+ * Minimal damage-feedback signal for AttackRequest - enough for a client-
+ * side damage number/flash, not a full combat log.
+ */
+export interface CombatHitEvent {
+  attackerId: number;
+  targetId: number;
+  damage: number;
+  targetHpAfter: number;
+  killed: boolean;
+}
+
+/**
+ * Fires for every validated attack swing - hit OR miss - so nearby viewers
+ * can play the attacker's own swing animation regardless of outcome,
+ * matching what the attacker already sees locally the instant they click
+ * Attack (see OnlineScene.attackSelectedTarget). CombatHitEvent stays
+ * hit-only (it's damage feedback, not swing feedback) - a miss still emits
+ * this event, just no CombatHitEvent alongside it.
+ */
+export interface AttackAttemptEvent {
+  attackerId: number;
+  targetId: number;
+}
+
 export interface WorldDelta {
   serverTick: number;
   enters: EntityEnter[];
   updates: EntityUpdate[];
   exits: EntityExit[];
   appearanceUpdates: EntityAppearanceUpdate[];
+  combatHits: CombatHitEvent[];
+  attackAttempts: AttackAttemptEvent[];
 }
 
 export interface ChatEvent {
@@ -2437,6 +2550,79 @@ export const InventoryRequest: MessageFns<InventoryRequest> = {
   },
 };
 
+function createBaseAttackRequest(): AttackRequest {
+  return { targetEntityId: 0 };
+}
+
+export const AttackRequest: MessageFns<AttackRequest> = {
+  encode(message: AttackRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.targetEntityId !== 0) {
+      writer.uint32(8).uint32(message.targetEntityId);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): AttackRequest {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const previousRecursionDepth = (reader as any).__tsProtoDecodeDepth ?? 0;
+    if (previousRecursionDepth >= 100) {
+      throw new globalThis.Error("protobuf decode recursion limit exceeded");
+    }
+    (reader as any).__tsProtoDecodeDepth = previousRecursionDepth + 1;
+    try {
+      const end = length === undefined ? reader.len : reader.pos + length;
+      const message = createBaseAttackRequest();
+      while (reader.pos < end) {
+        const tag = reader.uint32();
+        switch (tag >>> 3) {
+          case 1: {
+            if (tag !== 8) {
+              break;
+            }
+
+            message.targetEntityId = reader.uint32();
+            continue;
+          }
+        }
+        if ((tag & 7) === 4 || tag === 0) {
+          break;
+        }
+        reader.skip(tag & 7);
+      }
+      return message;
+    } finally {
+      (reader as any).__tsProtoDecodeDepth = previousRecursionDepth;
+    }
+  },
+
+  fromJSON(object: any): AttackRequest {
+    return {
+      targetEntityId: isSet(object.targetEntityId)
+        ? globalThis.Number(object.targetEntityId)
+        : isSet(object.target_entity_id)
+        ? globalThis.Number(object.target_entity_id)
+        : 0,
+    };
+  },
+
+  toJSON(message: AttackRequest): unknown {
+    const obj: any = {};
+    if (message.targetEntityId !== 0) {
+      obj.targetEntityId = Math.round(message.targetEntityId);
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<AttackRequest>, I>>(base?: I): AttackRequest {
+    return AttackRequest.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<AttackRequest>, I>>(object: I): AttackRequest {
+    const message = createBaseAttackRequest();
+    message.targetEntityId = object.targetEntityId ?? 0;
+    return message;
+  },
+};
+
 function createBaseClientPacket(): ClientPacket {
   return { payload: undefined };
 }
@@ -2458,6 +2644,9 @@ export const ClientPacket: MessageFns<ClientPacket> = {
         break;
       case "inventory":
         InventoryRequest.encode(message.payload.inventory, writer.uint32(42).fork()).join();
+        break;
+      case "attack":
+        AttackRequest.encode(message.payload.attack, writer.uint32(50).fork()).join();
         break;
     }
     return writer;
@@ -2516,6 +2705,14 @@ export const ClientPacket: MessageFns<ClientPacket> = {
             message.payload = { $case: "inventory", inventory: InventoryRequest.decode(reader, reader.uint32()) };
             continue;
           }
+          case 6: {
+            if (tag !== 50) {
+              break;
+            }
+
+            message.payload = { $case: "attack", attack: AttackRequest.decode(reader, reader.uint32()) };
+            continue;
+          }
         }
         if ((tag & 7) === 4 || tag === 0) {
           break;
@@ -2542,6 +2739,8 @@ export const ClientPacket: MessageFns<ClientPacket> = {
         ? { $case: "ping", ping: PingRequest.fromJSON(object.ping) }
         : isSet(object.inventory)
         ? { $case: "inventory", inventory: InventoryRequest.fromJSON(object.inventory) }
+        : isSet(object.attack)
+        ? { $case: "attack", attack: AttackRequest.fromJSON(object.attack) }
         : undefined,
     };
   },
@@ -2558,6 +2757,8 @@ export const ClientPacket: MessageFns<ClientPacket> = {
       obj.ping = PingRequest.toJSON(message.payload.ping);
     } else if (message.payload?.$case === "inventory") {
       obj.inventory = InventoryRequest.toJSON(message.payload.inventory);
+    } else if (message.payload?.$case === "attack") {
+      obj.attack = AttackRequest.toJSON(message.payload.attack);
     }
     return obj;
   },
@@ -2598,7 +2799,190 @@ export const ClientPacket: MessageFns<ClientPacket> = {
         }
         break;
       }
+      case "attack": {
+        if (object.payload?.attack !== undefined && object.payload?.attack !== null) {
+          message.payload = { $case: "attack", attack: AttackRequest.fromPartial(object.payload.attack) };
+        }
+        break;
+      }
     }
+    return message;
+  },
+};
+
+function createBaseMonsterInfo(): MonsterInfo {
+  return { code: "", name: "", modelStem: "", hp: 0, maxHp: 0, mode: 0, scaleRate: 0 };
+}
+
+export const MonsterInfo: MessageFns<MonsterInfo> = {
+  encode(message: MonsterInfo, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.code !== "") {
+      writer.uint32(10).string(message.code);
+    }
+    if (message.name !== "") {
+      writer.uint32(18).string(message.name);
+    }
+    if (message.modelStem !== "") {
+      writer.uint32(26).string(message.modelStem);
+    }
+    if (message.hp !== 0) {
+      writer.uint32(32).uint32(message.hp);
+    }
+    if (message.maxHp !== 0) {
+      writer.uint32(40).uint32(message.maxHp);
+    }
+    if (message.mode !== 0) {
+      writer.uint32(48).uint32(message.mode);
+    }
+    if (message.scaleRate !== 0) {
+      writer.uint32(61).float(message.scaleRate);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): MonsterInfo {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const previousRecursionDepth = (reader as any).__tsProtoDecodeDepth ?? 0;
+    if (previousRecursionDepth >= 100) {
+      throw new globalThis.Error("protobuf decode recursion limit exceeded");
+    }
+    (reader as any).__tsProtoDecodeDepth = previousRecursionDepth + 1;
+    try {
+      const end = length === undefined ? reader.len : reader.pos + length;
+      const message = createBaseMonsterInfo();
+      while (reader.pos < end) {
+        const tag = reader.uint32();
+        switch (tag >>> 3) {
+          case 1: {
+            if (tag !== 10) {
+              break;
+            }
+
+            message.code = reader.string();
+            continue;
+          }
+          case 2: {
+            if (tag !== 18) {
+              break;
+            }
+
+            message.name = reader.string();
+            continue;
+          }
+          case 3: {
+            if (tag !== 26) {
+              break;
+            }
+
+            message.modelStem = reader.string();
+            continue;
+          }
+          case 4: {
+            if (tag !== 32) {
+              break;
+            }
+
+            message.hp = reader.uint32();
+            continue;
+          }
+          case 5: {
+            if (tag !== 40) {
+              break;
+            }
+
+            message.maxHp = reader.uint32();
+            continue;
+          }
+          case 6: {
+            if (tag !== 48) {
+              break;
+            }
+
+            message.mode = reader.uint32();
+            continue;
+          }
+          case 7: {
+            if (tag !== 61) {
+              break;
+            }
+
+            message.scaleRate = reader.float();
+            continue;
+          }
+        }
+        if ((tag & 7) === 4 || tag === 0) {
+          break;
+        }
+        reader.skip(tag & 7);
+      }
+      return message;
+    } finally {
+      (reader as any).__tsProtoDecodeDepth = previousRecursionDepth;
+    }
+  },
+
+  fromJSON(object: any): MonsterInfo {
+    return {
+      code: isSet(object.code) ? globalThis.String(object.code) : "",
+      name: isSet(object.name) ? globalThis.String(object.name) : "",
+      modelStem: isSet(object.modelStem)
+        ? globalThis.String(object.modelStem)
+        : isSet(object.model_stem)
+        ? globalThis.String(object.model_stem)
+        : "",
+      hp: isSet(object.hp) ? globalThis.Number(object.hp) : 0,
+      maxHp: isSet(object.maxHp)
+        ? globalThis.Number(object.maxHp)
+        : isSet(object.max_hp)
+        ? globalThis.Number(object.max_hp)
+        : 0,
+      mode: isSet(object.mode) ? globalThis.Number(object.mode) : 0,
+      scaleRate: isSet(object.scaleRate)
+        ? globalThis.Number(object.scaleRate)
+        : isSet(object.scale_rate)
+        ? globalThis.Number(object.scale_rate)
+        : 0,
+    };
+  },
+
+  toJSON(message: MonsterInfo): unknown {
+    const obj: any = {};
+    if (message.code !== "") {
+      obj.code = message.code;
+    }
+    if (message.name !== "") {
+      obj.name = message.name;
+    }
+    if (message.modelStem !== "") {
+      obj.modelStem = message.modelStem;
+    }
+    if (message.hp !== 0) {
+      obj.hp = Math.round(message.hp);
+    }
+    if (message.maxHp !== 0) {
+      obj.maxHp = Math.round(message.maxHp);
+    }
+    if (message.mode !== 0) {
+      obj.mode = Math.round(message.mode);
+    }
+    if (message.scaleRate !== 0) {
+      obj.scaleRate = message.scaleRate;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<MonsterInfo>, I>>(base?: I): MonsterInfo {
+    return MonsterInfo.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<MonsterInfo>, I>>(object: I): MonsterInfo {
+    const message = createBaseMonsterInfo();
+    message.code = object.code ?? "";
+    message.name = object.name ?? "";
+    message.modelStem = object.modelStem ?? "";
+    message.hp = object.hp ?? 0;
+    message.maxHp = object.maxHp ?? 0;
+    message.mode = object.mode ?? 0;
+    message.scaleRate = object.scaleRate ?? 0;
     return message;
   },
 };
@@ -2614,6 +2998,8 @@ function createBaseEntitySnapshot(): EntitySnapshot {
     race: 0,
     characterId: "",
     visibleEquipment: undefined,
+    kind: 0,
+    monster: undefined,
   };
 }
 
@@ -2645,6 +3031,12 @@ export const EntitySnapshot: MessageFns<EntitySnapshot> = {
     }
     if (message.visibleEquipment !== undefined) {
       VisibleEquipment.encode(message.visibleEquipment, writer.uint32(74).fork()).join();
+    }
+    if (message.kind !== 0) {
+      writer.uint32(80).int32(message.kind);
+    }
+    if (message.monster !== undefined) {
+      MonsterInfo.encode(message.monster, writer.uint32(90).fork()).join();
     }
     return writer;
   },
@@ -2734,6 +3126,22 @@ export const EntitySnapshot: MessageFns<EntitySnapshot> = {
             message.visibleEquipment = VisibleEquipment.decode(reader, reader.uint32());
             continue;
           }
+          case 10: {
+            if (tag !== 80) {
+              break;
+            }
+
+            message.kind = reader.int32() as any;
+            continue;
+          }
+          case 11: {
+            if (tag !== 90) {
+              break;
+            }
+
+            message.monster = MonsterInfo.decode(reader, reader.uint32());
+            continue;
+          }
         }
         if ((tag & 7) === 4 || tag === 0) {
           break;
@@ -2769,6 +3177,8 @@ export const EntitySnapshot: MessageFns<EntitySnapshot> = {
         : isSet(object.visible_equipment)
         ? VisibleEquipment.fromJSON(object.visible_equipment)
         : undefined,
+      kind: isSet(object.kind) ? entityKindFromJSON(object.kind) : 0,
+      monster: isSet(object.monster) ? MonsterInfo.fromJSON(object.monster) : undefined,
     };
   },
 
@@ -2801,6 +3211,12 @@ export const EntitySnapshot: MessageFns<EntitySnapshot> = {
     if (message.visibleEquipment !== undefined) {
       obj.visibleEquipment = VisibleEquipment.toJSON(message.visibleEquipment);
     }
+    if (message.kind !== 0) {
+      obj.kind = entityKindToJSON(message.kind);
+    }
+    if (message.monster !== undefined) {
+      obj.monster = MonsterInfo.toJSON(message.monster);
+    }
     return obj;
   },
 
@@ -2819,6 +3235,10 @@ export const EntitySnapshot: MessageFns<EntitySnapshot> = {
     message.characterId = object.characterId ?? "";
     message.visibleEquipment = (object.visibleEquipment !== undefined && object.visibleEquipment !== null)
       ? VisibleEquipment.fromPartial(object.visibleEquipment)
+      : undefined;
+    message.kind = object.kind ?? 0;
+    message.monster = (object.monster !== undefined && object.monster !== null)
+      ? MonsterInfo.fromPartial(object.monster)
       : undefined;
     return message;
   },
@@ -3302,7 +3722,18 @@ export const EntityEnter: MessageFns<EntityEnter> = {
 };
 
 function createBaseEntityUpdate(): EntityUpdate {
-  return { entityId: 0, dx: 0, dy: 0, dz: 0, rotation: 0, state: 0, moveDirX: 0, moveDirZ: 0 };
+  return {
+    entityId: 0,
+    dx: 0,
+    dy: 0,
+    dz: 0,
+    rotation: 0,
+    state: 0,
+    moveDirX: 0,
+    moveDirZ: 0,
+    hp: undefined,
+    mode: undefined,
+  };
 }
 
 export const EntityUpdate: MessageFns<EntityUpdate> = {
@@ -3330,6 +3761,12 @@ export const EntityUpdate: MessageFns<EntityUpdate> = {
     }
     if (message.moveDirZ !== 0) {
       writer.uint32(69).float(message.moveDirZ);
+    }
+    if (message.hp !== undefined) {
+      writer.uint32(72).uint32(message.hp);
+    }
+    if (message.mode !== undefined) {
+      writer.uint32(80).uint32(message.mode);
     }
     return writer;
   },
@@ -3411,6 +3848,22 @@ export const EntityUpdate: MessageFns<EntityUpdate> = {
             message.moveDirZ = reader.float();
             continue;
           }
+          case 9: {
+            if (tag !== 72) {
+              break;
+            }
+
+            message.hp = reader.uint32();
+            continue;
+          }
+          case 10: {
+            if (tag !== 80) {
+              break;
+            }
+
+            message.mode = reader.uint32();
+            continue;
+          }
         }
         if ((tag & 7) === 4 || tag === 0) {
           break;
@@ -3445,6 +3898,8 @@ export const EntityUpdate: MessageFns<EntityUpdate> = {
         : isSet(object.move_dir_z)
         ? globalThis.Number(object.move_dir_z)
         : 0,
+      hp: isSet(object.hp) ? globalThis.Number(object.hp) : undefined,
+      mode: isSet(object.mode) ? globalThis.Number(object.mode) : undefined,
     };
   },
 
@@ -3474,6 +3929,12 @@ export const EntityUpdate: MessageFns<EntityUpdate> = {
     if (message.moveDirZ !== 0) {
       obj.moveDirZ = message.moveDirZ;
     }
+    if (message.hp !== undefined) {
+      obj.hp = Math.round(message.hp);
+    }
+    if (message.mode !== undefined) {
+      obj.mode = Math.round(message.mode);
+    }
     return obj;
   },
 
@@ -3490,6 +3951,8 @@ export const EntityUpdate: MessageFns<EntityUpdate> = {
     message.state = object.state ?? 0;
     message.moveDirX = object.moveDirX ?? 0;
     message.moveDirZ = object.moveDirZ ?? 0;
+    message.hp = object.hp ?? undefined;
+    message.mode = object.mode ?? undefined;
     return message;
   },
 };
@@ -3662,8 +4125,254 @@ export const EntityAppearanceUpdate: MessageFns<EntityAppearanceUpdate> = {
   },
 };
 
+function createBaseCombatHitEvent(): CombatHitEvent {
+  return { attackerId: 0, targetId: 0, damage: 0, targetHpAfter: 0, killed: false };
+}
+
+export const CombatHitEvent: MessageFns<CombatHitEvent> = {
+  encode(message: CombatHitEvent, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.attackerId !== 0) {
+      writer.uint32(8).uint32(message.attackerId);
+    }
+    if (message.targetId !== 0) {
+      writer.uint32(16).uint32(message.targetId);
+    }
+    if (message.damage !== 0) {
+      writer.uint32(24).int32(message.damage);
+    }
+    if (message.targetHpAfter !== 0) {
+      writer.uint32(32).uint32(message.targetHpAfter);
+    }
+    if (message.killed !== false) {
+      writer.uint32(40).bool(message.killed);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): CombatHitEvent {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const previousRecursionDepth = (reader as any).__tsProtoDecodeDepth ?? 0;
+    if (previousRecursionDepth >= 100) {
+      throw new globalThis.Error("protobuf decode recursion limit exceeded");
+    }
+    (reader as any).__tsProtoDecodeDepth = previousRecursionDepth + 1;
+    try {
+      const end = length === undefined ? reader.len : reader.pos + length;
+      const message = createBaseCombatHitEvent();
+      while (reader.pos < end) {
+        const tag = reader.uint32();
+        switch (tag >>> 3) {
+          case 1: {
+            if (tag !== 8) {
+              break;
+            }
+
+            message.attackerId = reader.uint32();
+            continue;
+          }
+          case 2: {
+            if (tag !== 16) {
+              break;
+            }
+
+            message.targetId = reader.uint32();
+            continue;
+          }
+          case 3: {
+            if (tag !== 24) {
+              break;
+            }
+
+            message.damage = reader.int32();
+            continue;
+          }
+          case 4: {
+            if (tag !== 32) {
+              break;
+            }
+
+            message.targetHpAfter = reader.uint32();
+            continue;
+          }
+          case 5: {
+            if (tag !== 40) {
+              break;
+            }
+
+            message.killed = reader.bool();
+            continue;
+          }
+        }
+        if ((tag & 7) === 4 || tag === 0) {
+          break;
+        }
+        reader.skip(tag & 7);
+      }
+      return message;
+    } finally {
+      (reader as any).__tsProtoDecodeDepth = previousRecursionDepth;
+    }
+  },
+
+  fromJSON(object: any): CombatHitEvent {
+    return {
+      attackerId: isSet(object.attackerId)
+        ? globalThis.Number(object.attackerId)
+        : isSet(object.attacker_id)
+        ? globalThis.Number(object.attacker_id)
+        : 0,
+      targetId: isSet(object.targetId)
+        ? globalThis.Number(object.targetId)
+        : isSet(object.target_id)
+        ? globalThis.Number(object.target_id)
+        : 0,
+      damage: isSet(object.damage) ? globalThis.Number(object.damage) : 0,
+      targetHpAfter: isSet(object.targetHpAfter)
+        ? globalThis.Number(object.targetHpAfter)
+        : isSet(object.target_hp_after)
+        ? globalThis.Number(object.target_hp_after)
+        : 0,
+      killed: isSet(object.killed) ? globalThis.Boolean(object.killed) : false,
+    };
+  },
+
+  toJSON(message: CombatHitEvent): unknown {
+    const obj: any = {};
+    if (message.attackerId !== 0) {
+      obj.attackerId = Math.round(message.attackerId);
+    }
+    if (message.targetId !== 0) {
+      obj.targetId = Math.round(message.targetId);
+    }
+    if (message.damage !== 0) {
+      obj.damage = Math.round(message.damage);
+    }
+    if (message.targetHpAfter !== 0) {
+      obj.targetHpAfter = Math.round(message.targetHpAfter);
+    }
+    if (message.killed !== false) {
+      obj.killed = message.killed;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<CombatHitEvent>, I>>(base?: I): CombatHitEvent {
+    return CombatHitEvent.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<CombatHitEvent>, I>>(object: I): CombatHitEvent {
+    const message = createBaseCombatHitEvent();
+    message.attackerId = object.attackerId ?? 0;
+    message.targetId = object.targetId ?? 0;
+    message.damage = object.damage ?? 0;
+    message.targetHpAfter = object.targetHpAfter ?? 0;
+    message.killed = object.killed ?? false;
+    return message;
+  },
+};
+
+function createBaseAttackAttemptEvent(): AttackAttemptEvent {
+  return { attackerId: 0, targetId: 0 };
+}
+
+export const AttackAttemptEvent: MessageFns<AttackAttemptEvent> = {
+  encode(message: AttackAttemptEvent, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.attackerId !== 0) {
+      writer.uint32(8).uint32(message.attackerId);
+    }
+    if (message.targetId !== 0) {
+      writer.uint32(16).uint32(message.targetId);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): AttackAttemptEvent {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const previousRecursionDepth = (reader as any).__tsProtoDecodeDepth ?? 0;
+    if (previousRecursionDepth >= 100) {
+      throw new globalThis.Error("protobuf decode recursion limit exceeded");
+    }
+    (reader as any).__tsProtoDecodeDepth = previousRecursionDepth + 1;
+    try {
+      const end = length === undefined ? reader.len : reader.pos + length;
+      const message = createBaseAttackAttemptEvent();
+      while (reader.pos < end) {
+        const tag = reader.uint32();
+        switch (tag >>> 3) {
+          case 1: {
+            if (tag !== 8) {
+              break;
+            }
+
+            message.attackerId = reader.uint32();
+            continue;
+          }
+          case 2: {
+            if (tag !== 16) {
+              break;
+            }
+
+            message.targetId = reader.uint32();
+            continue;
+          }
+        }
+        if ((tag & 7) === 4 || tag === 0) {
+          break;
+        }
+        reader.skip(tag & 7);
+      }
+      return message;
+    } finally {
+      (reader as any).__tsProtoDecodeDepth = previousRecursionDepth;
+    }
+  },
+
+  fromJSON(object: any): AttackAttemptEvent {
+    return {
+      attackerId: isSet(object.attackerId)
+        ? globalThis.Number(object.attackerId)
+        : isSet(object.attacker_id)
+        ? globalThis.Number(object.attacker_id)
+        : 0,
+      targetId: isSet(object.targetId)
+        ? globalThis.Number(object.targetId)
+        : isSet(object.target_id)
+        ? globalThis.Number(object.target_id)
+        : 0,
+    };
+  },
+
+  toJSON(message: AttackAttemptEvent): unknown {
+    const obj: any = {};
+    if (message.attackerId !== 0) {
+      obj.attackerId = Math.round(message.attackerId);
+    }
+    if (message.targetId !== 0) {
+      obj.targetId = Math.round(message.targetId);
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<AttackAttemptEvent>, I>>(base?: I): AttackAttemptEvent {
+    return AttackAttemptEvent.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<AttackAttemptEvent>, I>>(object: I): AttackAttemptEvent {
+    const message = createBaseAttackAttemptEvent();
+    message.attackerId = object.attackerId ?? 0;
+    message.targetId = object.targetId ?? 0;
+    return message;
+  },
+};
+
 function createBaseWorldDelta(): WorldDelta {
-  return { serverTick: 0, enters: [], updates: [], exits: [], appearanceUpdates: [] };
+  return {
+    serverTick: 0,
+    enters: [],
+    updates: [],
+    exits: [],
+    appearanceUpdates: [],
+    combatHits: [],
+    attackAttempts: [],
+  };
 }
 
 export const WorldDelta: MessageFns<WorldDelta> = {
@@ -3682,6 +4391,12 @@ export const WorldDelta: MessageFns<WorldDelta> = {
     }
     for (const v of message.appearanceUpdates) {
       EntityAppearanceUpdate.encode(v!, writer.uint32(42).fork()).join();
+    }
+    for (const v of message.combatHits) {
+      CombatHitEvent.encode(v!, writer.uint32(50).fork()).join();
+    }
+    for (const v of message.attackAttempts) {
+      AttackAttemptEvent.encode(v!, writer.uint32(58).fork()).join();
     }
     return writer;
   },
@@ -3739,6 +4454,22 @@ export const WorldDelta: MessageFns<WorldDelta> = {
             message.appearanceUpdates.push(EntityAppearanceUpdate.decode(reader, reader.uint32()));
             continue;
           }
+          case 6: {
+            if (tag !== 50) {
+              break;
+            }
+
+            message.combatHits.push(CombatHitEvent.decode(reader, reader.uint32()));
+            continue;
+          }
+          case 7: {
+            if (tag !== 58) {
+              break;
+            }
+
+            message.attackAttempts.push(AttackAttemptEvent.decode(reader, reader.uint32()));
+            continue;
+          }
         }
         if ((tag & 7) === 4 || tag === 0) {
           break;
@@ -3768,6 +4499,16 @@ export const WorldDelta: MessageFns<WorldDelta> = {
         : globalThis.Array.isArray(object?.appearance_updates)
         ? object.appearance_updates.map((e: any) => EntityAppearanceUpdate.fromJSON(e))
         : [],
+      combatHits: globalThis.Array.isArray(object?.combatHits)
+        ? object.combatHits.map((e: any) => CombatHitEvent.fromJSON(e))
+        : globalThis.Array.isArray(object?.combat_hits)
+        ? object.combat_hits.map((e: any) => CombatHitEvent.fromJSON(e))
+        : [],
+      attackAttempts: globalThis.Array.isArray(object?.attackAttempts)
+        ? object.attackAttempts.map((e: any) => AttackAttemptEvent.fromJSON(e))
+        : globalThis.Array.isArray(object?.attack_attempts)
+        ? object.attack_attempts.map((e: any) => AttackAttemptEvent.fromJSON(e))
+        : [],
     };
   },
 
@@ -3788,6 +4529,12 @@ export const WorldDelta: MessageFns<WorldDelta> = {
     if (message.appearanceUpdates?.length) {
       obj.appearanceUpdates = message.appearanceUpdates.map((e) => EntityAppearanceUpdate.toJSON(e));
     }
+    if (message.combatHits?.length) {
+      obj.combatHits = message.combatHits.map((e) => CombatHitEvent.toJSON(e));
+    }
+    if (message.attackAttempts?.length) {
+      obj.attackAttempts = message.attackAttempts.map((e) => AttackAttemptEvent.toJSON(e));
+    }
     return obj;
   },
 
@@ -3801,6 +4548,8 @@ export const WorldDelta: MessageFns<WorldDelta> = {
     message.updates = object.updates?.map((e) => EntityUpdate.fromPartial(e)) || [];
     message.exits = object.exits?.map((e) => EntityExit.fromPartial(e)) || [];
     message.appearanceUpdates = object.appearanceUpdates?.map((e) => EntityAppearanceUpdate.fromPartial(e)) || [];
+    message.combatHits = object.combatHits?.map((e) => CombatHitEvent.fromPartial(e)) || [];
+    message.attackAttempts = object.attackAttempts?.map((e) => AttackAttemptEvent.fromPartial(e)) || [];
     return message;
   },
 };

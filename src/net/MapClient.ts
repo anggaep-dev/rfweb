@@ -57,6 +57,12 @@ export interface MapMonsterEntry {
   respawnMs: number;
   count: number;
   rate: number;
+  /** Resolved server-side from `code` (see docs/monster.md's Code>>8 model
+   * resolution) - the display name and the glb stem to `loadMonster()`
+   * from `/game-assets/monster/glb/`. Absent when the backend has no
+   * catalog match or resolvable model for this code. */
+  name?: string;
+  model?: string;
 }
 
 export interface MapMonsterSpawn {

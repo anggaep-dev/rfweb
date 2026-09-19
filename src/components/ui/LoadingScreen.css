@@ -1,0 +1,114 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+ * Aether Mech HUD — Loading Screen
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+.loading-screen {
+  /* Matches .scene-app's own viewport box exactly (see SceneApp.tsx's
+     syncVisualViewportVars) rather than plain inset:0 - inset:0 tracks the
+     layout viewport, which can differ in size/offset from the real visual
+     viewport (mobile browser chrome, on-screen keyboard, pinch-zoom). A
+     small anchored HUD element wouldn't show that mismatch, but a
+     full-bleed background image does, immediately, as a cropped top and an
+     uncovered gap at the bottom. */
+  position: fixed;
+  left: var(--app-viewport-left, 0);
+  top: var(--app-viewport-top, 0);
+  width: var(--app-viewport-width, 100vw);
+  height: var(--app-viewport-height, 100dvh);
+  z-index: 1000;
+  background-color: var(--surface-base);
+  background-size: cover;
+  background-position: 32% center;
+  background-repeat: no-repeat;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+}
+
+/* Concept-art source images are busy character-sheet layouts (turnaround
+   views, labeled detail callouts) - this scrim keeps the bottom third
+   (where the bar sits) readable and fades the frame edges into the HUD's
+   own dark surface color instead of hard-cropping. */
+.loading-screen-scrim {
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(180deg, rgba(10, 14, 21, 0.15) 0%, rgba(10, 14, 21, 0.55) 65%, var(--surface-base) 100%),
+    linear-gradient(90deg, rgba(10, 14, 21, 0.65) 0%, rgba(10, 14, 21, 0) 35%, rgba(10, 14, 21, 0) 65%, rgba(10, 14, 21, 0.65) 100%);
+}
+
+.loading-screen-content {
+  position: relative;
+  width: min(32rem, calc(100vw - 2 * var(--space-6)));
+  margin-bottom: max(var(--space-6), env(safe-area-inset-bottom));
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.loading-screen-bar-track {
+  position: relative;
+  height: 14px;
+  border-radius: 2px;
+  background: var(--elevation-slot-bg);
+  box-shadow: var(--elevation-slot-shadow);
+  border: var(--elevation-slot-border);
+  overflow: hidden;
+}
+
+.loading-screen-bar-fill {
+  height: 100%;
+  background: var(--cta-bg);
+  box-shadow: var(--cta-shadow);
+  transition: width 0.3s ease-out;
+  position: relative;
+}
+
+/* A soft moving shimmer on the fill reads as "actively working" without
+   implying the percentage itself is fake - the width is always real. */
+.loading-screen-bar-fill::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent 0%, rgba(255, 255, 255, 0.35) 50%, transparent 100%);
+  background-size: 200% 100%;
+  animation: loading-screen-shimmer 1.6s ease-in-out infinite;
+}
+
+@keyframes loading-screen-shimmer {
+  0% {
+    background-position: 150% 0;
+  }
+  100% {
+    background-position: -50% 0;
+  }
+}
+
+.loading-screen-footer {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  font-family: var(--font-display);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.loading-screen-label {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.loading-screen-percent {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-gold);
+  letter-spacing: 0;
+}
+
+@media (max-width: 480px) {
+  .loading-screen-content {
+    width: calc(100vw - 2 * var(--space-4));
+    margin-bottom: max(var(--space-4), env(safe-area-inset-bottom));
+  }
+}

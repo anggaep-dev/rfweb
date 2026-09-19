@@ -11,8 +11,32 @@ interface PlayerResourceMeshEntry {
   TexutrePath: string;
 }
 
+interface PlayerResourceAniEntry {
+  ID: string;
+  FileName: string;
+}
+
 interface PlayerResourceData {
   Mesh: PlayerResourceMeshEntry[];
+  Ani: PlayerResourceAniEntry[];
+}
+
+// Shared by loadPlayerResourceMeshIndexes and loadPlayerResourceAniPrefixIndex
+// below - both derive from this same one fetch/parse of the (~2MB) JSON
+// rather than each fetching it independently.
+let playerResourceDataPromise: Promise<PlayerResourceData> | null = null;
+
+function loadPlayerResourceData(): Promise<PlayerResourceData> {
+  if (!playerResourceDataPromise) {
+    playerResourceDataPromise = fetch(PLAYER_RESOURCE_URL).then((res) => {
+      if (!res.ok) throw new Error(`Failed to fetch ${PLAYER_RESOURCE_URL}: ${res.status}`);
+      return res.json() as Promise<PlayerResourceData>;
+    });
+    playerResourceDataPromise.catch(() => {
+      playerResourceDataPromise = null;
+    });
+  }
+  return playerResourceDataPromise;
 }
 
 /**
@@ -43,26 +67,75 @@ let meshIndexesPromise: Promise<PlayerResourceMeshIndexes> | null = null;
 
 function loadPlayerResourceMeshIndexes(): Promise<PlayerResourceMeshIndexes> {
   if (!meshIndexesPromise) {
-    meshIndexesPromise = fetch(PLAYER_RESOURCE_URL)
-      .then((res) => {
-        if (!res.ok) throw new Error(`Failed to fetch ${PLAYER_RESOURCE_URL}: ${res.status}`);
-        return res.json() as Promise<PlayerResourceData>;
-      })
-      .then((data) => {
-        const byId = new Map<string, PlayerResourceMeshEntry>();
-        const byValue = new Map<number, PlayerResourceMeshEntry>();
-        for (const entry of data.Mesh) {
-          byId.set(entry.ID, entry);
-          const value = Number.parseInt(entry.ID, 16);
-          if (!Number.isNaN(value)) byValue.set(value, entry);
-        }
-        return { byId, byValue };
-      });
+    meshIndexesPromise = loadPlayerResourceData().then((data) => {
+      const byId = new Map<string, PlayerResourceMeshEntry>();
+      const byValue = new Map<number, PlayerResourceMeshEntry>();
+      for (const entry of data.Mesh) {
+        byId.set(entry.ID, entry);
+        const value = Number.parseInt(entry.ID, 16);
+        if (!Number.isNaN(value)) byValue.set(value, entry);
+      }
+      return { byId, byValue };
+    });
     meshIndexesPromise.catch(() => {
       meshIndexesPromise = null;
     });
   }
   return meshIndexesPromise;
+}
+
+// Real attack-swing filenames don't follow a predictable "_01_00" suffix
+// convention - confirmed against this real data: e.g.
+// "ACCRETIA_COMBAT_ATTACK_DAXE_TOP_01_00.ANI" but
+// "ACCRETIA_COMBAT_ATTACK_DAXE_MIDDLE_02_00.ANI" (and a second variant,
+// "..._MIDDLE_02_01.ANI") for the very same weapon - the trailing "_NN_NN"
+// varies per race/weapon/segment and sometimes has more than one real
+// variant. Hand-constructing the filename (the first version of this code)
+// silently 404s far more often than it resolves. This index strips that
+// trailing "_NN_NN" to group every real variant under its
+// "{RACE}_COMBAT_ATTACK_{WEAPON}_{TOP|MIDDLE|BOTTOM}" prefix, so a caller
+// can pick from whichever filenames actually exist instead of guessing one.
+let aniPrefixIndexPromise: Promise<Map<string, string[]>> | null = null;
+
+const ANI_VARIANT_SUFFIX = /_\d{2}_\d{2}$/;
+
+function loadPlayerResourceAniPrefixIndex(): Promise<Map<string, string[]>> {
+  if (!aniPrefixIndexPromise) {
+    aniPrefixIndexPromise = loadPlayerResourceData().then((data) => {
+      const byPrefix = new Map<string, string[]>();
+      for (const entry of data.Ani) {
+        const nameNoExt = entry.FileName.replace(/\.ani$/i, '');
+        const prefix = nameNoExt.replace(ANI_VARIANT_SUFFIX, '');
+        const existing = byPrefix.get(prefix);
+        if (existing) existing.push(entry.FileName);
+        else byPrefix.set(prefix, [entry.FileName]);
+      }
+      return byPrefix;
+    });
+    aniPrefixIndexPromise.catch(() => {
+      aniPrefixIndexPromise = null;
+    });
+  }
+  return aniPrefixIndexPromise;
+}
+
+/**
+ * Every real filename (there can be more than one - see
+ * loadPlayerResourceAniPrefixIndex's own doc comment) for one attack-swing
+ * prefix, e.g. `resolveAttackAnimationFileNames("ACCRETIA", "DAXE", "MIDDLE")`
+ * -> `["ACCRETIA_COMBAT_ATTACK_DAXE_MIDDLE_02_00.ANI",
+ * "ACCRETIA_COMBAT_ATTACK_DAXE_MIDDLE_02_01.ANI"]`. Empty if this
+ * race/weapon/segment combination has no real data - callers should treat
+ * that as "try a different segment," not an error (not every weapon has
+ * all 3).
+ */
+export async function resolveAttackAnimationFileNames(
+  nameToken: string,
+  weaponToken: string,
+  variant: 'TOP' | 'MIDDLE' | 'BOTTOM',
+): Promise<string[]> {
+  const byPrefix = await loadPlayerResourceAniPrefixIndex();
+  return byPrefix.get(`${nameToken}_COMBAT_ATTACK_${weaponToken}_${variant}`) ?? [];
 }
 
 /**

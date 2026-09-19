@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import AttackTargetPanel from '../hud/AttackTargetPanel';
 import ChatBox from '../hud/ChatBox';
 import FpsCounter from '../hud/FpsCounter';
 import FullscreenButton from '../hud/FullscreenButton';
@@ -11,12 +12,13 @@ import PingIndicator from '../hud/PingIndicator';
 import ShortcutBar from '../hud/ShortcutBar';
 import { createEmptyShortcutGrid, SHORTCUT_ROW_COUNT } from '../hud/shortcutBarTypes';
 import type { ShortcutCarry, ShortcutCarryPointer, ShortcutEntry, ShortcutGrid } from '../hud/shortcutBarTypes';
+import { LoadingScreen } from '../ui';
 import VitalsBar from '../hud/VitalsBar';
 import { useKeyboardMove } from '../../hooks/useKeyboardMove';
 import type { RaceGender } from '../../rf/character';
 import type { ConnectionStatus } from '../../net/WorldConnection';
 import { OnlineScene } from '../../scenes/OnlineScene';
-import type { ChatLogEntry, EquipmentDisplay, EquipmentSlotKey, InventoryState } from '../../scenes/OnlineScene';
+import type { ChatLogEntry, EquipmentDisplay, EquipmentSlotKey, InventoryState, SelectedTarget } from '../../scenes/OnlineScene';
 import type { SceneManager } from '../../scenes/SceneManager';
 import './OnlineScreen.css';
 
@@ -39,6 +41,8 @@ export interface OnlineScreenProps {
 export default function OnlineScreen({ sceneManager, initialRaceGender, sessionToken, characterId, onExit }: OnlineScreenProps) {
   const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading');
   const [errorMessage, setErrorMessage] = useState('');
+  const [loadProgress, setLoadProgress] = useState(0);
+  const [selectedTarget, setSelectedTarget] = useState<SelectedTarget | null>(null);
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('connecting');
   const [pingMs, setPingMs] = useState<number | null>(null);
   const [fps, setFps] = useState<number | null>(null);
@@ -82,6 +86,8 @@ export default function OnlineScreen({ sceneManager, initialRaceGender, sessionT
         setStatus(nextStatus);
         setErrorMessage(message ?? '');
       },
+      onLoadProgress: setLoadProgress,
+      onTargetChange: setSelectedTarget,
       onPingChange: setPingMs,
       onFpsChange: setFps,
       onRadarFrame: (frame) => miniMapRef.current?.update(frame.facingRad, frame.blips),
@@ -122,6 +128,10 @@ export default function OnlineScreen({ sceneManager, initialRaceGender, sessionT
   // needs to close it rather than being a no-op.
   const handleToggleInventory = useCallback(() => setInventoryOpen((open) => !open), []);
   const handleCloseInventory = useCallback(() => setInventoryOpen(false), []);
+
+  const handleAttack = useCallback(() => {
+    onlineSceneRef.current?.attackSelectedTarget();
+  }, []);
 
   const handleSendChat = useCallback((message: string) => {
     onlineSceneRef.current?.sendChatMessage(message);
@@ -236,6 +246,7 @@ export default function OnlineScreen({ sceneManager, initialRaceGender, sessionT
       {status === 'ready' && <FullscreenButton />}
       {status === 'ready' && <HudIconRow onOpenInventory={handleToggleInventory} onOpenSettings={onExit} settingsLabel={onExit ? 'Exit' : 'Settings'} />}
       {status === 'ready' && <VitalsBar />}
+      {status === 'ready' && <AttackTargetPanel target={selectedTarget} onAttack={handleAttack} />}
       {status === 'ready' && (
         <ShortcutBar
           shortcutCarry={shortcutCarry}
@@ -254,7 +265,7 @@ export default function OnlineScreen({ sceneManager, initialRaceGender, sessionT
           onUnuseEquipmentSlot={handleUnuseItem}
         />
       )}
-      {status === 'ready' && <MobileControls onMove={handleMoveInput} />}
+      {status === 'ready' && <MobileControls onMove={handleMoveInput} onAttack={handleAttack} />}
       {status === 'ready' && inventoryOpen && (
         <InventoryWindow
           onClose={handleCloseInventory}
@@ -269,7 +280,7 @@ export default function OnlineScreen({ sceneManager, initialRaceGender, sessionT
         />
       )}
 
-      {status === 'loading' && <div className="online-screen-overlay">Loading character…</div>}
+      {status === 'loading' && <LoadingScreen progress={loadProgress} label="Entering the world…" />}
       {status === 'error' && (
         <div className="online-screen-overlay online-screen-overlay-error">
           Failed to load character: {errorMessage}

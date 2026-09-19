@@ -1,0 +1,61 @@
+.attack-target-panel {
+  /* .online-screen's own root sets pointer-events: none (see
+     OnlineScreen.css) so the HUD doesn't block clicks meant for the 3D
+     scene by default - every interactive HUD element re-enables it on
+     itself (see ChatBox/FullscreenButton/HudIconRow/MobileControls/
+     ShortcutBar's own CSS for the same pattern). Missing this meant a click
+     on the Attack button fell straight through to the canvas underneath
+     and re-triggered the click-to-select raycast instead (confirmed live:
+     the click landed on empty space near the monster, deselecting it).
+   */
+  pointer-events: auto;
+  position: absolute;
+  top: max(var(--space-4), env(safe-area-inset-top));
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  background: var(--elevation-panel-bg);
+  border: var(--elevation-panel-border);
+  box-shadow: var(--elevation-panel-shadow);
+  border-radius: 2px;
+}
+
+.attack-target-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 9rem;
+}
+
+.attack-target-name {
+  font-family: var(--font-display);
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-primary);
+}
+
+.attack-target-hp-track {
+  height: 8px;
+  border-radius: 2px;
+  background: var(--elevation-slot-bg);
+  box-shadow: var(--elevation-slot-shadow);
+  border: var(--elevation-slot-border);
+  overflow: hidden;
+}
+
+.attack-target-hp-fill {
+  height: 100%;
+  background: linear-gradient(180deg, var(--vital-ruby) 0%, #b91c3c 100%);
+  transition: width 0.2s ease-out;
+}
+
+@media (max-width: 480px) {
+  .attack-target-info {
+    min-width: 6.5rem;
+  }
+}

@@ -7,6 +7,7 @@ import { BotController } from '../controllers/BotController';
 import { CameraController } from '../controllers/CameraController';
 import { CharacterController } from '../controllers/CharacterController';
 import type { EffectSocketInspection, ParticleCullingContext, WeaponDebugInfo } from '../controllers/CharacterController';
+import { MonsterBotController } from '../controllers/MonsterBotController';
 import { SceneController } from '../controllers/SceneController';
 import { advanceParticleBatchClocks, getParticleBatchCount, initParticleBatching, setParticleEffectCountForBudget, setParticleRandomnessEnabled } from '../rf/particleSystem';
 import { initSocketGlowBatching } from '../rf/glowEffect';
@@ -102,6 +103,7 @@ export class ViewerScene implements AppScene {
   readonly cameraController: CameraController;
   readonly characterController: CharacterController;
   readonly botController: BotController;
+  readonly monsterBotController: MonsterBotController;
   readonly assetController = new AssetController();
 
   private readonly renderer: WebGPURenderer;
@@ -167,6 +169,7 @@ export class ViewerScene implements AppScene {
       },
     });
     this.botController = new BotController(this.sceneController.scene);
+    this.monsterBotController = new MonsterBotController(this.sceneController.scene);
 
     this.transformControls = new TransformControls(this.cameraController.camera, renderer.domElement);
     this.transformControls.enabled = false;
@@ -260,8 +263,28 @@ export class ViewerScene implements AppScene {
         const removed = this.botController.clearBots();
         return `Removed ${removed} bot${removed === 1 ? '' : 's'}.`;
       }
+      case 'moncall': {
+        // "%moncall <count> <monsterName> [peace|war]" - e.g. "%moncall 3
+        // TERRETB war" - see MonsterBotController.spawnMonsters. monsterName
+        // is required (unlike %addbot's count, which defaults to 1) since
+        // there's no "random monster" concept the way bots have a random
+        // race. mode defaults to peace, same as a freshly-mounted player
+        // character.
+        const requested = Number.parseInt(args[0] ?? '1', 10);
+        const monsterName = args[1];
+        if (!monsterName) return 'Usage: %moncall <count> <monsterName> [peace|war] (e.g. %moncall 3 TERRETB war).';
+        const mode = args[2]?.toLowerCase() === 'war' ? 'war' : 'peace';
+        const added = await this.monsterBotController.spawnMonsters(monsterName, requested, mode);
+        return added > 0
+          ? `Spawned ${added} "${monsterName}"${added === 1 ? '' : 's'} in ${mode} mode (${this.monsterBotController.count} monster${this.monsterBotController.count === 1 ? '' : 's'} total).`
+          : `No monster found matching "${monsterName}" (or it failed to load - see console).`;
+      }
+      case 'clearmonsters': {
+        const removed = this.monsterBotController.clearMonsters();
+        return `Removed ${removed} monster${removed === 1 ? '' : 's'}.`;
+      }
       default:
-        return `Unknown command "%${name}". Try %addbot <count> [weaponNameFilter] [upgradeLevel], or %clearbots.`;
+        return `Unknown command "%${name}". Try %addbot <count> [weaponNameFilter] [upgradeLevel], %clearbots, %moncall <count> <monsterName> [peace|war], or %clearmonsters.`;
     }
   }
 
@@ -480,6 +503,7 @@ export class ViewerScene implements AppScene {
     this.characterController.updateSocketGlowBillboards(this.cameraController.camera, delta);
     this.characterController.updateDebugSocketParticle(this.cameraController.camera, delta, this.particleCulling);
     this.botController.update(delta, this.cameraController.camera, this.particleCulling);
+    this.monsterBotController.update(delta);
 
     this.statsFrameCount += 1;
     this.statsElapsed += delta;
@@ -612,6 +636,7 @@ export class ViewerScene implements AppScene {
     this.cameraController.dispose();
     this.characterController.dispose();
     this.botController.dispose();
+    this.monsterBotController.dispose();
     this.sceneController.dispose();
   }
 }

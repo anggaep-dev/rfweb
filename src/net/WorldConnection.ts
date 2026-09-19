@@ -82,6 +82,21 @@ export class WorldConnection {
   }
 
   /**
+   * Bare-bones melee attack request (see proto/protocol.proto's own doc
+   * comment on AttackRequest) - the server enforces range and its own
+   * placeholder cooldown, so spamming this is harmless; most calls while on
+   * cooldown are just silently dropped server-side.
+   */
+  sendAttack(targetEntityId: number): void {
+    if (this.ws?.readyState !== WebSocket.OPEN) {
+      console.warn(`[attack] sendAttack(${targetEntityId}) dropped - socket not open (readyState=${this.ws?.readyState})`);
+      return;
+    }
+    console.log(`[attack] sending AttackRequest target=${targetEntityId}`);
+    this.send({ payload: { $case: 'attack', attack: { targetEntityId } } });
+  }
+
+  /**
    * `quantity = 0` means the full stack in the slot (see docs/inventory-
    * action.md's sell_item rules) - `sellSlotItem`/`dropSlotItem`/`useSlotItem`
    * all default to it for the same reason.

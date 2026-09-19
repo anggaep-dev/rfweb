@@ -2,6 +2,7 @@ import { Box3, LoopOnce, LoopRepeat, Matrix4, Object3D, Quaternion, SkeletonHelp
 import type { AnimationAction, AnimationClip, Bone, Camera, Frustum, Group, Scene } from 'three';
 import { ANI_FPS } from '../rf/animation';
 import {
+  ATTACK_VARIANTS,
   CLOAK_CDN_BASE,
   CLOAK_GLB_CDN_BASE,
   LOCOMOTION_DIRECTIONS,
@@ -9,13 +10,14 @@ import {
   buildMeshPartObjects,
   characterCdnBase,
   characterGlbCdnBase,
+  getAttackClip,
   getWeaponClip,
   loadCloakAnimationRig,
   loadShieldMeshObjects,
   loadWeaponMeshObjects,
   weaponClipKey,
 } from '../rf/character';
-import type { CloakAnimationRig, LocomotionDirection, RfCharacter } from '../rf/character';
+import type { AttackVariant, CloakAnimationRig, LocomotionDirection, RfCharacter } from '../rf/character';
 import { blocksMovement } from '../rf/collision';
 import type { CollisionWall } from '../rf/ebp';
 import { applyGradeLiveValues, buildGradeOverlay, clamp01, disposeGradeOverlay } from '../rf/gradeEffect';
@@ -419,6 +421,10 @@ export class CharacterController {
   private debugPaused = false;
   private showBones = false;
 
+  /** Set for the duration of one playAttack() swing - see that method's own doc comment for why update() roots movement and skips its normal clip resolution entirely while this is true, instead of layering the swing on top of whatever resolveClipName would otherwise pick. */
+  private isAttacking = false;
+  private attackAction: AnimationAction | null = null;
+
   private readonly lastQuatByBone = new Map<string, Quaternion>();
   private readonly lookMatrix = new Matrix4();
   private readonly lookTargetQuat = new Quaternion();
@@ -676,6 +682,89 @@ export class CharacterController {
     if (mode === 'war' && this.character && this.raceGender !== null) {
       void prewarmWeaponClips(this.raceGender, this.character, this.currentWeaponToken ?? UNARMED_WEAPON_TOKEN);
     }
+  }
+
+  /**
+   * Plays one attack swing for whatever's currently wielded (docs/rf-format-
+   * notes.md's `ATA` archive: `COMBAT_ATTACK_{weapon}_{TOP|MIDDLE|BOTTOM}`,
+   * see character.ts's getAttackClip) - a random one of the 3 swing variants
+   * each time, not always the same one. Auto-draws the weapon first
+   * (setBattleMode('war')) if the character was in Peace, matching "pressing
+   * attack switches you to combat stance" rather than requiring a separate
+   * manual battle-mode toggle first.
+   *
+   * While the swing plays, update() is rooted in place and skips its normal
+   * walk/run/stand resolution entirely (see isAttacking) rather than trying
+   * to layer the swing on top of - or blend cleanly with - whatever
+   * resolveClipName would otherwise be picking every frame; a real
+   * skills/combat system would want interruptible attacks (e.g. cancel into
+   * a dodge), but this is a bare "does it work" wiring, not that system.
+   * No-op if this race/weapon has no attack clip for any of the 3 variants,
+   * or if a swing is already playing (spamming the button just drops the
+   * extra requests rather than restarting the animation each time).
+   */
+  async playAttack(): Promise<void> {
+    const character = this.character;
+    if (!character || this.raceGender === null || this.isAttacking) return;
+    if (this.battleMode !== 'war') this.setBattleMode('war');
+
+    const weaponToken = this.currentWeaponToken ?? UNARMED_WEAPON_TOKEN;
+    const variants = [...ATTACK_VARIANTS].sort(() => Math.random() - 0.5);
+    let clip = null;
+    for (const variant of variants) {
+      clip = await getAttackClip(this.raceGender, character, weaponToken, variant as AttackVariant);
+      if (clip) break;
+    }
+    if (!clip) {
+      console.warn(
+        `[attack] no attack clip found for race="${RaceGender[this.raceGender]}" weaponToken="${weaponToken}" (tried variants: ${variants.join(', ')})`,
+      );
+      return;
+    }
+    // The character may have been unmounted, re-mounted, or started another
+    // attack while the fetch above was in flight.
+    if (this.character !== character || this.isAttacking) return;
+
+    this.isAttacking = true;
+    const prevAction = this.activeAction;
+    const attackAction = character.mixer.clipAction(clip).reset();
+    attackAction.setLoop(LoopOnce, 1);
+    // true, not false: a LoopOnce action with clampWhenFinished=false
+    // disables itself (weight -> 0) the INSTANT it naturally finishes -
+    // three.js then restores its bones to their bind pose immediately,
+    // before the next frame's crossfade-in below has ramped up any real
+    // weight, which is exactly what showed up as a T-pose flash at the end
+    // of every swing. clampWhenFinished=true instead pauses on the last
+    // frame at full weight, so the update() transition below (see
+    // `resolvedName !== this.currentClipKey`, guaranteed to fire because
+    // currentClipKey is nulled below) has a real weight-1 pose to
+    // .fadeOut() from - a proper overlapping crossfade, not a weight gap.
+    attackAction.clampWhenFinished = true;
+    if (prevAction && prevAction !== attackAction) {
+      prevAction.fadeOut(CROSSFADE_SECONDS);
+      attackAction.fadeIn(CROSSFADE_SECONDS);
+    }
+    attackAction.play();
+    this.attackAction = attackAction;
+    this.activeAction = attackAction;
+    // Cleared (not left as whatever it was) so that once isAttacking flips
+    // back off, update()'s "resolvedName !== this.currentClipKey" check is
+    // guaranteed to see a mismatch and actually crossfade back to idle/walk
+    // - left as the old value, a desiredClip that happens to resolve back to
+    // the exact same key it was before the attack (the common case: you were
+    // standing still, you're still standing still) would silently skip that
+    // transition entirely, leaving the character paused on the swing's last
+    // frame forever (see clampWhenFinished's own comment above) instead of
+    // returning to idle.
+    this.currentClipKey = null;
+
+    const onFinished = (event: { action: AnimationAction }) => {
+      if (event.action !== attackAction) return;
+      character.mixer.removeEventListener('finished', onFinished);
+      this.isAttacking = false;
+      if (this.attackAction === attackAction) this.attackAction = null;
+    };
+    character.mixer.addEventListener('finished', onFinished);
   }
 
   /** A wielded weapon (and its grade overlay, if it has any) is only ever visible in War mode - see setBattleMode/equipWeapon. Whole-mesh glow no longer has a separate object to toggle - it's injected directly into the weapon mesh's own material (see glowEffect.ts's attachGlowInjection), so it's already hidden/shown along with `weaponObjects` above. Socket glow billboards are additionally gated on debugSocketGlowWanted (see its own doc comment) - `%glowtest 0` hides them even in War mode. */
@@ -1636,7 +1725,7 @@ export class CharacterController {
    * optional sway rig some cloaks layer on top of that static placement.
    */
   private async equipCloak(item: ItemDefinition | null): Promise<EquipResult> {
-    const character = this.character;
+    const character = this.character;f
     const raceGender = this.raceGender;
     if (!character || raceGender === null) return 'no-character';
 
@@ -2044,6 +2133,20 @@ export class CharacterController {
     if (!character) return { arrived: false };
 
     let arrived = false;
+    // Rooted in place for the duration of one attack swing - see
+    // playAttack's own doc comment for why this skips movement AND the
+    // normal resolveClipName-driven clip switching entirely, rather than
+    // trying to layer/blend the swing with whatever the movement state
+    // would otherwise be resolving to every frame.
+    if (this.isAttacking) {
+      character.mixer.update(delta);
+      this.checkForPoseAnomalies(character);
+      this.updateGlowAnimation(delta);
+      this.updateGradeAnimation(delta);
+      if (this.cloakAnimation) this.updateCloakSway(this.cloakAnimation, delta);
+      for (const departing of this.departingCloakAnimations) this.updateCloakSway(departing, delta);
+      return { arrived: false };
+    }
     const direction = this.moveDirection;
     if (direction) {
       const magnitude = direction.length();

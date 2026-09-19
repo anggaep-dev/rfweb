@@ -1,18 +1,24 @@
-import { DoubleSide, Frustum, Matrix4, Mesh, MeshBasicMaterial, RingGeometry, Sphere, Vector3 } from 'three';
+import { DoubleSide, Frustum, Matrix4, Mesh, MeshBasicMaterial, Raycaster, RingGeometry, Sphere, Vector2, Vector3 } from 'three';
 import type { PerspectiveCamera, Scene } from 'three';
 import type { WebGPURenderer } from 'three/webgpu';
 import { CameraController } from '../controllers/CameraController';
 import { CharacterController } from '../controllers/CharacterController';
 import type { ParticleCullingContext } from '../controllers/CharacterController';
 import { applyCharacterAppearance, applyEquipmentDiff, visibleEquipmentToEquipped } from '../controllers/characterAppearance';
+import { damageNumberAnchor, DamageNumberController } from '../controllers/DamageNumber';
 import { LocomotionDebugGizmo } from '../controllers/LocomotionDebugGizmo';
 import { NameTag, nameTagYOffsetFromBounds } from '../controllers/NameTag';
 import { RemoteEntityController } from '../controllers/RemoteEntityController';
+import { RemoteMonsterController } from '../controllers/RemoteMonsterController';
+import type { MonsterTargetInfo } from '../controllers/RemoteMonsterController';
 import { SceneController } from '../controllers/SceneController';
 import { getCharacterProfile } from '../net/CharacterClient';
 import { continuousRotationFromVector, rotationToYaw } from '../net/compassRotation';
 import { getMapDetails } from '../net/MapClient';
+import type { MapDetails } from '../net/MapClient';
+import { EntityKind } from '../net/generated/protocol';
 import type {
+  CombatHitEvent,
   EntitySnapshot,
   EntityUpdate,
   EquipmentSlots,
@@ -32,6 +38,7 @@ import { preloadItemIconSheets } from '../rf/itemIcon';
 import { GroundHeightProvider } from '../rf/groundHeight';
 import { loadMap, nativeToScene } from '../rf/map';
 import type { LoadedMap } from '../rf/map';
+import { loadMonster } from '../rf/monster';
 import { advanceParticleBatchClocks, initParticleBatching, setParticleEffectCountForBudget } from '../rf/particleSystem';
 import type { AppScene } from './AppScene';
 
@@ -65,6 +72,8 @@ const LOCAL_GROUND_UNDER_EPSILON = 2;
 export interface OnlineSceneCallbacks {
   onConnectionStatusChange?: (status: ConnectionStatus) => void;
   onStatusChange?: (status: 'loading' | 'ready' | 'error', errorMessage?: string) => void;
+  /** 0-1, driven by real mount() milestones (map details, then character/profile/map-geometry each resolving) - not a fake animated fill. Only meaningful while status is 'loading'. */
+  onLoadProgress?: (progress: number) => void;
   onPingChange?: (pingMs: number | null) => void;
   /** Fired roughly every FPS_UPDATE_INTERVAL_SEC (not every frame - see update()) with the frame rate averaged over that window. */
   onFpsChange?: (fps: number) => void;
@@ -72,6 +81,13 @@ export interface OnlineSceneCallbacks {
   onChatMessage?: (entry: ChatLogEntry) => void;
   onInventoryChange?: (state: InventoryState) => void;
   onEquipmentChange?: (equipment: EquipmentDisplay) => void;
+  /** Fired when the selected attack target changes (click-select, HP change from a combat hit, or the target dying/leaving AOI - null clears it) - see handleAttackClick/attackSelectedTarget. */
+  onTargetChange?: (target: SelectedTarget | null) => void;
+}
+
+/** The player's currently click-selected monster (see handleAttackClick) - entityId plus its latest known display info (see RemoteMonsterController.getTargetInfo). */
+export interface SelectedTarget extends MonsterTargetInfo {
+  entityId: number;
 }
 
 export interface InventoryState {
@@ -287,6 +303,8 @@ export class OnlineScene implements AppScene {
   private readonly cameraController: CameraController;
   private readonly characterController: CharacterController;
   private readonly remoteEntityController: RemoteEntityController;
+  private readonly remoteMonsterController: RemoteMonsterController;
+  private readonly damageNumbers: DamageNumberController;
   private readonly connection = new WorldConnection();
   private readonly callbacks: OnlineSceneCallbacks;
   private readonly raceGender: RaceGender;
@@ -389,6 +407,95 @@ export class OnlineScene implements AppScene {
     this.isRunning = false;
   };
 
+  private readonly canvas: HTMLCanvasElement;
+  private readonly attackRaycaster = new Raycaster();
+  private readonly attackPointerNdc = new Vector2();
+  /** The click-selected monster, or null - see handleAttackClick/attackSelectedTarget/onTargetChange. */
+  private selectedTargetId: number | null = null;
+
+  /**
+   * Click-to-select input: left-click raycasts against every currently-
+   * loaded monster's root object and selects the nearest hit (reported via
+   * onTargetChange), rather than attacking immediately - the actual attack
+   * is a separate explicit action (see attackSelectedTarget), wired to the
+   * HUD's attack button. Clicking empty space (or another selectable thing
+   * that isn't a monster) clears the current selection. The camera's own
+   * OrbitControls binds rotation to right-drag (see the enableDamping
+   * comment above), so a plain left click is otherwise unclaimed here.
+   */
+  private readonly handleAttackClick = (event: PointerEvent) => {
+    if (event.button !== 0) return;
+    const rect = this.canvas.getBoundingClientRect();
+    this.attackPointerNdc.set(((event.clientX - rect.left) / rect.width) * 2 - 1, -((event.clientY - rect.top) / rect.height) * 2 + 1);
+    this.attackRaycaster.setFromCamera(this.attackPointerNdc, this.cameraController.camera);
+    const targets = this.remoteMonsterController.getTargetableObjects();
+    const objectToEntityId = new Map<object, number>();
+    for (const target of targets) objectToEntityId.set(target.object, target.entityId);
+    const hits = this.attackRaycaster.intersectObjects(
+      targets.map((t) => t.object),
+      true,
+    );
+    console.log(`[attack] click: ${targets.length} targetable monster(s), ${hits.length} raycast hit(s)`);
+    for (const hit of hits) {
+      let node: typeof hit.object | null = hit.object;
+      while (node) {
+        const entityId = objectToEntityId.get(node);
+        if (entityId !== undefined) {
+          console.log(`[attack] click selected target=${entityId}`);
+          this.selectTarget(entityId);
+          return;
+        }
+        node = node.parent;
+      }
+    }
+    console.log('[attack] click selected nothing (cleared selection)');
+    this.selectTarget(null);
+  };
+
+  private selectTarget(entityId: number | null): void {
+    this.selectedTargetId = entityId;
+    this.refreshSelectedTargetInfo();
+  }
+
+  /** Re-reads the selected target's current name/HP from RemoteMonsterController and reports it - call after anything that could have changed it (a fresh selection, a combat hit, the target's exit/death). Clears the selection outright if the target no longer exists. */
+  private refreshSelectedTargetInfo(): void {
+    if (this.selectedTargetId === null) {
+      this.callbacks.onTargetChange?.(null);
+      return;
+    }
+    const info = this.remoteMonsterController.getTargetInfo(this.selectedTargetId);
+    if (!info) {
+      this.selectedTargetId = null;
+      this.callbacks.onTargetChange?.(null);
+      return;
+    }
+    this.callbacks.onTargetChange?.({ entityId: this.selectedTargetId, ...info });
+  }
+
+  /**
+   * Explicit attack action (the HUD's attack button) - plays the local
+   * player's own attack swing (see CharacterController.playAttack, which
+   * also auto-draws the weapon/switches to War stance if still in Peace)
+   * and sends AttackRequest for the currently-selected target. No-op if
+   * nothing is selected, the target is already dead, or an attack is
+   * already mid-swing (playAttack's own guard).
+   */
+  attackSelectedTarget(): void {
+    if (this.selectedTargetId === null) {
+      console.log('[attack] attackSelectedTarget() no-op: nothing selected');
+      return;
+    }
+    const info = this.remoteMonsterController.getTargetInfo(this.selectedTargetId);
+    if (!info || !info.alive) {
+      console.log(`[attack] attackSelectedTarget() no-op: target=${this.selectedTargetId} info=`, info);
+      this.refreshSelectedTargetInfo();
+      return;
+    }
+    console.log(`[attack] attackSelectedTarget() firing at target=${this.selectedTargetId}`, info);
+    void this.characterController.playAttack();
+    this.connection.sendAttack(this.selectedTargetId);
+  }
+
   constructor(
     renderer: WebGPURenderer,
     raceGender: RaceGender,
@@ -400,6 +507,7 @@ export class OnlineScene implements AppScene {
     this.sessionToken = sessionToken;
     this.characterId = characterId;
     this.callbacks = callbacks;
+    this.canvas = renderer.domElement;
 
     this.cameraController = new CameraController(
       renderer.domElement,
@@ -420,6 +528,8 @@ export class OnlineScene implements AppScene {
     this.cameraController.controls.enableDamping = false;
     this.characterController = new CharacterController(this.sceneController.scene);
     this.remoteEntityController = new RemoteEntityController(this.sceneController.scene, sessionToken);
+    this.remoteMonsterController = new RemoteMonsterController(this.sceneController.scene);
+    this.damageNumbers = new DamageNumberController(this.sceneController.scene);
 
     // Without these, every batch's InstancedMesh is created and kept
     // updated but never actually added to any scene (see
@@ -642,12 +752,30 @@ export class OnlineScene implements AppScene {
     this.connection.useSlotItem(EQUIPMENT_USE_SLOT_INDEX_BY_KEY[slotKey]);
   }
 
+  /** Loads every distinct monster model this map's own spawns reference (see MapClient.ts's MapMonsterEntry.model, resolved server-side - docs/monster.md) into rf/monster.ts's shared asset cache, so RemoteMonsterController's own per-entity loadMonster() calls resolve instantly instead of each independently fetching/parsing the same glb. A failed load for one monster is logged and otherwise ignored - same degrade-gracefully treatment as every other cosmetic preload in this class. */
+  private async preloadMonsterModels(mapDetails: MapDetails): Promise<void> {
+    const stems = new Set<string>();
+    for (const spawn of mapDetails.monsterSpawns) {
+      for (const entry of spawn.monsters ?? []) {
+        if (entry.model) stems.add(entry.model);
+      }
+    }
+    await Promise.all(
+      [...stems].map((stem) =>
+        loadMonster(stem).catch((err: unknown) => {
+          console.error(`Failed to preload monster model "${stem}":`, err);
+        }),
+      ),
+    );
+  }
+
   async mount(): Promise<void> {
     this.connection.onStatusChange = (status) => this.callbacks.onConnectionStatusChange?.(status);
     this.connection.onPacket = (payload) => this.handlePacket(payload);
     this.connection.onPingChange = (pingMs) => this.callbacks.onPingChange?.(pingMs);
 
     this.callbacks.onStatusChange?.('loading');
+    this.callbacks.onLoadProgress?.(0);
 
     // Per docs/map.md's documented "current supported flow" (step 5, before
     // step 6's "open the WebSocket") - only the lightweight JSON metadata is
@@ -661,10 +789,19 @@ export class OnlineScene implements AppScene {
     // promise rather than firing a new one. A failed fetch here is logged
     // and otherwise ignored - see getMapDetails' own doc comment on why it's
     // non-fatal.
-    await getMapDetails().catch((err: unknown) => {
+    const mapDetails = await getMapDetails().catch((err: unknown) => {
       console.warn('GET /map failed before connecting to the WebSocket - proceeding anyway:', err);
+      return null;
     });
     if (this.disposed) return;
+    this.callbacks.onLoadProgress?.(0.2);
+    // Fire-and-forget (not awaited - see preloadItemIconSheets' own identical
+    // treatment below): kicked off now, well before the WebSocket handshake/
+    // character load/map geometry load that follow give it plenty of time to
+    // finish, so any monster already spawned and in view by the time the
+    // first WorldSnapshot arrives (see handlePacket) resolves loadMonster()
+    // from cache instead of popping in a beat late.
+    if (mapDetails) void this.preloadMonsterModels(mapDetails);
 
     const wsUrl = (import.meta.env.VITE_WS_URL as string | undefined) ?? defaultWsUrl();
     const separator = wsUrl.includes('?') ? '&' : '?';
@@ -680,17 +817,33 @@ export class OnlineScene implements AppScene {
     window.addEventListener('keydown', this.handleRunKeyDown);
     window.addEventListener('keyup', this.handleRunKeyUp);
     window.addEventListener('blur', this.handleBlur);
+    this.canvas.addEventListener('pointerdown', this.handleAttackClick);
+
+    // The remaining 80% of onLoadProgress is split evenly across these 3
+    // parallel loads, credited to whichever order they actually resolve in
+    // (not positional) - each is a real completed milestone, not a guessed
+    // time-based animation.
+    let loadedStepCount = 0;
+    const totalLoadSteps = 3;
+    const trackLoadStep = <T>(step: Promise<T>): Promise<T> =>
+      step.then((value) => {
+        loadedStepCount++;
+        this.callbacks.onLoadProgress?.(0.2 + (loadedStepCount / totalLoadSteps) * 0.8);
+        return value;
+      });
 
     try {
       const [character, profile, loadedMap] = await Promise.all([
-        loadCharacter(this.raceGender),
+        trackLoadStep(loadCharacter(this.raceGender)),
         // Appearance/equipment is cosmetic - a failed fetch here shouldn't
         // block actually entering the world, just fall back to the
         // race's plain default look (same as a freshly-created character).
-        getCharacterProfile(this.sessionToken, this.characterId).catch((err: unknown) => {
-          console.error('Failed to load character profile (appearance/equipment will use defaults):', err);
-          return null;
-        }),
+        trackLoadStep(
+          getCharacterProfile(this.sessionToken, this.characterId).catch((err: unknown) => {
+            console.error('Failed to load character profile (appearance/equipment will use defaults):', err);
+            return null;
+          }),
+        ),
         // Same degrade-gracefully treatment as the profile fetch above - the
         // world's own geometry is nice-to-have for this first pass (nothing
         // else here depends on it: the local player still spawns at the
@@ -701,10 +854,12 @@ export class OnlineScene implements AppScene {
         // same cached result CharacterSelectScreen's own prefetch (and the
         // getMapDetails() call just above) already started - see loadMap's
         // own doc comment.
-        loadMap().catch((err: unknown) => {
-          console.error('Failed to load map geometry (playing without visible world geometry):', err);
-          return null;
-        }),
+        trackLoadStep(
+          loadMap().catch((err: unknown) => {
+            console.error('Failed to load map geometry (playing without visible world geometry):', err);
+            return null;
+          }),
+        ),
       ]);
       if (this.disposed) return;
       // Computed here (map-load time) but only actually applied to the
@@ -717,6 +872,7 @@ export class OnlineScene implements AppScene {
       let mapFarPlaneDistance: number | null = null;
       this.groundProvider = loadedMap?.groundObject3D ? new GroundHeightProvider(loadedMap.groundObject3D, loadedMap.bounds) : null;
       this.remoteEntityController.setMapGeometry(loadedMap?.groundObject3D ?? null, loadedMap?.bounds ?? null);
+      this.remoteMonsterController.setMapGeometry(loadedMap?.groundObject3D ?? null, loadedMap?.bounds ?? null);
       if (loadedMap) {
         this.loadedMap = loadedMap;
         this.sceneController.scene.add(loadedMap.object3D);
@@ -827,6 +983,7 @@ export class OnlineScene implements AppScene {
       // is a no-op if frameOnCharacter's own radius-derived far already
       // covers the map, and the actual fix when it doesn't.
       if (mapFarPlaneDistance !== null) this.cameraController.setFarPlane(mapFarPlaneDistance);
+      this.callbacks.onLoadProgress?.(1);
       this.callbacks.onStatusChange?.('ready');
     } catch (err) {
       if (this.disposed) return;
@@ -957,6 +1114,8 @@ export class OnlineScene implements AppScene {
     this.characterController.updateDebugSocketParticle(camera, delta, this.particleCulling);
 
     this.remoteEntityController.tick(delta, camera, this.particleCulling);
+    this.remoteMonsterController.tick(delta);
+    this.damageNumbers.update(delta);
     this.nameTag?.update(this.characterController.group);
 
     const hips = this.characterController.getHipsBone();
@@ -974,7 +1133,7 @@ export class OnlineScene implements AppScene {
 
     if (this.callbacks.onRadarFrame) {
       const blips = this.hasServerSelfPosition
-        ? this.remoteEntityController.getEntityPositions().map((position) => ({
+        ? [...this.remoteEntityController.getEntityPositions(), ...this.remoteMonsterController.getEntityPositions()].map((position) => ({
             dx: position.x - this.serverSelfPosition.x,
             dz: -(position.z - this.serverSelfPosition.z),
           }))
@@ -1000,6 +1159,7 @@ export class OnlineScene implements AppScene {
     window.removeEventListener('keydown', this.handleRunKeyDown);
     window.removeEventListener('keyup', this.handleRunKeyUp);
     window.removeEventListener('blur', this.handleBlur);
+    this.canvas.removeEventListener('pointerdown', this.handleAttackClick);
     // Detach callbacks before closing - the underlying WebSocket's own
     // 'close' event fires asynchronously (after close() returns), so
     // without this a disposed scene's connection could still call back into
@@ -1016,6 +1176,8 @@ export class OnlineScene implements AppScene {
     this.cameraController.dispose();
     this.characterController.dispose();
     this.remoteEntityController.dispose();
+    this.remoteMonsterController.dispose();
+    this.damageNumbers.dispose();
     this.disposeCircleDebugOverlay();
     this.nameTag?.dispose(this.sceneController.scene);
     this.debugGizmo?.dispose();
@@ -1044,7 +1206,19 @@ export class OnlineScene implements AppScene {
         this.myPlayerId = payload.welcome.playerId;
         break;
       case 'worldSnapshot': {
-        const selfSnapshot = payload.worldSnapshot.entities.find((entity) => entity.entityId === this.myPlayerId);
+        // Split by kind before handing off - each controller's applySnapshot
+        // is a full resync (anything not in the list it's given gets
+        // removed), so a MONSTER-kind entry passed to RemoteEntityController
+        // (or vice versa) would wrongly spawn/remove the wrong kind of
+        // renderer for it, not just render nothing.
+        const playerEntities: EntitySnapshot[] = [];
+        const monsterEntities: EntitySnapshot[] = [];
+        for (const entitySnapshot of payload.worldSnapshot.entities) {
+          (entitySnapshot.kind === EntityKind.ENTITY_KIND_MONSTER ? monsterEntities : playerEntities).push(entitySnapshot);
+        }
+        this.remoteMonsterController.applySnapshot(monsterEntities);
+
+        const selfSnapshot = playerEntities.find((entity) => entity.entityId === this.myPlayerId);
         if (selfSnapshot) {
           this.snapServerSelfPosition(selfSnapshot);
           // The first (and, on every later resync, freshest) place the local
@@ -1059,11 +1233,21 @@ export class OnlineScene implements AppScene {
           // the backend's non-native terrain Y. Real teleports are handled
           // by the self exit+enter WorldDelta branch below.
         }
-        this.remoteEntityController.applySnapshot(payload.worldSnapshot.entities, this.myPlayerId);
+        this.remoteEntityController.applySnapshot(playerEntities, this.myPlayerId);
         break;
       }
       case 'worldDelta': {
-        const { enters, updates, exits, appearanceUpdates } = payload.worldDelta;
+        const { enters, updates, exits, appearanceUpdates, combatHits, attackAttempts } = payload.worldDelta;
+        if (combatHits.length > 0) console.log(`[attack] worldDelta carries ${combatHits.length} combat hit(s):`, combatHits);
+        // Every OTHER player's swing, hit or miss - the local player already
+        // played their own instantly on click (see attackSelectedTarget), so
+        // this is purely for what bystanders see. Monster attackers don't
+        // exist yet (no monster-vs-player combat - see the plan), so this
+        // only ever targets remoteEntityController's player rig, never
+        // remoteMonsterController.
+        for (const attempt of attackAttempts) {
+          if (attempt.attackerId !== this.myPlayerId) this.remoteEntityController.playAttack(attempt.attackerId);
+        }
         for (const enter of enters) {
           if (enter.entityId === this.myPlayerId) {
             if (!enter.entity) {
@@ -1083,17 +1267,31 @@ export class OnlineScene implements AppScene {
               this.applyServerTeleport(enter.entity);
             }
           }
-          this.remoteEntityController.enter(enter.entityId, enter.entity, this.myPlayerId);
+          if (enter.entity?.kind === EntityKind.ENTITY_KIND_MONSTER) {
+            this.remoteMonsterController.enter(enter.entity);
+          } else {
+            this.remoteEntityController.enter(enter.entityId, enter.entity, this.myPlayerId);
+          }
         }
         for (const update of updates) {
           if (update.entityId === this.myPlayerId) this.applyServerSelfDelta(update);
+          // No `kind` on EntityUpdate itself (see protocol.proto) - each
+          // controller's update() is a no-op for an id it doesn't track, so
+          // fanning out to both is simpler and just as correct as looking up
+          // which one owns this id first.
           this.remoteEntityController.update(update.entityId, update, this.myPlayerId);
+          this.remoteMonsterController.update(update.entityId, update);
         }
-        for (const exit of exits) this.remoteEntityController.exit(exit.entityId, this.myPlayerId);
+        for (const exit of exits) {
+          this.remoteEntityController.exit(exit.entityId, this.myPlayerId);
+          this.remoteMonsterController.exit(exit.entityId);
+          if (exit.entityId === this.selectedTargetId) this.refreshSelectedTargetInfo();
+        }
         for (const appearanceUpdate of appearanceUpdates) {
           if (appearanceUpdate.entityId === this.myPlayerId) this.applyLocalVisibleEquipment(appearanceUpdate.visibleEquipment);
           else this.remoteEntityController.applyAppearanceUpdate(appearanceUpdate.entityId, appearanceUpdate.visibleEquipment, this.myPlayerId);
         }
+        for (const hit of combatHits) this.handleCombatHit(hit);
         break;
       }
       case 'chat':
@@ -1159,6 +1357,33 @@ export class OnlineScene implements AppScene {
         });
         break;
     }
+  }
+
+  /**
+   * AttackRequest feedback for a landed hit (see WorldConnection.sendAttack's
+   * own doc comment on the combat system this now drives): a floating
+   * damage-number popup and hit-reaction animation for every viewer who can
+   * see the target - so a monster taking damage reads clearly even for
+   * players who didn't land the hit themselves - plus a chat log line for
+   * whoever did land it (that part still only makes sense from the
+   * attacker's own point of view).
+   */
+  private handleCombatHit(hit: CombatHitEvent): void {
+    // Frontend-only visual flourish (see RemoteMonsterController.
+    // playHitReaction's own doc comment) - fires for every hit any player
+    // lands, not just the local one, so a monster reacts consistently for
+    // everyone watching, matching how its other animations already work.
+    this.remoteMonsterController.playHitReaction(hit.targetId);
+    const target = this.remoteMonsterController.getTargetableObjects().find((t) => t.entityId === hit.targetId);
+    console.log(`[attack] handleCombatHit target=${hit.targetId} damage=${hit.damage} killed=${hit.killed} targetObjectFound=${!!target}`);
+    if (target) this.damageNumbers.spawn(damageNumberAnchor(target.object), hit.damage, hit.killed);
+    else console.warn(`[attack] no targetable object for entity=${hit.targetId} - damage number skipped (model still loading, or already out of AOI)`);
+    if (hit.targetId === this.selectedTargetId) this.refreshSelectedTargetInfo();
+    if (hit.attackerId !== this.myPlayerId) return;
+    const message = hit.killed
+      ? `You defeated the target for ${hit.damage} damage.`
+      : `You hit the target for ${hit.damage} damage (${hit.targetHpAfter} HP left).`;
+    this.callbacks.onChatMessage?.({ id: this.nextChatEntryId++, kind: 'system', message });
   }
 
   private snapServerSelfPosition(entity: EntitySnapshot): void {

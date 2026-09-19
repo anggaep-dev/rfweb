@@ -6,3 +6,6 @@ export type { CardProps, CardVariant } from './Card';
 
 export { default as Dialog } from './Dialog';
 export type { DialogProps, DialogAction } from './Dialog';
+
+export { default as LoadingScreen } from './LoadingScreen';
+export type { LoadingScreenProps } from './LoadingScreen';
